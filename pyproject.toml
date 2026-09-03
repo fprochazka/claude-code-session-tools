@@ -2,6 +2,7 @@
 name = "claude-code-session-tools"
 version = "0.1.0"
 description = "Search and distill past Claude Code session transcripts"
+readme = "README.md"
 license = "MIT"
 authors = [
     { name = "Filip Procházka", email = "mr@fprochazka.cz" }

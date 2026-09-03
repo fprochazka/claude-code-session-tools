@@ -1,0 +1,4 @@
+{"type":"user","cwd":"/home/u/proj5","sessionId":"s5","timestamp":"2026-02-13T08:00:00.000Z","message":{"role":"user","content":"start"}}
+{"type":"assistant","sessionId":"s5","timestamp":"2026-02-13T08:00:05.500Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}
+{"type":"attachment","sessionId":"s5","timestamp":"2026-02-13T08:00:05.200Z"}
+{"type":"ai-title","aiTitle":"Ordered Session","sessionId":"s5"}

@@ -11,7 +11,7 @@ import sys
 
 import typer
 
-from . import __version__
+from . import __version__, search_cmd
 
 app = typer.Typer(
     name="cc-session-tools",
@@ -40,6 +40,9 @@ def root(
     ),
 ) -> None:
     """Search and distill Claude Code session transcripts."""
+
+
+app.command("search")(search_cmd.search)
 
 
 def main() -> None:

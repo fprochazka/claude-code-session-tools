@@ -1,5 +1,5 @@
 ---
-name: cc-session-tools
+name: session-tools
 description: CLI for finding and distilling past Claude Code sessions — list and grep the sessions of the current repo and its git worktrees, then condense one transcript into markdown. Use when the user refers to an earlier conversation, asks what was decided or tried before, wants a past session summarized, or needs the session id of something that already happened. Triggered by requests involving past sessions, an earlier conversation, a session transcript, "what did we decide before", or "find the session where".
 trigger-keywords: claude code session, past session, previous session, session transcript, session history, ccdistill, session search
 allowed-tools: Bash(cc-session-tools --help), Bash(cc-session-tools search:*), Bash(cc-session-tools distill:*)
@@ -72,5 +72,5 @@ Operational notes:
 
 Two commands wrap the full workflows and should be preferred over driving the CLI by hand:
 
-- `/cc-session-tools:search <keywords or topic>` — mine past sessions for decisions and context, writing the findings to `./.claude/plans/past-sessions-<slug>.md`.
-- `/cc-session-tools:distill <session-id | latest>` — condense one session into a recap at `./.claude/plans/session-distill-<slug>.md`.
+- `/session-tools:search <keywords or topic>` — mine past sessions for decisions and context, writing the findings to `./.claude/plans/past-sessions-<slug>.md`.
+- `/session-tools:distill <session-id | latest>` — condense one session into a recap at `./.claude/plans/session-distill-<slug>.md`.

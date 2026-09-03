@@ -34,7 +34,7 @@ Instruct the subagent exactly as follows:
 >
 > 1. **Read the full transcript file first** (path given below) before writing anything. Read it in its entirety.
 > 2. **Collapse superseded history.** When a decision, plan, value, or piece of information was later changed, corrected, or abandoned, keep **only the final state**. Discard the intermediate steps, dead ends, and walked-back choices — the reader does not need the journey, only where it landed. The one exception: if a decision *pivoted*, note the rejected alternative and what triggered the pivot in one line, because that is load-bearing context.
-> 3. **Write the recap to `./.claude/plans/session-distill-<slug>.md`** — `<slug>` is a short kebab-case slug of what the session was about, the same naming the `/cc-session-tools:search` command uses for `past-sessions-<slug>.md` (fall back to the session id when the topic is unclear). Create the directory if it does not exist. The full recap lives in this file and nowhere else. Use this structure:
+> 3. **Write the recap to `./.claude/plans/session-distill-<slug>.md`** — `<slug>` is a short kebab-case slug of what the session was about, the same naming the `/session-tools:search` command uses for `past-sessions-<slug>.md` (fall back to the session id when the topic is unclear). Create the directory if it does not exist. The full recap lives in this file and nowhere else. Use this structure:
 >
 >    ## What this session was about
 >    2-4 sentences. The high-level goal and where the session ended up.

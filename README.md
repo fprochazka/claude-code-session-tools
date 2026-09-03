@@ -48,22 +48,22 @@ To remove it, run `uv tool uninstall claude-code-session-tools`.
 
 This repository is also a [Claude Code](https://docs.anthropic.com/en/docs/claude-code) plugin marketplace. The plugin ships:
 
-- `/cc-session-tools:search <keywords or topic>` — mine past sessions for decisions and context, writing the findings to `./.claude/plans/past-sessions-<slug>.md`.
-- `/cc-session-tools:distill <session-id | latest>` — condense one session into a recap at `./.claude/plans/session-distill-<slug>.md`.
-- The `cc-session-tools` skill, which teaches Claude the two subcommands and how they scope their results.
+- `/session-tools:search <keywords or topic>` — mine past sessions for decisions and context, writing the findings to `./.claude/plans/past-sessions-<slug>.md`.
+- `/session-tools:distill <session-id | latest>` — condense one session into a recap at `./.claude/plans/session-distill-<slug>.md`.
+- The `session-tools` skill, which teaches Claude the two subcommands and how they scope their results.
 
 Install the CLI first, then add the marketplace and the plugin:
 
 ```bash
 claude plugin marketplace add fprochazka/claude-code-session-tools --scope user
-claude plugin install cc-session-tools@fprochazka-claude-code-session-tools --scope user
+claude plugin install session-tools@fprochazka-claude-code-session-tools --scope user
 ```
 
 To upgrade after new commits land:
 
 ```bash
 claude plugin marketplace update fprochazka-claude-code-session-tools
-claude plugin update cc-session-tools@fprochazka-claude-code-session-tools
+claude plugin update session-tools@fprochazka-claude-code-session-tools
 ```
 
 ## Usage
@@ -153,7 +153,7 @@ tests/                # unit tests plus JSONL fixtures
 coding-agent-plugins/claude-code/        # the plugin
 ├── .claude-plugin/plugin.json
 ├── commands/{search,distill}.md
-└── skills/cc-session-tools/SKILL.md
+└── skills/session-tools/SKILL.md
 ```
 
 ## Development

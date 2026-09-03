@@ -1,5 +1,5 @@
 {
-  "name": "cc-session-tools",
+  "name": "session-tools",
   "version": "0.1.0",
   "description": "Commands and skill for finding and distilling past Claude Code sessions with the cc-session-tools CLI",
   "author": {

@@ -37,6 +37,6 @@ The user has given you a context/query/focus-area, and wants you to find past se
 Once you have them, ideally `cc-session-tools distill` them, but its up to you if you want to do that, or if you need to mine for something specific in the `.jsonl` transcripts.
 
 Make sure to run the mining operation as a subagent (or multiple), ideally orient yourself first in the keywords we're looking for, and make sure to filter out irrelevant sessions that might still turn up for the relevant keywords.
-The mining subagent should write its findings to `./.claude/plans/past-sessions-<slug>.md` (`<slug>` — a short kebab-case slug of the query/topic, the same naming the `/cc-session-tools:distill` command uses for `session-distill-<slug>.md`) and return the file as a reply with some summary of what it did, the methodology and what it scanned and what it ignored and why, the findings should be all in the md file.
+The mining subagent should write its findings to `./.claude/plans/past-sessions-<slug>.md` (`<slug>` — a short kebab-case slug of the query/topic, the same naming the `/session-tools:distill` command uses for `session-distill-<slug>.md`) and return the file as a reply with some summary of what it did, the methodology and what it scanned and what it ignored and why, the findings should be all in the md file.
 
 Once you're done collecting the information you were asked for, read it and present the user with a condensed summary.

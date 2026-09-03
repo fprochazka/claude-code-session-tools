@@ -11,7 +11,7 @@ import sys
 
 import typer
 
-from . import __version__, search_cmd
+from . import __version__, distill_cmd, search_cmd
 
 app = typer.Typer(
     name="cc-session-tools",
@@ -43,6 +43,7 @@ def root(
 
 
 app.command("search")(search_cmd.search)
+app.command("distill")(distill_cmd.distill)
 
 
 def main() -> None:

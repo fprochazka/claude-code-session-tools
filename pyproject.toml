@@ -49,9 +49,9 @@ select = ["E", "F", "I", "UP", "B", "C4", "SIM"]
 ignore = []
 
 [tool.ruff.lint.flake8-bugbear]
-# Typer declares options as call-valued parameter defaults; the returned OptionInfo is inert
-# metadata, never a shared mutable, so B008 doesn't apply to it.
-extend-immutable-calls = ["typer.Option"]
+# Typer declares options and arguments as call-valued parameter defaults; the returned
+# OptionInfo/ArgumentInfo is inert metadata, never a shared mutable, so B008 doesn't apply.
+extend-immutable-calls = ["typer.Option", "typer.Argument"]
 
 [tool.ruff.format]
 quote-style = "double"

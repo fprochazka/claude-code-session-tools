@@ -169,3 +169,16 @@ def test_git_branch_and_version_are_none_when_absent():
     meta = read_session_meta(FIXTURES / "clean_user.jsonl")
     assert meta.git_branch is None
     assert meta.version is None
+
+
+def test_last_ts_from_transcript_is_true_when_a_record_carries_a_timestamp():
+    meta = read_session_meta(FIXTURES / "ai_title.jsonl")
+    assert meta.last_ts_from_transcript is True
+
+
+def test_last_ts_from_transcript_is_false_when_no_record_carries_one():
+    # summary + ai-title only: nothing timestamped, so last_ts is the file mtime and
+    # the flag marks the session as a stub with no interaction in it.
+    meta = read_session_meta(FIXTURES / "no_timestamp.jsonl")
+    assert meta.last_ts_from_transcript is False
+    assert meta.last_ts == transcript._mtime_utc(FIXTURES / "no_timestamp.jsonl")

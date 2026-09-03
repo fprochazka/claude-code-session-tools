@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 import cc_session_tools.discovery as discovery
-from cc_session_tools.discovery import build_session_rows
+from cc_session_tools.discovery import build_session_rows, is_valid_session_id
 from cc_session_tools.paths import encode_path
 
 
@@ -128,3 +128,10 @@ def test_real_git_init_sanity(tmp_path):
 
     assert [row.session_id for row in rows] == ["s1"]
     assert rows[0].worktree_rel == ""
+
+
+def test_valid_session_id():
+    assert is_valid_session_id("292a8682-31b7-4d3a-a20b-a7ceba95b11c")
+    assert not is_valid_session_id("not-a-uuid")
+    assert not is_valid_session_id("../etc/passwd")
+    assert not is_valid_session_id("292a8682-31b7-4d3a-a20b-a7ceba95b11c.jsonl")

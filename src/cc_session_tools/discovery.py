@@ -13,6 +13,7 @@ correctly rejected once its real ``cwd`` proves to be outside the repo root.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,15 @@ from pathlib import Path
 from .gitrepo import main_repo_root, worktree_dir_patterns
 from .paths import encode_path, resolve_projects_dir
 from .transcript import read_session_meta
+
+# Strict canonical UUID matcher (8-4-4-4-12 hex). Session ids may be user-supplied,
+# so they are validated before any filesystem access -- this makes path traversal
+# impossible because none of `../`, slashes, or dots can appear in a match.
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def is_valid_session_id(value: str) -> bool:
+    return bool(_UUID_RE.match(value))
 
 
 def _abspath(path: str | Path) -> Path:
@@ -62,6 +72,9 @@ class SessionRow:
     # ``"<name>-worktrees/fp-foo"`` for a legacy sibling worktree. In all-projects
     # mode there is no root to be relative to, so it holds the session's own ``cwd``.
     worktree_rel: str
+    # Mirrors ``SessionMeta.last_ts_from_transcript``: False marks a stub whose
+    # ``last_ts`` is only the file mtime. Listing keeps such rows; ``latest`` skips them.
+    last_ts_from_transcript: bool = True
 
 
 def resolve_target_dirs(cwd: str | Path, *, projects_dir: Path | None = None) -> TargetScope:
@@ -206,8 +219,46 @@ def build_session_rows(
                 name=meta.name,
                 name_is_derived=meta.name_is_derived,
                 worktree_rel=worktree_rel,
+                last_ts_from_transcript=meta.last_ts_from_transcript,
             )
         )
 
     rows.sort(key=lambda row: row.last_ts, reverse=True)
     return rows
+
+
+def resolve_target(target: str, *, cwd: str, projects_dir: Path | None = None) -> Path | None:
+    """Resolve a distill target — a ``.jsonl`` path, a session id, or ``"latest"``.
+
+    ``"latest"`` uses the same worktree-aware scope as ``search``: the newest session
+    of ``cwd``'s repo by in-transcript timestamp. Stub transcripts are skipped — a file
+    with no timestamped record has no interaction to distill, yet its mtime can place it
+    at the front of the scope. There is deliberately no "newest session overall"
+    fallback — silently distilling an unrelated session is worse than failing, so an
+    empty scope returns ``None`` and the caller reports it.
+
+    Returns ``None`` when nothing resolves.
+    """
+    candidate = Path(target)
+    if candidate.suffix == ".jsonl" and candidate.is_file():
+        return candidate
+
+    if is_valid_session_id(target):
+        projects_dir = projects_dir or resolve_projects_dir()
+        try:
+            project_dirs = sorted(p for p in projects_dir.iterdir() if p.is_dir())
+        except OSError:
+            return None
+        for project_dir in project_dirs:
+            # Direct children only: a ``<uuid>/subagents/`` sidecar is a child
+            # transcript, never a session, and must not be reachable by id.
+            session_file = project_dir / f"{target}.jsonl"
+            if session_file.is_file():
+                return session_file
+        return None
+
+    if target == "latest":
+        rows = build_session_rows(cwd, projects_dir=projects_dir)
+        return next((row.path for row in rows if row.last_ts_from_transcript), None)
+
+    return None

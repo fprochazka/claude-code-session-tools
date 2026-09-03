@@ -66,6 +66,11 @@ class SessionMeta:
     # stay optional; only the first record carrying each key is consulted.
     git_branch: str | None = None
     version: str | None = None
+    # False when the transcript carried no timestamped record at all and ``last_ts``
+    # had to fall back to the file mtime. Such a file is a stub — a bridge-session
+    # marker or a bare retroactive title — with no interaction in it, and its mtime
+    # can make it look like the newest session in a scope.
+    last_ts_from_transcript: bool = True
 
 
 def _parse_ts(value: object) -> datetime | None:
@@ -216,7 +221,8 @@ def read_session_meta(path: Path) -> SessionMeta:
     records = _read_slices(path)
 
     timestamps = [ts for record in records if (ts := _parse_ts(record.get("timestamp"))) is not None]
-    last_ts = max(timestamps) if timestamps else _mtime_utc(path)
+    last_ts_from_transcript = bool(timestamps)
+    last_ts = max(timestamps) if last_ts_from_transcript else _mtime_utc(path)
 
     cwd = _first_string_field(records, "cwd")
     git_branch = _first_string_field(records, "gitBranch")
@@ -236,4 +242,5 @@ def read_session_meta(path: Path) -> SessionMeta:
         name_is_derived=name_is_derived,
         git_branch=git_branch,
         version=version,
+        last_ts_from_transcript=last_ts_from_transcript,
     )

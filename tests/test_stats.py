@@ -2,7 +2,9 @@ import json
 import subprocess
 import sys
 
-from cc_session_tools.parse import parse_session
+from cc_blackbox import ReadDiagnostics, iter_entries
+
+from cc_session_tools.render import distill_entries
 from cc_session_tools.stats import compute_stats, estimate_tokens, human_bytes
 
 
@@ -22,11 +24,14 @@ def test_human_bytes_scales_units():
     assert human_bytes(5 * 1024 * 1024) == "5.0 MB"
 
 
-def test_compute_stats_on_small_fixture():
+def test_compute_stats_on_small_fixture(tmp_path):
     text = _jsonl(
         {"type": "user", "cwd": "/repo", "timestamp": "t1", "message": {"content": "do the thing"}},
     )
-    session = parse_session(text, "sess")
+    path = tmp_path / "sess.jsonl"
+    path.write_text(text, encoding="utf-8")
+    diagnostics = ReadDiagnostics()
+    session = distill_entries("sess", list(iter_entries(path, diagnostics=diagnostics)), diagnostics)
     markdown = "# Session sess\nbody with a few words\n"
 
     stats = compute_stats(session, markdown)

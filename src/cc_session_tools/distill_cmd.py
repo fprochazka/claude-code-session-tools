@@ -1,7 +1,7 @@
 """The ``cc-session-tools distill`` command: condense one session transcript into markdown.
 
-Orchestration only — target resolution lives in ``discovery``, classification in
-``parse``, markdown in ``render`` and the size figures in ``stats``.
+Orchestration only — target resolution lives in ``discovery``, the condensed conversation
+and its markdown in ``render``, and the size figures in ``stats``.
 
 Stdout carries exactly one thing: the rendered markdown under ``--stdout``, or the
 single path of the written file otherwise. Everything else — the stats table, every
@@ -15,13 +15,13 @@ import sys
 from pathlib import Path
 
 import typer
+from cc_blackbox import ReadDiagnostics
 from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
 from .discovery import projects_dirs_override, resolve_target
-from .parse import parse_session
-from .render import render_markdown
+from .render import distill_entries, render_markdown
 from .stats import TranscriptStats, compute_stats, human_bytes
 
 DEFAULT_OUTPUT_DIR = Path("/tmp/claude-code-session-tools")
@@ -69,14 +69,16 @@ def distill(
         typer.echo(f"Error: could not resolve session target: {target}", err=True)
         raise typer.Exit(code=1)
 
-    path = transcript.path
+    diagnostics = ReadDiagnostics()
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        entries = list(transcript.entries(diagnostics=diagnostics))
     except OSError as exc:
-        typer.echo(f"Error: cannot read {path}: {exc}", err=True)
+        typer.echo(f"Error: cannot read {transcript.path}: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
-    session = parse_session(text, session_id=path.stem, include_thinking=include_thinking)
+    session = distill_entries(
+        transcript.session_id, entries, diagnostics, include_thinking=include_thinking, session=transcript
+    )
     markdown = render_markdown(session)
     stats = compute_stats(session, markdown)
 

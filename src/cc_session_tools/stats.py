@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .parse import ParsedSession
+from .render import DistilledSession
 
 
 def estimate_tokens(text: str) -> int:
@@ -37,7 +37,7 @@ class TranscriptStats:
     estimated_tokens: int
 
 
-def compute_stats(session: ParsedSession, markdown: str) -> TranscriptStats:
+def compute_stats(session: DistilledSession, markdown: str) -> TranscriptStats:
     """Derive stats from the exact ``markdown`` that is written/emitted, so sizes are truthful."""
     return TranscriptStats(
         prompt_count=session.prompt_count,

@@ -1,6 +1,6 @@
 """Derive a clean, human-readable list title from a raw first-user-message.
 
-Reuses the same markup interpreter as the transcript renderer so list and detail
+Uses cc-blackbox's markup interpreter, like the transcript renderer, so list and detail
 agree on what the markup means, and never returns angle-bracket tag soup.
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 
-from .user_markup import ShellCommandPart, SlashCommandPart, TextPart, parse_user_markup
+from cc_blackbox import ShellCommandPart, SlashCommandPart, TextPart, parse_user_markup
 
 _TITLE_MAX = 160
 _ARGS_MAX = 120

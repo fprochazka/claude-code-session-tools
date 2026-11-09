@@ -19,9 +19,8 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from .discovery import resolve_target
+from .discovery import projects_dirs_override, resolve_target
 from .parse import parse_session
-from .paths import resolve_projects_dir
 from .render import render_markdown
 from .stats import TranscriptStats, compute_stats, human_bytes
 
@@ -64,12 +63,13 @@ def distill(
 ) -> None:
     """Render a condensed markdown transcript of a session."""
     cwd = os.getcwd()
-    path = resolve_target(target, cwd=cwd, projects_dir=resolve_projects_dir())
-    if path is None:
+    transcript = resolve_target(target, cwd=cwd, projects_dirs=projects_dirs_override())
+    if transcript is None:
         # Plain text, never rich markup: a target can contain brackets.
         typer.echo(f"Error: could not resolve session target: {target}", err=True)
         raise typer.Exit(code=1)
 
+    path = transcript.path
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:

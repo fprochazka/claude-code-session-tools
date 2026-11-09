@@ -1,10 +1,7 @@
-"""Git repo/worktree resolution for mapping a cwd onto its ``~/.claude/projects/`` dirs.
+"""Git repo and worktree resolution for scoping sessions to the current repo.
 
-The main repo root comes from ``git worktree list --porcelain`` (its first block is always
-the main root, even when invoked from inside a worktree). From that root we derive the cheap
-encoded-name *matchers* used to pre-filter project-dir names — pure string ops, no file reads.
-Actual per-session membership (via each session's real ``cwd`` field) is confirmed later; these
-matchers only narrow the candidate set and may over-match, which the later ``cwd`` check corrects.
+The main repo root comes from ``git worktree list --porcelain``: its first block is always the main root, even when
+invoked from inside a worktree.
 """
 
 from __future__ import annotations
@@ -13,8 +10,6 @@ import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-
-from .paths import encode_path
 
 
 @dataclass(frozen=True)
@@ -25,36 +20,6 @@ class Worktree:
     head: str | None = None
     branch: str | None = None
     detached: bool = False
-
-
-@dataclass(frozen=True)
-class WorktreeDirPatterns:
-    """Cheap encoded-name matchers that pre-filter ``~/.claude/projects/`` dir names.
-
-    Fields (all are already-encoded strings, compared against a project *dir name*):
-
-    - ``exact`` — the main repo root's encoded dir; matches the root's own sessions.
-    - ``under_root_prefix`` — ``exact + "-"``; matches every dir *under* the root, which
-      covers all ``.worktrees/*`` worktrees (they encode as ``exact + "--worktrees-…"``).
-    - ``legacy_prefix`` — encodes the legacy ``<parent>/<name>-worktrees/`` location (a
-      sibling of the root, outside it) plus ``"-"``; matches worktrees kept there.
-
-    ``under_root_prefix`` is a broad net: as a pure prefix it also catches sibling repos like
-    ``<name>-extra`` and even the legacy dir names — those false positives are eliminated later
-    by confirming each session's real ``cwd`` field, never here.
-    """
-
-    exact: str
-    under_root_prefix: str
-    legacy_prefix: str
-
-    def matches(self, project_dir_name: str) -> bool:
-        """True if a project-dir NAME could belong to this repo (cheap pre-filter only)."""
-        return (
-            project_dir_name == self.exact
-            or project_dir_name.startswith(self.under_root_prefix)
-            or project_dir_name.startswith(self.legacy_prefix)
-        )
 
 
 def _parse_worktree_list(porcelain_text: str) -> list[Worktree]:
@@ -119,15 +84,3 @@ def main_repo_root(cwd: str | Path) -> Path | None:
 def is_git_repo(cwd: str | Path) -> bool:
     """True if ``cwd`` is inside a git repo."""
     return main_repo_root(cwd) is not None
-
-
-def worktree_dir_patterns(root: Path) -> WorktreeDirPatterns:
-    """Build the encoded-name matchers for a main repo ``root`` (see ``WorktreeDirPatterns``)."""
-    root = Path(root)
-    exact = encode_path(root)
-    legacy_root = root.parent / f"{root.name}-worktrees"
-    return WorktreeDirPatterns(
-        exact=exact,
-        under_root_prefix=exact + "-",
-        legacy_prefix=encode_path(legacy_root) + "-",
-    )

@@ -1,6 +1,0 @@
-{"type":"user","cwd":"/home/u/proj4","sessionId":"s4","timestamp":"2026-02-13T08:00:00.000Z","message":{"role":"user","content":"<bash-input>ls -la</bash-input>"}}
-{"type":"user","sessionId":"s4","timestamp":"2026-02-13T08:00:01.000Z","message":{"role":"user","content":"<command-name>deploy</command-name>"}}
-
-{"type":"user","sessionId":"s4","timestamp":"2026-02-13T08:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","content":"tool output blob"}]}}
-this line is not valid json and must be skipped
-{"type":"user","sessionId":"s4","timestamp":"2026-02-13T08:00:03.000Z","message":{"role":"user","content":"The real question is here"}}

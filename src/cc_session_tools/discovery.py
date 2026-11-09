@@ -1,264 +1,178 @@
-"""Session discovery: which ``~/.claude/projects/`` dirs to look at and which of
-their sessions actually belong to the current directory (or its git worktrees).
+"""Which sessions belong to the current directory, and which session a ``distill`` target names.
 
-The candidate *dirs* are chosen by cheap encoded-name pre-filtering (see
-``gitrepo.WorktreeDirPatterns``), which over-matches on purpose. Real membership is
-then confirmed per session against its non-lossy ``cwd`` field — never via the
-filesystem existence of the worktree path, so sessions of a **deleted** worktree
-still show up. The ``cwd`` check is a proper path-boundary test (``is_relative_to``),
-so a sibling repo like ``metabasecli-extra`` whose name passes the cheap prefix is
-correctly rejected once its real ``cwd`` proves to be outside the repo root.
+cc-blackbox finds and reads the transcripts of every Claude Code profile. This module adds the user-facing scope on
+top: inside a git repo a session belongs to the repo when it was launched in the main checkout, in any of its
+worktrees, or in the legacy ``<name>-worktrees/`` sibling dir. Membership comes from the session's own launch ``cwd``,
+never from whether that directory still exists, so sessions of a deleted worktree still show up. Outside a git repo
+only sessions launched in the exact current directory belong to it.
 """
 
 from __future__ import annotations
 
 import os
-import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from .gitrepo import main_repo_root, worktree_dir_patterns
-from .paths import encode_path, resolve_projects_dir
-from .transcript import read_session_meta
+from cc_blackbox import (
+    SessionTranscript,
+    TranscriptNotFound,
+    find_session_transcript,
+    is_session_id,
+    list_session_transcripts,
+    read_session_transcript,
+)
 
-# Strict canonical UUID matcher (8-4-4-4-12 hex). Session ids may be user-supplied,
-# so they are validated before any filesystem access -- this makes path traversal
-# impossible because none of `../`, slashes, or dots can appear in a match.
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+from .gitrepo import main_repo_root
+from .titles import clean_title
 
 
-def is_valid_session_id(value: str) -> bool:
-    return bool(_UUID_RE.match(value))
-
-
-def _abspath(path: str | Path) -> Path:
-    """Lexically absolutize a path *without* following symlinks.
-
-    Matches ``paths.encode_path`` normalization (``os.path.abspath``, not
-    ``Path.resolve``) so both sides of every membership comparison line up with
-    the literal abspath git and Claude Code record in the transcript ``cwd`` field.
-    """
+def _abspath(path: str | os.PathLike[str]) -> Path:
+    """Lexically absolutize a path without following symlinks, the way git and Claude Code record it."""
     return Path(os.path.abspath(os.fspath(path)))
 
 
-@dataclass(frozen=True)
-class TargetScope:
-    """The project dirs to scan plus the git anchors used to confirm membership.
+def projects_dirs_override() -> list[Path] | None:
+    """The projects dir from ``CLAUDE_PROJECTS_DIR``, or ``None`` to cover every Claude Code profile."""
+    override = os.environ.get("CLAUDE_PROJECTS_DIR")
+    return [Path(override).expanduser()] if override else None
 
-    - ``root`` — main repo root, or ``None`` when the cwd is not in a git repo.
-    - ``legacy_base`` — the legacy ``<parent>/<name>-worktrees`` base dir (a sibling
-      of ``root``, outside it), or ``None`` outside a git repo.
-    - ``candidate_project_dirs`` — ``~/.claude/projects/`` dirs whose *names* passed
-      the cheap encoded pre-filter; still subject to per-session ``cwd`` confirmation.
+
+@dataclass(frozen=True)
+class Scope:
+    """The directories whose sessions a command covers.
+
+    - ``root``: the main repo root, or ``None`` outside a git repo and under ``--all``.
+    - ``legacy_base``: the legacy ``<parent>/<name>-worktrees`` dir next to ``root``.
+    - ``cwd``: the current directory, which is the whole scope outside a git repo.
+    - ``all_projects``: every session of every project.
     """
 
     root: Path | None
     legacy_base: Path | None
-    candidate_project_dirs: list[Path]
+    cwd: Path
+    all_projects: bool = False
+
+    @property
+    def in_git_repo(self) -> bool:
+        return self.root is not None
+
+    def cwd_within(self) -> list[Path] | None:
+        if self.all_projects:
+            return None
+        if self.root is not None and self.legacy_base is not None:
+            return [self.root, self.legacy_base]
+        return [self.cwd]
+
+    def contains(self, transcript: SessionTranscript) -> bool:
+        """Outside a git repo, keep only sessions launched in the exact cwd; the listing already covers the rest."""
+        if self.all_projects or self.root is not None or transcript.cwd is None:
+            return True
+        return _abspath(transcript.cwd) == self.cwd
+
+
+def resolve_scope(cwd: str | os.PathLike[str], *, all_projects: bool = False) -> Scope:
+    cwd_abs = _abspath(cwd)
+    if all_projects:
+        return Scope(root=None, legacy_base=None, cwd=cwd_abs, all_projects=True)
+    root = main_repo_root(cwd_abs)
+    if root is None:
+        return Scope(root=None, legacy_base=None, cwd=cwd_abs)
+    root = _abspath(root)
+    return Scope(root=root, legacy_base=root.parent / f"{root.name}-worktrees", cwd=cwd_abs)
 
 
 @dataclass(frozen=True)
 class SessionRow:
-    """One display row: a confirmed-member session and its worktree label."""
+    """One display row: a session in scope and its location label."""
 
     session_id: str
     path: Path
     last_ts: datetime
     name: str
+    # True when ``name`` is derived from the first prompt (or is the bare session id) rather than a title the session
+    # actually has; the list renders such names dimmed.
     name_is_derived: bool
-    # Worktree path relative to the main repo root: ``""`` for the main repo (or
-    # the non-git case), ``".worktrees/fp-foo"`` for an in-tree worktree, and
-    # ``"<name>-worktrees/fp-foo"`` for a legacy sibling worktree. In all-projects
-    # mode there is no root to be relative to, so it holds the session's own ``cwd``.
+    # Inside a git repo: the session's path relative to the main repo root, ``""`` for the main checkout,
+    # ``".worktrees/fp-foo"`` for an in-tree worktree and ``"<name>-worktrees/fp-foo"`` for a legacy one. Under
+    # ``--all``: the session's own cwd. Outside a git repo: ``""``.
     worktree_rel: str
-    # Mirrors ``SessionMeta.last_ts_from_transcript``: False marks a stub whose
-    # ``last_ts`` is only the file mtime. Listing keeps such rows; ``latest`` skips them.
-    last_ts_from_transcript: bool = True
+    # False for a stub with no timestamped record, whose ``last_ts`` is only the file mtime. Listing keeps such rows;
+    # ``latest`` skips them.
+    last_ts_from_transcript: bool
+    profile: str
+    """The first profile that uses the session's projects dir, or the dir itself when no profile does."""
+    transcript: SessionTranscript
 
 
-def resolve_target_dirs(cwd: str | Path, *, projects_dir: Path | None = None) -> TargetScope:
-    """Decide which ``~/.claude/projects/`` dirs to consider for ``cwd``.
-
-    In a git repo: pre-filter project *dir names* by the encoded root/worktree/legacy
-    patterns (no file reads). Outside a git repo (D5): the single project dir whose
-    name equals ``encode_path(cwd)``, if it exists — no worktree expansion.
-    """
-    projects_dir = projects_dir or resolve_projects_dir()
-    root = main_repo_root(cwd)
-
-    if root is not None:
-        root = _abspath(root)
-        legacy_base = root.parent / f"{root.name}-worktrees"
-        patterns = worktree_dir_patterns(root)
-        try:
-            names = sorted(p.name for p in projects_dir.iterdir() if p.is_dir())
-        except OSError:
-            names = []
-        candidates = [projects_dir / name for name in names if patterns.matches(name)]
-        return TargetScope(root=root, legacy_base=legacy_base, candidate_project_dirs=candidates)
-
-    target = projects_dir / encode_path(cwd)
-    candidates = [target] if target.is_dir() else []
-    return TargetScope(root=None, legacy_base=None, candidate_project_dirs=candidates)
-
-
-def all_projects_scope(projects_dir: Path | None = None) -> TargetScope:
-    """A scope covering every project dir, with no git anchors.
-
-    Used by ``--all``: there is no repo to confirm membership against, so ``root``
-    and ``legacy_base`` are ``None`` and every direct subdirectory of ``projects_dir``
-    becomes a candidate. Membership is then unconditional (see ``build_session_rows``).
-    """
-    projects_dir = projects_dir or resolve_projects_dir()
-    try:
-        names = sorted(p.name for p in projects_dir.iterdir() if p.is_dir())
-    except OSError:
-        names = []
-    return TargetScope(root=None, legacy_base=None, candidate_project_dirs=[projects_dir / name for name in names])
-
-
-def find_candidate_session_files(scope: TargetScope) -> list[Path]:
-    """Enumerate top-level ``*.jsonl`` session files in each candidate project dir.
-
-    Only direct children are returned; the ``<uuid>/`` sidecar dirs (subagent and
-    tool-result transcripts) are deliberately not descended into — they are not
-    sessions.
-    """
-    files: list[Path] = []
-    for project_dir in scope.candidate_project_dirs:
-        try:
-            files.extend(sorted(project_dir.glob("*.jsonl")))
-        except OSError:
-            continue
-    return files
-
-
-def _is_member(meta_cwd: str | None, *, cwd: str, root: Path | None, legacy_base: Path | None) -> bool:
-    """Confirm a session belongs to the target, using its real ``cwd`` field.
-
-    Not in a git repo: accept when the session's ``cwd`` equals the target ``cwd``.
-    When ``cwd`` is missing (older session with no cwd field), fall back to accepting
-    it — being found in the exact ``encode_path(cwd)`` dir is proof enough.
-
-    In a git repo: accept when the real ``cwd`` is the main ``root`` or a proper
-    path-descendant of it (covers the main checkout, its subdirs, and every
-    ``.worktrees/*`` worktree, live or deleted), or falls under the legacy
-    worktrees base. When ``cwd`` is missing, fall back to the encoded-dir-name match
-    the cheap pre-filter already established.
-    """
-    if root is None:
-        if meta_cwd is None:
-            return True
-        return _abspath(meta_cwd) == _abspath(cwd)
-
-    if meta_cwd is None:
-        return True
-
-    real = _abspath(meta_cwd)
-    if real.is_relative_to(root):
-        return True
-    return legacy_base is not None and real.is_relative_to(legacy_base)
-
-
-def _worktree_rel(meta_cwd: str | None, *, root: Path | None, legacy_base: Path | None) -> str:
-    """Compute the session's worktree path relative to the main repo root.
-
-    Main repo (``cwd == root``) and the non-git case both yield ``""``. An in-tree
-    worktree yields e.g. ``".worktrees/fp-foo"``. A legacy worktree — outside the
-    root — is labeled relative to ``root.parent``, e.g. ``"<name>-worktrees/fp-foo"``.
-    A member with no ``cwd`` field can't be located, so it defaults to ``""``.
-    """
-    if root is None or meta_cwd is None:
+def _worktree_rel(transcript: SessionTranscript, scope: Scope) -> str:
+    if scope.all_projects:
+        return str(transcript.cwd) if transcript.cwd is not None else ""
+    if scope.root is None or transcript.cwd is None:
         return ""
-
-    real = _abspath(meta_cwd)
-    if real == root:
+    real = _abspath(transcript.cwd)
+    if real == scope.root:
         return ""
-    if real.is_relative_to(root):
-        return str(real.relative_to(root))
-    if legacy_base is not None and real.is_relative_to(legacy_base):
-        return str(real.relative_to(root.parent))
+    if real.is_relative_to(scope.root):
+        return str(real.relative_to(scope.root))
+    if scope.legacy_base is not None and real.is_relative_to(scope.legacy_base):
+        return str(real.relative_to(scope.root.parent))
     return ""
 
 
-def build_session_rows(
-    cwd: str | Path, *, projects_dir: Path | None = None, all_projects: bool = False
-) -> list[SessionRow]:
-    """Build the confirmed, newest-first session rows for ``cwd``.
-
-    For every candidate session file: read its metadata (C4), confirm membership via
-    the real ``cwd`` field, compute its worktree-relative label, and collect a row.
-    Rows are returned sorted by ``last_ts`` descending; no limit/grep is applied here.
-
-    With ``all_projects`` every session under ``projects_dir`` is returned regardless
-    of ``cwd``: there is nothing to confirm membership against, so the ``cwd`` check is
-    skipped and ``worktree_rel`` carries the session's own ``cwd`` instead of a label
-    relative to a repo root.
-    """
-    cwd_abs = os.path.abspath(os.fspath(cwd))
-    if all_projects:
-        scope = all_projects_scope(projects_dir)
+def _row(transcript: SessionTranscript, scope: Scope) -> SessionRow:
+    if transcript.title is not None:
+        name, derived = transcript.title, False
+    elif transcript.first_prompt is not None:
+        name, derived = clean_title(transcript.first_prompt), True
     else:
-        scope = resolve_target_dirs(cwd_abs, projects_dir=projects_dir)
+        name, derived = transcript.session_id, True
+    profiles = transcript.projects_dir.profiles
+    return SessionRow(
+        session_id=transcript.session_id,
+        path=transcript.path,
+        last_ts=transcript.last_activity_at or transcript.modified_at,
+        name=name,
+        name_is_derived=derived,
+        worktree_rel=_worktree_rel(transcript, scope),
+        last_ts_from_transcript=transcript.last_activity_at is not None,
+        profile=profiles[0].name if profiles else str(transcript.projects_dir.path),
+        transcript=transcript,
+    )
 
-    rows: list[SessionRow] = []
-    for path in find_candidate_session_files(scope):
-        meta = read_session_meta(path)
-        if all_projects:
-            worktree_rel = meta.cwd or ""
-        else:
-            if not _is_member(meta.cwd, cwd=cwd_abs, root=scope.root, legacy_base=scope.legacy_base):
-                continue
-            worktree_rel = _worktree_rel(meta.cwd, root=scope.root, legacy_base=scope.legacy_base)
-        rows.append(
-            SessionRow(
-                session_id=meta.session_id,
-                path=meta.path,
-                last_ts=meta.last_ts,
-                name=meta.name,
-                name_is_derived=meta.name_is_derived,
-                worktree_rel=worktree_rel,
-                last_ts_from_transcript=meta.last_ts_from_transcript,
-            )
-        )
 
+def build_session_rows(scope: Scope, *, projects_dirs: Sequence[Path] | None = None) -> list[SessionRow]:
+    """Return the sessions in ``scope``, newest interaction first, from every profile or from ``projects_dirs``."""
+    transcripts = list_session_transcripts(projects_dirs=projects_dirs, cwd_within=scope.cwd_within())
+    rows = [_row(t, scope) for t in transcripts if scope.contains(t)]
     rows.sort(key=lambda row: row.last_ts, reverse=True)
     return rows
 
 
-def resolve_target(target: str, *, cwd: str, projects_dir: Path | None = None) -> Path | None:
-    """Resolve a distill target — a ``.jsonl`` path, a session id, or ``"latest"``.
+def resolve_target(target: str, *, cwd: str, projects_dirs: Sequence[Path] | None = None) -> SessionTranscript | None:
+    """Resolve a distill target: a ``.jsonl`` path, a session id, or ``"latest"``.
 
-    ``"latest"`` uses the same worktree-aware scope as ``search``: the newest session
-    of ``cwd``'s repo by in-transcript timestamp. Stub transcripts are skipped — a file
-    with no timestamped record has no interaction to distill, yet its mtime can place it
-    at the front of the scope. There is deliberately no "newest session overall"
-    fallback — silently distilling an unrelated session is worse than failing, so an
-    empty scope returns ``None`` and the caller reports it.
-
-    Returns ``None`` when nothing resolves.
+    ``"latest"`` uses the same scope as ``search`` and skips stubs, which have no interaction to distill but whose
+    mtime can put them first. There is deliberately no "newest session overall" fallback: distilling an unrelated
+    session is worse than failing. Returns ``None`` when nothing resolves.
     """
     candidate = Path(target)
     if candidate.suffix == ".jsonl" and candidate.is_file():
-        return candidate
-
-    if is_valid_session_id(target):
-        projects_dir = projects_dir or resolve_projects_dir()
         try:
-            project_dirs = sorted(p for p in projects_dir.iterdir() if p.is_dir())
-        except OSError:
+            return read_session_transcript(candidate)
+        except TranscriptNotFound:
             return None
-        for project_dir in project_dirs:
-            # Direct children only: a ``<uuid>/subagents/`` sidecar is a child
-            # transcript, never a session, and must not be reachable by id.
-            session_file = project_dir / f"{target}.jsonl"
-            if session_file.is_file():
-                return session_file
-        return None
+
+    if is_session_id(target):
+        # Main transcripts only: a subagent transcript under <session id>/subagents/ is not a session.
+        try:
+            return find_session_transcript(target, projects_dirs=projects_dirs)
+        except TranscriptNotFound:
+            return None
 
     if target == "latest":
-        rows = build_session_rows(cwd, projects_dir=projects_dir)
-        return next((row.path for row in rows if row.last_ts_from_transcript), None)
+        rows = build_session_rows(resolve_scope(cwd), projects_dirs=projects_dirs)
+        return next((row.transcript for row in rows if row.last_ts_from_transcript), None)
 
     return None

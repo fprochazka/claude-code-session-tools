@@ -1,3 +1,0 @@
-{"type":"user","cwd":"/home/u/proj","sessionId":"s1","timestamp":"2026-02-13T14:22:13.214Z","message":{"role":"user","content":"first human message here"}}
-{"type":"ai-title","aiTitle":"My Great Session","sessionId":"s1"}
-{"type":"assistant","sessionId":"s1","timestamp":"2026-02-13T14:22:15.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}

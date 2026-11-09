@@ -1,11 +1,9 @@
 """The ``cc-session-tools search`` command: list (and optionally grep) the Claude Code
 sessions that belong to the current directory and its git worktrees, newest-first.
 
-This module is a thin orchestration layer over the library modules — path/repo math
-(``paths``, ``gitrepo``), discovery (``discovery``), content search (``search``) and
-relative-time formatting (``timefmt``). It resolves rows, optionally narrows them by a
-ripgrep content match, applies the limit, and renders a ``rich`` table. No discovery or
-search logic lives here.
+This module is a thin orchestration layer: scope and rows come from ``discovery``, content
+search from ``search``, relative times from ``timefmt``. It narrows the rows by content when
+asked, applies the limit, and renders a ``rich`` table.
 """
 
 from __future__ import annotations
@@ -17,9 +15,8 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from .discovery import all_projects_scope, build_session_rows, resolve_target_dirs
-from .paths import resolve_projects_dir
-from .search import RipgrepError, RipgrepNotFoundError, search_session_ids
+from .discovery import build_session_rows, projects_dirs_override, resolve_scope
+from .search import RipgrepError, search_session_ids
 from .timefmt import time_ago
 
 # Rich sizes output to the detected terminal and falls back to 80 columns when piped.
@@ -46,7 +43,8 @@ def search(
     rg: list[str] = typer.Option(
         None,
         "--rg",
-        help="Only show sessions whose transcript contains this literal text (case-insensitive, needs ripgrep). "
+        help="Only show sessions whose transcript contains this literal text (case-insensitive; uses ripgrep when "
+        "installed). "
         "Repeatable: every keyword must match somewhere in the session.",
     ),
     rg_any: bool = typer.Option(
@@ -63,23 +61,18 @@ def search(
 ) -> None:
     """List Claude Code sessions for the current directory, newest interaction first."""
     cwd = os.getcwd()
-    projects_dir = resolve_projects_dir()
 
-    # An absent repeatable option reaches us as None or as an empty list depending on how the
-    # command is invoked; both mean "no content search", and neither may trigger an rg run.
+    # An absent repeatable option reaches us as None or as an empty list depending on how the command is invoked;
+    # both mean "no content search", and neither may trigger a search.
     keywords = [kw for kw in (rg or []) if kw.strip()]
 
-    # The scope is resolved here as well as inside ``build_session_rows`` because the
-    # ripgrep pass needs the same candidate dirs, and the table needs to know whether
-    # the cwd sits in a git repo.
-    scope = all_projects_scope(projects_dir) if all_projects else resolve_target_dirs(cwd, projects_dir=projects_dir)
-    in_git_repo = scope.root is not None
-    rows = build_session_rows(cwd, projects_dir=projects_dir, all_projects=all_projects)
+    scope = resolve_scope(cwd, all_projects=all_projects)
+    rows = build_session_rows(scope, projects_dirs=projects_dirs_override())
 
     if keywords:
         try:
-            matching_ids = search_session_ids(keywords, scope.candidate_project_dirs, projects_dir, match_any=rg_any)
-        except (RipgrepNotFoundError, RipgrepError) as exc:
+            matching_ids = search_session_ids(keywords, [row.transcript for row in rows], match_any=rg_any)
+        except RipgrepError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(code=2) from exc
         rows = [row for row in rows if row.session_id in matching_ids]
@@ -117,7 +110,11 @@ def search(
     # deleted, produce distinct relative paths); outside one every cell is blank, so
     # the column is dropped to reduce noise. Under ``--all`` the same slot carries the
     # session's own cwd, which is the only thing that tells the rows apart.
-    show_location = all_projects or in_git_repo
+    show_location = all_projects or scope.in_git_repo
+    # Profiles often share one projects dir; the column appears only when the rows come from more than one.
+    show_profile = len({row.transcript.projects_dir.path for row in rows}) > 1
+    if show_profile:
+        table.add_column("Profile", no_wrap=True)
     if show_location:
         table.add_column("Project" if all_projects else "Worktree", no_wrap=True)
 
@@ -127,6 +124,8 @@ def search(
         # contain literal brackets from being reinterpreted as rich markup.
         name_cell = Text(row.name, style="dim") if row.name_is_derived else Text(row.name)
         cells = [Text(time_ago(row.last_ts)), Text(row.session_id), name_cell]
+        if show_profile:
+            cells.append(Text(row.profile))
         if show_location:
             cells.append(Text(row.worktree_rel))
         table.add_row(*cells)

@@ -61,6 +61,19 @@ def _search_dirs(sessions: Sequence[SessionTranscript]) -> list[tuple[Path, Path
     return sorted(found.items())
 
 
+def _is_content(hit: Path, session_id: str) -> bool:
+    """Whether ``hit`` is a file whose text the session holds: the main transcript, a subagent's or a tool result.
+
+    Claude Code keeps other files under the session's dir too, such as logs of the auto-mode classifier. The
+    pure-Python fallback reads only the content files, and both paths must agree.
+    """
+    if hit.name == f"{session_id}.jsonl":
+        return True
+    parts = hit.parts
+    index = parts.index(session_id) if session_id in parts else -1
+    return 0 <= index < len(parts) - 2 and parts[index + 1] in ("subagents", "tool-results")
+
+
 def _rg_pass(rg: str, patterns: Sequence[str], dirs: Sequence[tuple[Path, Path]]) -> set[str]:
     """One ripgrep pass: the session ids owning any file that contains any of ``patterns``."""
     proc = subprocess.run(
@@ -79,7 +92,7 @@ def _rg_pass(rg: str, patterns: Sequence[str], dirs: Sequence[tuple[Path, Path]]
         hit = Path(line.strip())
         projects = next((projects_dirs[p] for p in hit.parents if p in projects_dirs), None)
         session_id = session_id_for_path(hit, projects) if projects is not None else None
-        if session_id:
+        if session_id and _is_content(hit, session_id):
             ids.add(session_id)
     return ids
 

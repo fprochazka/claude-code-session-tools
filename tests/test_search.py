@@ -76,6 +76,9 @@ def _keyword_fixture(tmp_path: Path) -> list[SessionTranscript]:
     write("sidecar", "the worktree in question")
     (proj / sid("sidecar") / "subagents").mkdir(parents=True)
     (proj / sid("sidecar") / "subagents" / "agent-a1.jsonl").write_text('{"text": "DELETED by the subagent"}\n')
+    # Claude Code's own logs under the session dir are not session content.
+    (proj / sid("none") / "auto-mode-classifier-errors").mkdir(parents=True)
+    (proj / sid("none") / "auto-mode-classifier-errors" / "e1.json").write_text('{"text": "worktree deleted"}\n')
     # A file of another tool next to the transcripts: never a session, even when it matches.
     (proj / f"{sid('none')}-ftoc.jsonl").write_text('{"text": "worktree deleted"}\n')
 

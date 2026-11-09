@@ -68,7 +68,7 @@ claude plugin update session-tools@fprochazka-claude-code-session-tools
 
 ## Usage
 
-Claude Code stores each session at `~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`, where `<encoded-cwd>` is the absolute launch directory with every `/` and `.` replaced by `-`. Both subcommands read that store and never write to it. Set `CLAUDE_PROJECTS_DIR` to point them somewhere else.
+Claude Code stores each session at `<config dir>/projects/<encoded-cwd>/<session-id>.jsonl`, where `<encoded-cwd>` is the absolute launch directory with every non-alphanumeric character replaced by `-`. Both subcommands read the projects dir of every Claude Code profile on the machine and never write to it. Profiles that share a projects dir through a symlink are read once. Set `CLAUDE_PROJECTS_DIR` to read only that dir instead. Finding and parsing transcripts comes from the [cc-blackbox](https://github.com/fprochazka/cc-blackbox) library.
 
 ### search
 
@@ -82,21 +82,21 @@ cc-session-tools search --rg worktree --rg deleted --rg-any   # sessions contain
 cc-session-tools search --all                        # every project, not just this directory
 ```
 
-The table has four columns: **When** (time since the last interaction), **Session** (the full session id, ready to paste into `claude --resume`), **Name**, and **Worktree** (the session's path relative to the repo root, shown only inside a git repo). Under `--all` the last column becomes **Project** and shows each session's own directory. A dimmed name is a title derived from the first human message, not a name the session actually has.
+The table has four columns: **When** (time since the last interaction), **Session** (the full session id, ready to paste into `claude --resume`), **Name**, and **Worktree** (the session's path relative to the repo root, shown only inside a git repo). Under `--all` the last column becomes **Project** and shows each session's own directory. A dimmed name is a title derived from the first human message, not a name the session actually has. When the rows come from more than one projects dir, a **Profile** column before the last one names the profile each session belongs to.
 
 **Which sessions you get.** Inside a git repo you get the main checkout and every worktree of it, including worktrees you have since deleted — their transcripts still exist, and membership never depends on the directory still being there. Outside a git repo you get only the sessions launched from the exact current directory.
 
 **Ordering** comes from the last interaction timestamp inside the transcript, not from the file mtime. Claude Code appends titles and summaries to a transcript long after you stopped working in it, which bumps the mtime.
 
-**`--rg` matches literal text**, not a regex, case-insensitively, and needs [ripgrep](https://github.com/BurntSushi/ripgrep) on your PATH. A match inside a subagent transcript or a tool-result sidecar counts, and folds up into the parent session.
+**`--rg` matches literal text**, not a regex, case-insensitively. It uses [ripgrep](https://github.com/BurntSushi/ripgrep) when it is on your PATH, and a built-in scan that is several times slower otherwise. A match inside a subagent transcript or a tool-result sidecar counts, and folds up into the parent session.
 
 **Repeating `--rg` is AND at the level of the session.** Every keyword must appear somewhere in it, but they may sit in different messages, or one in the main transcript and another in a subagent it spawned. Each keyword costs its own ripgrep pass, because ripgrep is line-oriented and one JSONL line is one message record, so a single combined pattern could only find keywords sharing a record. `--rg-any` flips the same keywords to OR and costs one pass no matter how many you give it.
 
 **Known limitation: a session belongs to the directory it started in.** The first `cwd` record in the transcript decides which repo the session belongs to. If you launched Claude Code one directory up and moved into the repo afterwards, a scoped `search` will not list that session, and `distill latest` will not consider it. `search --all` still finds it.
 
-**`--all` is slow.** It reads every project directory — around 15 seconds for ~900 of them — and adds one ripgrep pass per `--rg` keyword on top. Use the scoped default when you can.
+**`--all` reads every project.** It takes about 2 seconds for ~3,000 sessions with a warm disk cache, and adds one ripgrep pass per `--rg` keyword on top. Use the scoped default when you can.
 
-Exit codes: `0`, including when nothing matched (the notice goes to stderr). `2` when ripgrep is missing or fails.
+Exit codes: `0`, including when nothing matched (the notice goes to stderr). `2` when ripgrep fails.
 
 ### distill
 
@@ -117,6 +117,8 @@ By default the command writes `<output-dir>/<session-id>.md` and prints that one
 
 A session id is looked up across every project directory, so it works from anywhere. Subagent sidecars under `<session-id>/subagents/` are child transcripts, not sessions, and cannot be reached by id.
 
+**A prompt's heading names who sent it:** `👤 User` for you, `📨 Peer session` for a message another Claude Code session sent, `🔔 Task notification` for a background task that finished. Prompts you typed while Claude was working are included.
+
 **The rendered markdown is not reliably parseable by heading level.** Prompts and assistant replies keep their own markdown, so a distilled file's `## ` headings are not only `👤 User` and `🤖 Assistant` — any heading someone wrote inside the conversation shows up at the same level.
 
 Exit code `1` when the target does not resolve or the file cannot be read.
@@ -124,7 +126,7 @@ Exit code `1` when the target does not resolve or the file cannot be read.
 ## Requirements
 
 - Python 3.11+
-- [ripgrep](https://github.com/BurntSushi/ripgrep) — only for `search --rg`. Everything else works without it.
+- [ripgrep](https://github.com/BurntSushi/ripgrep) — optional. It makes `search --rg` faster; without it a built-in scan runs.
 - git — only for worktree-aware scoping. Outside a repo both subcommands fall back to the exact current directory.
 
 ## Project structure
@@ -135,19 +137,15 @@ src/cc_session_tools/
 ├── cli.py            # root Typer app, --version, the error guard
 ├── search_cmd.py     # the `search` command
 ├── distill_cmd.py    # the `distill` command
-├── paths.py          # cwd -> encoded project dir, projects dir resolution
-├── gitrepo.py        # git worktree resolution and encoded-name matchers
-├── discovery.py      # which project dirs and which sessions belong to a cwd
-├── transcript.py     # per-session metadata read from the transcript
+├── gitrepo.py        # git worktree resolution
+├── discovery.py      # which sessions belong to a cwd, distill target resolution
 ├── titles.py         # display title derived from the first user message
-├── user_markup.py    # interpreter for the markup in user messages
-├── search.py         # ripgrep shell-out and session-id folding
+├── search.py         # ripgrep shell-out with the built-in fallback
 ├── timefmt.py        # relative "time ago" formatting
-├── parse.py          # transcript -> classified events
-├── render.py         # classified events -> markdown
+├── render.py         # condensed conversation -> markdown
 └── stats.py          # size and token estimates
 
-tests/                # unit tests plus JSONL fixtures
+tests/                # unit tests
 
 .claude-plugin/marketplace.json          # Claude Code plugin marketplace
 coding-agent-plugins/claude-code/        # the plugin

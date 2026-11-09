@@ -1,6 +1,6 @@
 {
   "name": "session-tools",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Commands and skill for finding and distilling past Claude Code sessions with the cc-session-tools CLI",
   "author": {
     "name": "Filip Procházka"

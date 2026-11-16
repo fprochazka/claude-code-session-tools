@@ -14,23 +14,17 @@ import sys
 from typing import get_args
 
 import typer
-from cc_blackbox import (
-    ActiveSession,
-    AmbiguousSession,
-    ProfileNotFound,
-    SessionNotFound,
-    SessionStatus,
-    find_session,
-    list_active_sessions,
-)
+from cc_blackbox import ActiveSession, ProfileNotFound, SessionStatus, list_active_sessions
 from rich.table import Table
 from rich.text import Text
 
 from .active import (
     Filters,
+    SessionLookupError,
     SessionView,
     apply_filters,
     build_views,
+    lookup_session,
     shorten_home,
     sort_sessions,
     to_json,
@@ -52,30 +46,11 @@ def _sessions(profiles: list[str] | None) -> list[ActiveSession]:
         raise typer.Exit(code=1) from exc
 
 
-def _describe(session: ActiveSession) -> str:
-    return f"{session.address}  pid {session.pid}  {session.session_id or '-'}  {session.status or '-'}"
-
-
 def _find(query: str, sessions: list[ActiveSession]) -> ActiveSession:
-    """Match a full session id, an exact name, a pid, or a unique session id prefix, in that order of preference.
-
-    An all-digit query is a pid when a session has that pid, so it never falls through to a session id prefix.
-    """
-    if query.isdecimal() and any(s.pid == int(query) for s in sessions):
-        query = f"pid:{query}"
     try:
-        return find_session(query, sessions=sessions)
-    except AmbiguousSession as exc:
-        lines = [f"Error: {len(exc.candidates)} sessions match {query!r}:"]
-        lines += [f"  {_describe(s)}" for s in exc.candidates]
-        typer.echo("\n".join(lines), err=True)
-        raise typer.Exit(code=1) from exc
-    except SessionNotFound as exc:
-        lines = [f"Error: no active session matches {query!r}."]
-        if sessions:
-            lines.append("Active sessions:")
-            lines += [f"  {_describe(s)}" for s in sessions]
-        typer.echo("\n".join(lines), err=True)
+        return lookup_session(query, sessions)
+    except SessionLookupError as exc:
+        typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
 

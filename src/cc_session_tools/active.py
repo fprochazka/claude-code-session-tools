@@ -20,7 +20,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from cc_blackbox import ActiveSession, TranscriptNotFound, find_session_transcript
+from cc_blackbox import (
+    ActiveSession,
+    AmbiguousSession,
+    SessionNotFound,
+    TranscriptNotFound,
+    find_session,
+    find_session_transcript,
+)
 
 from .discovery import Scope
 from .gitrepo import GitLocation, git_location
@@ -168,6 +175,38 @@ def apply_filters(sessions: Iterable[ActiveSession], filters: Filters) -> list[A
 def sort_sessions(sessions: Iterable[ActiveSession]) -> list[ActiveSession]:
     """By profile name, then start time, then pid. A session without a start time sorts first in its profile."""
     return sorted(sessions, key=lambda s: (s.profile.name, s.started_at.timestamp() if s.started_at else 0.0, s.pid))
+
+
+class SessionLookupError(LookupError):
+    """A SESSION argument matched no session or several; the message lists the candidates, one per line."""
+
+
+def describe_session(session: ActiveSession) -> str:
+    return f"{session.address}  pid {session.pid}  {session.session_id or '-'}  {session.status or '-'}"
+
+
+def lookup_session(query: str, sessions: Sequence[ActiveSession]) -> ActiveSession:
+    """Match a full session id, an exact name, a pid, or a unique session id prefix, in that order of preference.
+
+    An all-digit query is a pid when a session has that pid, so it never falls through to a session id prefix.
+
+    Raises:
+        SessionLookupError: nothing or more than one session matches.
+    """
+    if query.isdecimal() and any(s.pid == int(query) for s in sessions):
+        query = f"pid:{query}"
+    try:
+        return find_session(query, sessions=sessions)
+    except AmbiguousSession as exc:
+        lines = [f"Error: {len(exc.candidates)} sessions match {query!r}:"]
+        lines += [f"  {describe_session(s)}" for s in exc.candidates]
+        raise SessionLookupError("\n".join(lines)) from exc
+    except SessionNotFound as exc:
+        lines = [f"Error: no active session matches {query!r}."]
+        if sessions:
+            lines.append("Active sessions:")
+            lines += [f"  {describe_session(s)}" for s in sessions]
+        raise SessionLookupError("\n".join(lines)) from exc
 
 
 def transcript_path(session: ActiveSession) -> Path | None:

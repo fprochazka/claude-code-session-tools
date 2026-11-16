@@ -177,6 +177,22 @@ def test_a_session_without_a_name_shows_its_pid(machine: Machine, fake_bin: Path
     assert f"pid:{pid}" in result.stdout
 
 
+def test_a_waiting_session_shows_what_it_waits_for(machine: Machine, fake_bin: Path) -> None:
+    fake_tmux(fake_bin, [])
+    machine.session("work", "asking", status="waiting", waitingFor="permission prompt")
+    machine.session("work", "stale", status="idle", waitingFor="permission prompt")
+
+    result = invoke()
+
+    assert result.exit_code == 0, result.output
+    lines = {line.split()[1]: line for line in result.stdout.splitlines()[1:]}
+    assert "waiting: permission prompt" in lines["asking"]
+    assert "permission" not in lines["stale"]
+    by_name = {s["name"]: s for s in json_of()}
+    assert by_name["asking"]["waiting_for"] == "permission prompt"
+    assert by_name["stale"]["waiting_for"] is None
+
+
 def test_no_sessions_prints_a_notice_on_stderr(machine: Machine) -> None:
     result = invoke()
     assert result.exit_code == 0
@@ -337,6 +353,7 @@ JSON_KEYS = [
     "name",
     "name_source",
     "status",
+    "waiting_for",
     "kind",
     "entrypoint",
     "version",

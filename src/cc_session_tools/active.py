@@ -248,6 +248,12 @@ def transcript_path(session: ActiveSession) -> Path | None:
         return None
 
 
+def waiting_for(session: ActiveSession) -> str | None:
+    """What a ``waiting`` session waits for, from the record's ``waitingFor``; ``None`` in any other status."""
+    value = session.raw.get("waitingFor")
+    return value if session.status == "waiting" and isinstance(value, str) and value else None
+
+
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
@@ -278,6 +284,7 @@ def to_json(view: SessionView, *, transcript: Path | None) -> dict[str, Any]:
         "name": s.name,
         "name_source": s.name_source,
         "status": s.status,
+        "waiting_for": waiting_for(s),
         "kind": s.kind,
         "entrypoint": s.entrypoint,
         "version": s.version,

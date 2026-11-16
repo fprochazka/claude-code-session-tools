@@ -58,7 +58,7 @@ Options:
 - `profile_source`: how sure the profile is. `log`, `environ`, `claude_json` and `dir` are reliable. `inferred` is a guess between profiles that share one `sessions/` dir.
 - `address`: `<profile>/<name>`, or `<profile>/pid:<pid>` for a session without a name.
 - `pid`, `session_id`, `name`, `name_source` (`user`, `peer`, `derived`, `collision`, `auto`, `hook`).
-- `status`: `busy`, `idle`, `shell` or `waiting`. `kind` (`interactive`, `bg`, `daemon`, `daemon-worker`), `entrypoint`, `version`.
+- `status`: `busy`, `idle`, `shell` or `waiting`. `waiting_for`: what a `waiting` session waits for, from the record's `waitingFor`, and `null` in every other status. The table shows it as `waiting: <reason>`. `kind` (`interactive`, `bg`, `daemon`, `daemon-worker`), `entrypoint`, `version`.
 - `started_at`; `updated_at`: the last change of the record. Claude Code writes the record on events only, so an old `updated_at` on an idle session is normal.
 - `cwd`: the session's current dir. `launch_cwd`: the dir its process started in, or `null` before the first transcript record.
 - `git_branch`: the short branch of `cwd`, `null` when detached, unborn or outside git. `git_worktree_root`: the checkout that holds `cwd`. `git_repo_root`: the main checkout, the same for every worktree of a repo.

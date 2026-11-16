@@ -30,6 +30,7 @@ from .active import (
     sort_sessions,
     to_json,
     transcript_path,
+    waiting_for,
 )
 from .console import build_console
 from .discovery import resolve_scope
@@ -53,6 +54,11 @@ def _find(query: str, sessions: list[ActiveSession]) -> ActiveSession:
     except SessionLookupError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
+
+
+def _status(session: ActiveSession) -> str:
+    reason = waiting_for(session)
+    return f"{session.status}: {reason}" if reason is not None else session.status or "-"
 
 
 def _where(view: SessionView) -> Text:
@@ -92,7 +98,7 @@ def _print_table(views: list[SessionView]) -> None:
             (
                 Text(s.profile.name),
                 Text(s.name) if s.name else Text(f"pid:{s.pid}", style="dim"),
-                Text(s.status or "-"),
+                Text(_status(s)),
                 Text(time_ago(when) if when is not None else "-"),
                 _where(view),
                 _pane(view),

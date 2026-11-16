@@ -1,0 +1,632 @@
+"""The polling loop of ``cc-session-tools watch``: session registry records in, events out.
+
+Claude Code rewrites ``<config dir>/sessions/<pid>.json`` on every status change, rename and ``/cd``, and deletes it on
+a clean exit. The watcher stats every record of every profile about once a second, each shared ``sessions/`` dir once.
+A record whose mtime and size did not move costs that stat and nothing else.
+
+- A changed record of a session the watcher already knows is read again, and only the fields it changed are applied.
+- A new record, or a changed one that the watcher does not know, makes it list the sessions through cc-blackbox, which
+  decides liveness and the profile of a record in a shared dir. That is the expensive path, taken when a session
+  starts.
+- A known session whose record is gone, or whose process no longer runs, has ended.
+- The tmux location of every pane comes from one ``tmux list-panes -a`` call every few seconds.
+
+A status that lasts shorter than one poll can be missed: the watcher compares what it reads, not every write.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+import re
+import signal
+import threading
+import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
+from pathlib import Path
+from types import FrameType, MappingProxyType
+from typing import Any
+
+from cc_blackbox import ActiveSession, EventSink, list_active_sessions, list_profiles
+
+from .active import Filters, TmuxPane, TmuxState, list_tmux_panes, pane_id_of, waiting_for
+from .watch_events import (
+    BUSY_LONG,
+    CWD_CHANGED,
+    RENAMED,
+    SESSION_ENDED,
+    SESSION_MATCHED,
+    SESSION_STARTED,
+    SESSION_UNMATCHED,
+    STATUS_CHANGED,
+    THRESHOLD_OPTIONS,
+    TMUX_MOVED,
+    TURN_FINISHED,
+    WAITING,
+    WAITING_LONG,
+    WATCH_ENDED,
+    WATCH_STARTED,
+    WatchEvent,
+    format_duration,
+    utc_iso,
+)
+
+POLL_INTERVAL = 1.0
+TMUX_INTERVAL = 3.0
+
+TURN_ENDS_FROM = frozenset({"busy", "waiting"})
+"""A move to ``idle`` from one of these statuses is ``turn_finished``."""
+
+_RECORD_NAME = re.compile(r"^[1-9][0-9]*\.json$")
+
+Stamp = tuple[int, int]
+"""A record's mtime in nanoseconds and its size."""
+
+
+def scan_records(dirs: Sequence[Path]) -> dict[Path, Stamp]:
+    """The stamp of every ``<pid>.json`` record in ``dirs``. A missing dir, or a record that vanishes, is skipped."""
+    stamps: dict[Path, Stamp] = {}
+    for directory in dirs:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError:
+            continue
+        for entry in entries:
+            if not _RECORD_NAME.match(entry.name):
+                continue
+            try:
+                stat = entry.stat()
+            except OSError:
+                continue
+            stamps[Path(entry.path)] = (stat.st_mtime_ns, stat.st_size)
+    return stamps
+
+
+def sessions_dirs() -> list[Path]:
+    """The ``sessions/`` dir of every profile, each real dir once."""
+    seen: set[str] = set()
+    dirs: list[Path] = []
+    for profile in list_profiles():
+        real = os.path.realpath(profile.sessions_dir)
+        if real not in seen:
+            seen.add(real)
+            dirs.append(Path(real))
+    return dirs
+
+
+def process_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _str(data: dict[str, Any], key: str) -> str | None:
+    value = data.get(key)
+    return value if isinstance(value, str) and value else None
+
+
+def _epoch(data: dict[str, Any], key: str) -> float | None:
+    value = data.get(key)
+    if isinstance(value, bool) or not isinstance(value, int | float) or value <= 0:
+        return None
+    return value / 1000
+
+
+def refreshed(session: ActiveSession, data: dict[str, Any]) -> ActiveSession:
+    """``session`` with the fields a running session rewrites taken from its new record.
+
+    Everything cc-blackbox derived once, such as the profile and the launch dir, stays.
+    """
+    cwd = _str(data, "cwd")
+    socket = _str(data, "messagingSocketPath")
+    updated = _epoch(data, "updatedAt")
+    return replace(
+        session,
+        session_id=_str(data, "sessionId"),
+        name=_str(data, "name"),
+        name_source=_str(data, "nameSource"),
+        cwd=Path(cwd) if cwd and cwd != "?" else None,
+        status=_str(data, "status"),
+        updated_at=datetime.fromtimestamp(updated, UTC) if updated is not None else None,
+        tmux=_str(data, "tmux"),
+        messaging_socket=Path(socket) if socket else None,
+        raw=MappingProxyType(data),
+    )
+
+
+def _status_since(session: ActiveSession, fallback: float) -> float:
+    """When the session's current status began: the record's ``statusUpdatedAt``, else ``updatedAt``, else now."""
+    data = dict(session.raw)
+    return _epoch(data, "statusUpdatedAt") or _epoch(data, "updatedAt") or fallback
+
+
+def _location(live: TmuxPane | None) -> str | None:
+    """``<tmux session>:<window index>``, or ``None`` when the pane is not there."""
+    return f"{live.session}:{live.window_index}" if live is not None else None
+
+
+def _name_key(name: str) -> str:
+    """A name the way Claude Code compares names, near enough: case and runs of whitespace do not count."""
+    return "-".join(name.casefold().split())
+
+
+@dataclass
+class Tracked:
+    """What the watcher knows about one running session."""
+
+    session: ActiveSession
+    stamp: Stamp
+    matched: bool
+    status_since: float
+    tmux_state: TmuxState | None = None
+    tmux_live: TmuxPane | None = None
+    threshold_sent: bool = False
+    """Whether ``busy_long`` or ``waiting_long`` was reported for the current status stretch."""
+
+    @property
+    def pid(self) -> int:
+        return self.session.pid
+
+
+@dataclass(frozen=True)
+class Selection:
+    """Which sessions the watch reports.
+
+    Without ``pids`` the filters decide, again on every change, so sessions join and leave the watch. With ``pids``
+    the set is fixed: those sessions, until they end.
+    """
+
+    filters: Filters = field(default_factory=Filters)
+    pids: frozenset[int] | None = None
+    exclude_pid: int | None = None
+    """The watcher's own session, which never matches: its status changes with every event it receives."""
+
+    def matches(self, session: ActiveSession) -> bool:
+        if self.pids is not None:
+            return session.pid in self.pids
+        if session.pid == self.exclude_pid:
+            return False
+        return self.filters.matches(session)
+
+
+@dataclass(frozen=True)
+class Thresholds:
+    busy_after: float | None = None
+    waiting_after: float | None = None
+
+    def enabled(self) -> list[str]:
+        kinds = []
+        if self.busy_after is not None:
+            kinds.append(BUSY_LONG)
+        if self.waiting_after is not None:
+            kinds.append(WAITING_LONG)
+        return kinds
+
+    def for_status(self, status: str | None) -> tuple[str, float] | None:
+        if status == "busy" and self.busy_after is not None:
+            return BUSY_LONG, self.busy_after
+        if status == "waiting" and self.waiting_after is not None:
+            return WAITING_LONG, self.waiting_after
+        return None
+
+    def describe(self) -> str:
+        parts = []
+        if self.busy_after is not None:
+            parts.append(f"{BUSY_LONG} after {format_duration(self.busy_after)}")
+        if self.waiting_after is not None:
+            parts.append(f"{WAITING_LONG} after {format_duration(self.waiting_after)}")
+        return ", ".join(parts)
+
+
+ListSessions = Callable[[], list[ActiveSession]]
+ListPanes = Callable[[], dict[str, TmuxPane] | None]
+
+
+class SessionTracker:
+    """Keeps the state of every running session and turns each poll into events, before filtering by kind."""
+
+    def __init__(
+        self,
+        selection: Selection,
+        thresholds: Thresholds,
+        *,
+        dirs: Sequence[Path] | None = None,
+        list_sessions: ListSessions = list_active_sessions,
+        list_panes: ListPanes = list_tmux_panes,
+        is_running: Callable[[int], bool] = process_running,
+        tmux_interval: float = TMUX_INTERVAL,
+    ) -> None:
+        self.selection = selection
+        self.thresholds = thresholds
+        self.dirs = list(dirs) if dirs is not None else sessions_dirs()
+        self._list_sessions = list_sessions
+        self._list_panes = list_panes
+        self._is_running = is_running
+        self.tmux_interval = tmux_interval
+        self.tracked: dict[int, Tracked] = {}
+        self._stamps: dict[Path, Stamp] = {}
+        self._panes: dict[str, TmuxPane] | None = None
+        self._last_tmux: float | None = None
+
+    def select(self, selection: Selection) -> None:
+        """Replace the selection, before the watch starts reporting."""
+        self.selection = selection
+        for tracked in self.tracked.values():
+            tracked.matched = selection.matches(tracked.session)
+
+    # --- reading ---
+
+    def start(self, now: float) -> None:
+        """Read every session without reporting anything; ``watch_started`` describes what this finds."""
+        self._stamps = scan_records(self.dirs)
+        for session in self._list_sessions():
+            self.tracked[session.pid] = self._new_tracked(session, now)
+        self._refresh_tmux(now, report=False)
+
+    def _new_tracked(self, session: ActiveSession, now: float) -> Tracked:
+        stamp = self._stamps.get(session.record_path, (0, 0))
+        return Tracked(session, stamp, self.selection.matches(session), _status_since(session, now))
+
+    def identify(self, tracked: Tracked) -> str:
+        """The string that names the session in events, which ``inspect <it>`` resolves to exactly this session.
+
+        ``<profile>/<name>``, the session's address. When the session has no name, or another running session of its
+        profile has the same name, it is ``<profile>/pid:<pid>``, which is unique on the machine.
+        """
+        session = tracked.session
+        if session.name is not None:
+            key = _name_key(session.name)
+            shared = any(
+                other.pid != session.pid
+                and other.session.profile.name == session.profile.name
+                and other.session.name is not None
+                and _name_key(other.session.name) == key
+                for other in self.tracked.values()
+            )
+            if not shared:
+                return f"{session.profile.name}/{session.name}"
+        return f"{session.profile.name}/pid:{session.pid}"
+
+    def summary(self, tracked: Tracked) -> dict[str, Any]:
+        """A session in ``watch_started``: who it is and its status, with ``waiting_for`` when it waits."""
+        data: dict[str, Any] = {"session": self.identify(tracked), "status": tracked.session.status}
+        reason = waiting_for(tracked.session)
+        if reason is not None:
+            data["waiting_for"] = reason
+        return data
+
+    def matched(self) -> list[Tracked]:
+        return [t for t in self.ordered() if t.matched]
+
+    def ordered(self) -> list[Tracked]:
+        return sorted(
+            self.tracked.values(),
+            key=lambda t: (t.session.profile.name, t.session.started_at or datetime.min.replace(tzinfo=UTC), t.pid),
+        )
+
+    def poll(self, now: float) -> list[WatchEvent]:
+        """One poll: the events since the previous one, in the order they apply."""
+        observed = utc_iso(now)
+        events: list[WatchEvent] = []
+        stamps = scan_records(self.dirs)
+        by_path = {t.session.record_path: t for t in self.tracked.values()}
+        reload = False
+
+        for pid, tracked in list(self.tracked.items()):
+            path = tracked.session.record_path
+            if path not in stamps:
+                events += self._end(pid, "record_removed", observed)
+            elif not self._is_running(pid):
+                events += self._end(pid, "process_gone", observed)
+
+        for path, stamp in stamps.items():
+            tracked = by_path.get(path)
+            if tracked is None or tracked.pid not in self.tracked:
+                if self._stamps.get(path) != stamp:
+                    reload = True
+                continue
+            if tracked.stamp == stamp:
+                continue
+            data = self._read(path)
+            if data is None:
+                # A partial write: leave the old stamp, so the next poll reads it again.
+                continue
+            tracked.stamp = stamp
+            events += self._apply(tracked, refreshed(tracked.session, data), observed, now)
+        self._stamps = stamps
+
+        if reload:
+            events += self._reload(observed, now)
+        events += self._refresh_tmux(now, report=True, observed=observed)
+        events += self._thresholds(now, observed)
+        return events
+
+    @staticmethod
+    def _read(path: Path) -> dict[str, Any] | None:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _reload(self, observed: str, now: float) -> list[WatchEvent]:
+        events: list[WatchEvent] = []
+        sessions = {s.pid: s for s in self._list_sessions()}
+        added: list[Tracked] = []
+        for pid, session in sessions.items():
+            tracked = self.tracked.get(pid)
+            if tracked is None:
+                tracked = self._new_tracked(session, now)
+                self.tracked[pid] = tracked
+                added.append(tracked)
+            else:
+                tracked.stamp = self._stamps.get(session.record_path, tracked.stamp)
+                events += self._apply(tracked, session, observed, now)
+        for pid in [pid for pid in self.tracked if pid not in sessions]:
+            # cc-blackbox judged the process not running, for example a pid that another process reuses.
+            events += self._end(pid, "process_gone", observed)
+        known_panes = self._panes or {}
+        if any(pane not in known_panes for pane in (pane_id_of(t.session.tmux) for t in added) if pane is not None):
+            # A new session usually runs in a new pane: look it up now, rather than call it gone until the next call.
+            events += self._refresh_tmux(now, report=True, observed=observed, force=True)
+        else:
+            for tracked in added:
+                self._place(tracked)
+        if self.selection.pids is None:
+            events += [self._event(SESSION_STARTED, t, observed, status=t.session.status) for t in added if t.matched]
+        return events
+
+    # --- diffing ---
+
+    def _event(self, kind: str, tracked: Tracked, observed: str, **data: Any) -> WatchEvent:
+        return WatchEvent(kind, observed, {"session": self.identify(tracked), **data})
+
+    def _end(self, pid: int, reason: str, observed: str) -> list[WatchEvent]:
+        tracked = self.tracked[pid]
+        events = [self._event(SESSION_ENDED, tracked, observed, reason=reason)] if tracked.matched else []
+        del self.tracked[pid]
+        return events
+
+    def _apply(self, tracked: Tracked, new: ActiveSession, observed: str, now: float) -> list[WatchEvent]:
+        """Move ``tracked`` to ``new``. Changes are reported for a session that matched before them; a session that
+        starts to match is reported once, as ``session_matched``, with its new state."""
+        old = tracked.session
+        old_identity = self.identify(tracked)
+        was_matched = tracked.matched
+        tracked.session = new
+        if pane_id_of(new.tmux) != pane_id_of(old.tmux):
+            self._place(tracked)
+        events: list[WatchEvent] = []
+
+        def changed(kind: str, **data: Any) -> None:
+            if was_matched:
+                events.append(self._event(kind, tracked, observed, **data))
+
+        if new.name != old.name:
+            changed(RENAMED, **{"from": old_identity})
+        if new.cwd != old.cwd:
+            changed(CWD_CHANGED, to=_text(new.cwd))
+        if new.status != old.status:
+            tracked.status_since = _status_since(new, now)
+            tracked.threshold_sent = False
+            reason = waiting_for(new)
+            change: dict[str, Any] = {"from": old.status, "to": new.status}
+            if reason is not None:
+                change["waiting_for"] = reason
+            changed(STATUS_CHANGED, **change)
+            if new.status == "idle" and old.status in TURN_ENDS_FROM:
+                changed(TURN_FINISHED, **{"from": old.status})
+            if new.status == "waiting":
+                changed(WAITING, waiting_for=reason)
+
+        tracked.matched = self.selection.matches(new)
+        if self.selection.pids is None:
+            if tracked.matched and not was_matched:
+                events.append(self._event(SESSION_MATCHED, tracked, observed, status=new.status))
+            elif was_matched and not tracked.matched:
+                events.append(self._event(SESSION_UNMATCHED, tracked, observed))
+        return events
+
+    def _place(self, tracked: Tracked) -> None:
+        pane = pane_id_of(tracked.session.tmux)
+        if pane is None:
+            tracked.tmux_state, tracked.tmux_live = None, None
+        elif self._panes is None:
+            tracked.tmux_state, tracked.tmux_live = "unknown", None
+        else:
+            tracked.tmux_live = self._panes.get(pane)
+            tracked.tmux_state = "present" if tracked.tmux_live is not None else "gone"
+
+    def _refresh_tmux(self, now: float, *, report: bool, observed: str = "", force: bool = False) -> list[WatchEvent]:
+        if not force and self._last_tmux is not None and now - self._last_tmux < self.tmux_interval:
+            return []
+        if not any(pane_id_of(t.session.tmux) is not None for t in self.tracked.values()):
+            return []
+        self._last_tmux = now
+        self._panes = self._list_panes()
+        events: list[WatchEvent] = []
+        for tracked in self.ordered():
+            before_state, before = tracked.tmux_state, _location(tracked.tmux_live)
+            self._place(tracked)
+            after = _location(tracked.tmux_live)
+            # Only a move between two answers of the tmux server counts; an unreachable server says nothing.
+            known = before_state in ("present", "gone") and tracked.tmux_state in ("present", "gone")
+            if report and known and before != after and tracked.matched:
+                events.append(self._event(TMUX_MOVED, tracked, observed, to=after))
+        return events
+
+    def _thresholds(self, now: float, observed: str) -> list[WatchEvent]:
+        events = []
+        for tracked in self.ordered():
+            due = self.thresholds.for_status(tracked.session.status)
+            if due is None or tracked.threshold_sent or not tracked.matched:
+                continue
+            kind, after = due
+            if now - tracked.status_since >= after:
+                tracked.threshold_sent = True
+                events.append(self._event(kind, tracked, observed, after=format_duration(after)))
+        return events
+
+    def seconds_until_threshold(self, now: float) -> float | None:
+        waits = []
+        for tracked in self.tracked.values():
+            due = self.thresholds.for_status(tracked.session.status)
+            if due is not None and tracked.matched and not tracked.threshold_sent:
+                waits.append(max(0.0, tracked.status_since + due[1] - now))
+        return min(waits) if waits else None
+
+
+def _text(path: Path | None) -> str | None:
+    return str(path) if path is not None else None
+
+
+@dataclass(frozen=True)
+class Ends:
+    until: str | None = None
+    timeout: float | None = None
+    idle_after: float | None = None
+
+    def describe(self, fixed_set: bool) -> str:
+        parts = []
+        if self.until is not None:
+            parts.append(f"until the first {self.until}")
+        if self.timeout is not None:
+            parts.append(f"timeout {format_duration(self.timeout)}")
+        if self.idle_after is not None:
+            parts.append(f"idle after {format_duration(self.idle_after)}")
+        if fixed_set:
+            parts.append("when every named session has ended")
+        return ", ".join(parts)
+
+
+class Watcher:
+    """Runs the tracker until an end, numbering and delivering the events that pass the filter.
+
+    ``clock`` gives epoch seconds and ``wait`` sleeps, so tests can run a watch on a fake clock.
+    """
+
+    def __init__(
+        self,
+        tracker: SessionTracker,
+        sink: EventSink[WatchEvent],
+        reported: frozenset[str],
+        ends: Ends,
+        *,
+        status: Callable[[str], None],
+        record: Callable[[Sequence[WatchEvent]], None] | None = None,
+        start_data: dict[str, Any] | None = None,
+        poll_interval: float = POLL_INTERVAL,
+        clock: Callable[[], float] = time.time,
+        wait: Callable[[float], None] | None = None,
+    ) -> None:
+        self.tracker = tracker
+        self.sink = sink
+        self.reported = reported
+        self.ends = ends
+        self.status = status
+        self.record = record
+        self.start_data = start_data or {}
+        self.poll_interval = poll_interval
+        self.clock = clock
+        self._wakeup = threading.Event()
+        self._wait = wait or self._wakeup.wait
+        self._seq = 0
+        self._stop_reason: str | None = None
+
+    def request_stop(self, reason: str) -> None:
+        self._stop_reason = reason
+        self._wakeup.set()
+
+    def _deliver(self, events: list[WatchEvent]) -> list[WatchEvent]:
+        numbered = []
+        for event in events:
+            if event.kind in self.reported:
+                self._seq += 1
+                numbered.append(replace(event, seq=self._seq))
+        if numbered:
+            if self.record is not None:
+                self.record(numbered)
+            self.sink.emit(numbered)
+        return numbered
+
+    def _finish(self, reason: str, **data: Any) -> None:
+        self._deliver([WatchEvent(WATCH_ENDED, utc_iso(self.clock()), {"reason": reason, **data})])
+        self.status(f"ended: {reason}")
+
+    @contextlib.contextmanager
+    def _signals(self) -> Any:
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+
+        def handler(signum: int, frame: FrameType | None) -> None:
+            self.request_stop(f"signal {signal.Signals(signum).name}")
+
+        previous = {sig: signal.signal(sig, handler) for sig in (signal.SIGTERM, signal.SIGINT)}
+        try:
+            yield
+        finally:
+            for sig, old in previous.items():
+                signal.signal(sig, old)
+
+    def run(self) -> None:
+        with self._signals():
+            try:
+                self._run()
+            finally:
+                self.sink.close()
+
+    def _run(self) -> None:
+        started = self.clock()
+        deadline = started + self.ends.timeout if self.ends.timeout is not None else None
+        sessions = [self.tracker.summary(t) for t in self.tracker.matched()]
+        self._deliver([WatchEvent(WATCH_STARTED, utc_iso(started), {**self.start_data, "sessions": sessions})])
+        last_activity = started
+        fixed = self.tracker.selection.pids is not None
+        if fixed and not self.tracker.matched():
+            self._finish("sessions_ended")
+            return
+        while True:
+            if self._stop_reason is not None:
+                self._finish(self._stop_reason)
+                return
+            self.sink.tick()
+            now = self.clock()
+            delivered = self._deliver(self.tracker.poll(now))
+            if any(e.kind not in THRESHOLD_OPTIONS for e in delivered):
+                last_activity = now
+            hit = next((e for e in delivered if e.kind == self.ends.until), None)
+            if hit is not None:
+                self._finish("until", event=hit.kind, seq=hit.seq)
+                return
+            if fixed and not self.tracker.matched():
+                self._finish("sessions_ended")
+                return
+            if not self.sink.alive():
+                self._finish("session_gone")
+                return
+            now = self.clock()
+            if deadline is not None and now >= deadline:
+                self._finish("timeout")
+                return
+            if self.ends.idle_after is not None and now - last_activity >= self.ends.idle_after:
+                self._finish("idle", idle_after=format_duration(self.ends.idle_after))
+                return
+            wait = self.poll_interval
+            if deadline is not None:
+                wait = min(wait, deadline - now)
+            if self.ends.idle_after is not None:
+                wait = min(wait, last_activity + self.ends.idle_after - now)
+            for due in (self.tracker.seconds_until_threshold(now), self.sink.seconds_until_flush()):
+                if due is not None:
+                    wait = min(wait, due)
+            self._wait(max(0.0, wait))

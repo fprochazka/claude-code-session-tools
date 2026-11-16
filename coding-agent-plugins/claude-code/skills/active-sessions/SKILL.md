@@ -122,7 +122,7 @@ Options:
   --help              Show this message and exit.
 ```
 
-- **Running first.** SESSION is looked up among the running sessions: session id, name, `<profile>/<name>`, `<profile>/pid:<pid>`, pid, or a unique session id prefix.
+- **Running first.** SESSION is looked up among the running sessions: session id, name, `<profile>/<name>`, `<profile>/pid:<pid>`, pid, or a unique session id prefix. The `session` strings of `cc-session-tools watch` events are of these forms.
 - **Then ended sessions**, in this order: by session id or id prefix in every transcript; by the session's name or any earlier name or title, compared without case, among transcripts active in the last `--days` days (14 by default); by its pid from the auth-switch start log in the same window. `<profile>/` in front keeps sessions that profile ran last. A renamed session is found under an old name, and shown as running if it still runs.
 - **Several matches** in a step exit with `1` and list the candidates. Narrow with `<profile>/`, a longer id prefix, or the full session id.
 - **`--json` keys:** `state` (`running` or `ended`), every key above, `title`, `title_source`, `last_activity_at`, `profile_starts` (`ts`, `pid`, `source`, `profile` per start or resume), and `resume_command`. For an ended session the live-only fields (`pid`, `status`, tmux, messaging, `record_path`, `raw` …) are `null`, `cwd` is the last cwd its transcript recorded, `launch_cwd` the first, and `git_branch` the last.

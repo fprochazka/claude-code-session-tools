@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Software Development",
 ]
 dependencies = [
-    "cc-blackbox>=0.6.1,<0.7",
+    "cc-blackbox>=0.7.0,<0.8",
     "rich>=14.0.0",
     "typer>=0.15.0",
 ]

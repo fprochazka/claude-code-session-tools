@@ -174,6 +174,8 @@ class Filters:
     """The ``list-active`` filters. Every one that is set must match."""
 
     statuses: frozenset[str] = frozenset()
+    profiles: frozenset[str] = frozenset()
+    """Profile names; empty for every profile."""
     scope: Scope | None = None
     """``--here``: the session's cwd must belong to it."""
     in_tmux: bool | None = None
@@ -182,6 +184,8 @@ class Filters:
 
     def matches(self, session: ActiveSession) -> bool:
         if self.statuses and session.status not in self.statuses:
+            return False
+        if self.profiles and session.profile.name not in self.profiles:
             return False
         if self.scope is not None and (session.cwd is None or not self.scope.covers(session.cwd)):
             return False

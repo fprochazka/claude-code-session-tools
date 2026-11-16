@@ -2,7 +2,7 @@
 
 Commands and skills for finding and distilling past Claude Code sessions, and for listing the running ones, with the `cc-session-tools` CLI.
 
-The CLI has four subcommands. `search` lists and greps the sessions that belong to the directory you run it in. `distill` condenses one session transcript into markdown. `list-active` lists the sessions that run on the machine now, in every profile, with their live tmux pane. `inspect` shows every field of one session, running or ended.
+The CLI has five subcommands. `search` lists and greps the sessions that belong to the directory you run it in. `distill` condenses one session transcript into markdown. `list-active` lists the sessions that run on the machine now, in every profile, with their live tmux pane. `inspect` shows every field of one session, running or ended. `watch` reports changes to the running sessions as JSON events, for an agent that waits for other sessions.
 
 ## Why
 
@@ -178,12 +178,88 @@ A session that has no name and was not started through an auth-switch wrapper ca
 
 Exit codes: `0` when one session is shown. `1` when SESSION matches nothing or more than one session in a step.
 
+### watch
+
+```bash
+cc-session-tools watch                                         # every running session except the one this runs under
+cc-session-tools watch --profile 'rohlik*' --events=turns      # only turn_finished and waiting, in profiles matching a glob
+cc-session-tools watch --name 'w*-order-planner' --until=turn_finished   # stop at the first finished turn of a worker
+cc-session-tools watch w1-order-planner w2-order-planner       # these two sessions, until both have ended
+cc-session-tools watch --busy-after=30m --waiting-after=5m --idle-after=2h
+cc-session-tools watch --here --events-stream=stdout --timeout=10m
+```
+
+`watch` reports every change to the running sessions as one JSON event per line. It takes the filters of `list-active` and runs until an end you ask for, until its named sessions have ended, or until it gets SIGTERM or Ctrl-C. The last event is always `watch_ended` with a `reason`.
+
+**Selection.** Without SESSION arguments the filters are evaluated again on every change. A session that starts later and matches joins with `session_started`. A running session that starts to match, for example after a rename or a status change under `--status`, joins with `session_matched`, and one that stops matching leaves with `session_unmatched`. With SESSION arguments, resolved like a running SESSION of `inspect` after the filters, the watch follows exactly those sessions, and ends with reason `sessions_ended` once all of them have ended.
+
+**The own session is left out.** Run under a Claude Code session, `watch` never reports that session: every event it delivers makes the session busy, which would be the next event. `--include-self` watches it anyway. Naming the own session as SESSION without `--include-self` is an error.
+
+**Events.** Each has `kind`, `seq`, `observed_at` and `data`, and is kept small: it names the session and says what changed, nothing more. For every field of a session, run `cc-session-tools inspect <session> --json`; the header says so on its `details:` line.
+
+`data.session` names the session with one string that `inspect` resolves to exactly that session, also after it ended: its address `<profile>/<name>`, or `<profile>/pid:<pid>` when the session has no name or another running session of its profile has the same name, compared without case. The string is computed for each event, so it changes with a rename, and moves between the two forms when a name stops or starts being unique. After the session ended, `inspect` finds `<profile>/<name>` among the transcripts by name, and `<profile>/pid:<pid>` through the auth-switch start log, which a session started without an auth-switch wrapper does not have.
+
+| Kind | Group | `data` |
+|------|-------|--------|
+| `watch_started` | `lifecycle` | `selection`, and `sessions`: `{session, status}` for every matching session, plus `waiting_for` when it waits |
+| `watch_ended` | `lifecycle` | `reason`: `until` (with `event` and `seq`), `timeout`, `idle` (with `idle_after`), `sessions_ended`, `session_gone`, or `signal SIGTERM`/`signal SIGINT` |
+| `session_started`, `session_matched` | `membership` | `session`, `status`: a new session that matches, or a running one that starts to |
+| `session_ended` | `membership` | `session`, `reason`: `record_removed` (a clean exit) or `process_gone` |
+| `session_unmatched` | `membership` | `session`: it no longer matches the filters |
+| `status_changed` | `status` | `session`, `from`, `to`, and `waiting_for` when `to` is `waiting` |
+| `turn_finished` | `turns` | `session`, `from`: `busy` or `waiting`, the status before `idle` |
+| `waiting` | `turns` | `session`, `waiting_for` |
+| `busy_long`, `waiting_long` | `thresholds` | `session`, `after` |
+| `renamed` | `changes` | `session` with the new name, `from`: the `session` string before the rename |
+| `cwd_changed` | `changes` | `session`, `to`: the new cwd |
+| `tmux_moved` | `changes` | `session`, `to`: `<tmux session>:<window index>`, or `null` when the tmux server no longer has the pane |
+
+```json
+{"kind":"turn_finished","seq":6,"observed_at":"2026-11-16T17:05:03.120Z","data":{"session":"work/w1-order-planner","from":"busy"}}
+```
+
+One status transition can yield two events: `busy` to `idle` is `status_changed` and `turn_finished`, anything to `waiting` is `status_changed` and `waiting`. Take `--events=turns` for the derived events alone. A change is reported for a session that matched before it, so a rename out of a `--name` glob is `renamed`, then `session_unmatched`. A session that starts to match is reported once, as `session_matched` with its new state.
+
+`--events` and `--exclude-events` take kinds and groups, comma-separated and repeatable. `lifecycle` is always on. An unknown kind or group, or one this watch never produces, is an error at start: `busy_long` needs `--busy-after`, `waiting_long` needs `--waiting-after`, and a watch of named sessions never produces `session_started`, `session_matched` or `session_unmatched`.
+
+**Ends and thresholds.** `--until=<kind>` stops after the first reported event of that kind. `--timeout` stops that long after the start, `--idle-after` when nothing was reported for that long; `busy_long` and `waiting_long` do not count as activity. `--busy-after` reports `busy_long` once per busy stretch of a session, `--waiting-after` reports `waiting_long` once per waiting stretch. A stretch starts at the record's `statusUpdatedAt`, so a session that was already busy for an hour when the watch started gets its `busy_long` at once. Durations are `90s`, `30m`, `2h`, `1h30m` or plain seconds.
+
+**Startup header.** The header, the `ended: <reason>` line and errors go to stderr, each line prefixed `cc-session-tools watch: ` and never starting with `{`, so in merged output every line that starts with `{` is an event:
+
+```text
+cc-session-tools watch: selection: profile=rohlik* (profiles: rohlik-team, rohlik-team2); 4 matching now
+cc-session-tools watch: own session: coordinator (pid 4242) is left out; --include-self watches it
+cc-session-tools watch: stream: stdout (one JSON event per line)
+cc-session-tools watch: changelog: /tmp/claude-1000/…/scratchpad/cc-session-tools/watch-20261116T170501-4343.events.jsonl
+cc-session-tools watch: details: cc-session-tools inspect <session> --json
+cc-session-tools watch: events: turn_finished,waiting (always: watch_started,watch_ended)
+cc-session-tools watch: ignored: session_started,session_ended,session_matched,session_unmatched,status_changed,renamed,cwd_changed,tmux_moved
+cc-session-tools watch: ends: until the first turn_finished
+```
+
+**Output streams.** `--events-stream=stdout` prints one JSON event per line. `--events-stream=claude-message` sends the events as messages to the Claude Code session the command runs under, through its messaging socket, and fails at start when that session accepts no messages. The default, `auto`, picks `claude-message` under a session that accepts messages and stdout otherwise; a `stream fallback:` header line says why it did not message a session it runs under. Each message is one batch, as `cc-session-tools-watch:<pid>`:
+
+```text
+<session-watcher filter="name=w*-order-planner" seq="5-6">
+{"kind":"status_changed","seq":5,"data":{"session":"work/w1-order-planner","from":"busy","to":"idle"}}
+{"kind":"turn_finished","seq":6,"data":{"session":"work/w1-order-planner","from":"busy"}}
+</session-watcher>
+```
+
+Events that arrive within 3 seconds go out as one message, and a batch above 64 KB becomes a count per kind. `watch_ended` goes out at once. The first message also carries `changelog="…"` and `details="cc-session-tools inspect <session> --json"`. Message lines leave out `observed_at`. `--message-priority` sets the priority, `next` by default. The watch ends with reason `session_gone` when its session can no longer receive messages. The delivery itself is [cc-blackbox](https://github.com/fprochazka/cc-blackbox)'s event stream, which glab-watch uses too.
+
+**Changelog.** Every reported event is also appended to `watch-<time>-<pid>.events.jsonl`, under `<session scratchpad>/cc-session-tools/` when the command runs under a session, else under `$TMPDIR/cc-session-tools-<uid>/`. The header names it. Nothing deletes it.
+
+**Cost.** No daemon: the watcher stats every registry record of every profile once a second, reading a record again only when its mtime or size moved, and lists the sessions through cc-blackbox only when a new record appears. tmux is asked once every 3 seconds. A status that lasts less than one poll can be missed.
+
+Exit codes: `0` when the watch ends, whatever the reason. `1` when SESSION matches nothing or several sessions, names the own session, a `--profile` glob matches no profile, or `claude-message` is not possible. `2` for a usage error: an unknown event kind or group, a bad duration, or an `--until` kind the watch does not report.
+
 ## Requirements
 
 - Python 3.11+
 - [ripgrep](https://github.com/BurntSushi/ripgrep) — optional. It makes `search --rg` faster; without it a built-in scan runs.
 - git — only for worktree-aware scoping and the branch in `list-active`. Outside a repo every subcommand falls back to the exact current directory.
-- tmux — optional. Without it `list-active` reports every tmux pane as unknown.
+- tmux — optional. Without it `list-active` and `watch` report every tmux pane as unknown.
 
 ## Project structure
 
@@ -196,6 +272,9 @@ src/cc_session_tools/
 ├── list_active_cmd.py # the `list-active` command
 ├── inspect_cmd.py     # the `inspect` command
 ├── inspection.py      # one session, running or ended: the lookup and its fields
+├── watch_cmd.py       # the `watch` command: options, header, stream and changelog
+├── watcher.py         # the polling loop: registry records in, session events out
+├── watch_events.py    # event kinds and groups, the --events filter, durations
 ├── active.py          # running sessions with the live tmux pane and git location, the JSON shape
 ├── console.py         # the console every table prints on
 ├── gitrepo.py         # git worktree resolution and the branch of a dir

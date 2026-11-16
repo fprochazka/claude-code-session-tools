@@ -129,6 +129,7 @@ Exit code `1` when the target does not resolve or the file cannot be read.
 ```bash
 cc-session-tools list-active                          # every running session, one row each
 cc-session-tools list-active --profile work --here    # sessions of one profile in this repo and its worktrees
+cc-session-tools list-active --profile 'rohlik*'      # sessions of every profile whose name matches a glob
 cc-session-tools list-active --status busy --tmux     # busy sessions that run in tmux
 cc-session-tools list-active --name 'w?-*'            # names matching a glob, case-insensitively
 cc-session-tools list-active w1-order-planner         # every field of one session
@@ -143,11 +144,11 @@ The table has six columns: **Profile**, **Name** (`pid:<pid>` dimmed for a sessi
 
 **SESSION** matches an exact session id, an exact name, a pid, or a unique session id prefix, in that order. An all-digit SESSION is a pid when a live session has that pid. The filters apply before the lookup. No match or several matches exit with `1` and list the candidates on stderr.
 
-**Filters** combine with AND. `--here` uses the scope of `search` and matches the session's current cwd.
+**Filters** combine with AND. `--profile` takes a glob, matched case-sensitively against the profile names, so a plain name matches only that profile. A glob that matches no profile is an error that lists the known ones. `--here` uses the scope of `search` and matches the session's current cwd.
 
 **`--json`** prints an array, or one object with SESSION, with the same keys either way. The keys are a stable contract: snake_case, ISO 8601 timestamps, paths as strings, `null` for a missing value. They cover every field of the registry record (`raw` holds the record itself) plus derived ones: `tmux_pane`, `tmux_state`, `tmux_live`, `tmux_recorded`, `messaging_address`, `git_branch`, `git_worktree_root`, `git_repo_root` and `transcript_path`. The [active-sessions skill](coding-agent-plugins/claude-code/skills/active-sessions/SKILL.md) documents each key.
 
-Exit codes: `0`, including when no session matches the filters (the notice goes to stderr, and `--json` prints `[]`). `1` when SESSION matches nothing or more than one session, or `--profile` names no profile. `2` for an unknown `--status`.
+Exit codes: `0`, including when no session matches the filters (the notice goes to stderr, and `--json` prints `[]`). `1` when SESSION matches nothing or more than one session, or a `--profile` glob matches no profile. `2` for an unknown `--status`.
 
 ## Requirements
 

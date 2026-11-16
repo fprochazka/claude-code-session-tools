@@ -208,6 +208,22 @@ def test_unknown_profile_fails(machine: Machine) -> None:
     assert "nope" in result.stderr
 
 
+def test_profile_filter_takes_globs(machine: Machine, fake_bin: Path) -> None:
+    fake_tmux(fake_bin, [])
+    machine.session("work", "w")
+    machine.session("lab", "l")
+    machine.session("default", "d")
+    assert [s["name"] for s in json_of("--profile", "*a*")] == ["d", "l"]
+    assert [s["name"] for s in json_of("--profile", "wor?", "--profile", "lab")] == ["l", "w"]
+
+
+def test_a_profile_glob_that_matches_nothing_names_the_known_profiles(machine: Machine) -> None:
+    result = invoke("--profile", "rohlik*")
+    assert result.exit_code == 1
+    assert "No Claude Code profile matches 'rohlik*'" in result.stderr
+    assert "default, work, lab" in result.stderr
+
+
 def test_status_filter_and_its_validation(machine: Machine, fake_bin: Path) -> None:
     fake_tmux(fake_bin, [])
     machine.session("work", "working", status="busy")

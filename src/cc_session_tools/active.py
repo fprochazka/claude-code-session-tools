@@ -23,10 +23,13 @@ from typing import Any, Literal
 from cc_blackbox import (
     ActiveSession,
     AmbiguousSession,
+    ClaudeProfile,
+    ProfileNotFound,
     SessionNotFound,
     TranscriptNotFound,
     find_session,
     find_session_transcript,
+    list_profiles,
 )
 
 from .discovery import Scope
@@ -143,6 +146,27 @@ def build_views(sessions: Sequence[ActiveSession], *, with_git: bool = True) -> 
             git = git_cache[session.cwd]
         views.append(SessionView(session=session, tmux_pane=pane_id, tmux_state=state, tmux_live=live, git=git))
     return views
+
+
+def resolve_profile_globs(patterns: Iterable[str], profiles: Sequence[ClaudeProfile] | None = None) -> list[str]:
+    """The names of the profiles that match any of the globs, in the order of :func:`list_profiles`.
+
+    A glob is matched case-sensitively against the whole name, so a plain profile name matches only itself.
+
+    Raises:
+        ProfileNotFound: a glob matches no profile. The message names the known profiles.
+    """
+    known = list_profiles() if profiles is None else list(profiles)
+    names = [p.name for p in known]
+    selected: set[str] = set()
+    for pattern in patterns:
+        matched = [name for name in names if name == pattern or fnmatch.fnmatchcase(name, pattern)]
+        if not matched:
+            raise ProfileNotFound(
+                f"No Claude Code profile matches {pattern!r}. Known profiles: {', '.join(names) or 'none'}."
+            )
+        selected.update(matched)
+    return [name for name in names if name in selected]
 
 
 @dataclass(frozen=True)

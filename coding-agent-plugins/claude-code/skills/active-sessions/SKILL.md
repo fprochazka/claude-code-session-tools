@@ -24,7 +24,9 @@ Arguments:
            prefix, a name, or a pid.
 
 Options:
-  -p, --profile <str>             Only sessions of this profile. Repeatable.
+  -p, --profile <str>             Only sessions of the profiles whose name
+                                  matches this glob, for example 'rohlik*'.
+                                  Repeatable.
   --status <busy|shell|idle|waiting>
                                   Only sessions with this status. Repeatable.
   --here                          Only sessions whose cwd is in the current
@@ -42,6 +44,7 @@ Options:
 ## How to use it
 
 - **Prefer `--json` and `jq`.** The table is for people and truncates long branches and tmux session names. The JSON has every field and is the stable interface.
+- **`--profile` and `--name` take globs.** `--profile 'rohlik*'` covers every profile whose name starts with `rohlik`; a plain name matches only that profile. A `--profile` glob that matches no profile exits with `1` and lists the known profiles.
 - **Filters combine with AND**, and they also apply before a SESSION lookup: `list-active twin --profile lab` picks the `twin` of the `lab` profile when two sessions share the name.
 - **SESSION lookup order:** exact session id, exact name, pid, then a unique session id prefix. An all-digit SESSION is a pid when a live session has that pid. No match or several matches exit with code `1` and list the candidates on stderr.
 - **`--here`** uses the scope of `search`: the main checkout, every worktree, and the legacy `<repo>-worktrees/` sibling dir. It matches the session's current `cwd`, which changes when the session moves into a worktree.

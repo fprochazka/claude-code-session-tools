@@ -25,6 +25,7 @@ from .active import (
     apply_filters,
     build_views,
     lookup_session,
+    resolve_profile_globs,
     shorten_home,
     sort_sessions,
     to_json,
@@ -38,9 +39,9 @@ Status = enum.Enum("Status", {value: value for value in get_args(SessionStatus)}
 """The status values Claude Code writes into a registry record, as cc-blackbox knows them."""
 
 
-def _sessions(profiles: list[str] | None) -> list[ActiveSession]:
+def _sessions(profile_globs: list[str] | None) -> list[ActiveSession]:
     try:
-        return list_active_sessions(profiles or None)
+        return list_active_sessions(resolve_profile_globs(profile_globs) if profile_globs else None)
     except ProfileNotFound as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -140,7 +141,11 @@ def list_active(
         metavar="SESSION",
     ),
     profile: list[str] = typer.Option(
-        None, "--profile", "-p", help="Only sessions of this profile. Repeatable.", show_default=False
+        None,
+        "--profile",
+        "-p",
+        help="Only sessions of the profiles whose name matches this glob, for example 'rohlik*'. Repeatable.",
+        show_default=False,
     ),
     status: list[Status] = typer.Option(None, "--status", help="Only sessions with this status. Repeatable."),
     here: bool = typer.Option(

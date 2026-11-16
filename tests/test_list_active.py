@@ -3,12 +3,13 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import Machine, fake_tmux, sid
+from conftest import Machine, fake_tmux, response, sid, write_records
 from typer.testing import CliRunner
 
 from cc_session_tools.active import list_tmux_panes, pane_id_of
@@ -49,7 +50,7 @@ def test_table_lists_every_profile_sorted_by_profile_then_start(machine: Machine
 
     assert result.exit_code == 0, result.output
     out = result.stdout
-    assert out.splitlines()[0].split()[:4] == ["Profile", "Name", "Status", "Updated"]
+    assert out.splitlines()[0].split()[:4] == ["Profile", "Name", "Status", "Active"]
     assert out.index("plain") < out.index("lab-only") < out.index("work-second") < out.index("work-third")
 
 
@@ -109,6 +110,50 @@ def test_a_waiting_session_shows_what_it_waits_for(machine: Machine, fake_bin: P
     by_name = {s["name"]: s for s in json_of()}
     assert by_name["asking"]["waiting_for"] == "permission prompt"
     assert by_name["stale"]["waiting_for"] is None
+
+
+def transcript_of(machine: Machine, profile: str, name: str, records: list[dict[str, Any]]) -> Path:
+    """Write the transcript of the running session ``name``, which runs in the default ``elsewhere`` dir."""
+    project = machine.config_dir(profile) / "projects" / project_slug(machine.home / "elsewhere")
+    return write_records(project / f"{sid(name)}.jsonl", records)
+
+
+def test_active_is_the_last_model_response_or_the_dimmed_start(machine: Machine, fake_bin: Path) -> None:
+    fake_tmux(fake_bin, [])
+    now = time.time()
+    machine.session("work", "answered", startedAt=int((now - 7200) * 1000), updatedAt=int(now * 1000))
+    transcript_of(machine, "work", "answered", [response(now - 600)])
+    machine.session("work", "silent", startedAt=int((now - 1800) * 1000))
+
+    result = invoke()
+
+    assert result.exit_code == 0, result.output
+    lines = {line.split()[1]: line for line in result.stdout.splitlines()[1:]}
+    assert "10m ago" in lines["answered"]
+    assert "started 30m ago" in lines["silent"]
+
+
+def test_active_within_keeps_a_recent_response_or_a_recent_start(machine: Machine, fake_bin: Path) -> None:
+    fake_tmux(fake_bin, [])
+    now = time.time()
+    long_ago = int((now - 86400) * 1000)
+    machine.session("work", "recent", startedAt=long_ago)
+    transcript_of(machine, "work", "recent", [response(now - 600)])
+    # A fresh registry record says nothing about activity: a /login or a rename also rewrites it.
+    machine.session("work", "stale", startedAt=long_ago, updatedAt=int(now * 1000))
+    transcript_of(machine, "work", "stale", [response(now - 7200)])
+    machine.session("work", "just-started", startedAt=int((now - 60) * 1000))
+    machine.session("work", "old-and-silent", startedAt=long_ago)
+
+    assert [s["name"] for s in json_of("--active-within", "1h")] == ["recent", "just-started"]
+    assert [s["name"] for s in json_of("--active-within", "3h")] == ["recent", "stale", "just-started"]
+
+
+@pytest.mark.parametrize("value", ["soon", "0"])
+def test_active_within_rejects_a_duration_it_cannot_use(machine: Machine, value: str) -> None:
+    result = invoke("--active-within", value)
+    assert result.exit_code == 2
+    assert "--active-within" in result.stderr
 
 
 def test_no_sessions_prints_a_notice_on_stderr(machine: Machine) -> None:
@@ -244,6 +289,8 @@ JSON_KEYS = [
     "version",
     "started_at",
     "updated_at",
+    "last_activity_at",
+    "last_record_at",
     "cwd",
     "launch_cwd",
     "git_branch",
@@ -262,6 +309,7 @@ JSON_KEYS = [
     "scratchpad_dir",
     "scratchpad_dir_inferred",
     "transcript_path",
+    "cost",
     "record_path",
     "alive",
     "raw",
@@ -286,6 +334,7 @@ def test_json_shape(machine: Machine, fake_bin: Path) -> None:
     assert data["messaging_address"] == f"uds:/run/user/1000/cc-socks/{pid}.sock"
     assert data["git_branch"] is None and data["git_repo_root"] is None
     assert data["transcript_path"] is None
+    assert data["last_activity_at"] is None and data["last_record_at"] is None and data["cost"] is None
     assert data["bridge_session_id"] is None
     assert data["alive"] is True
     assert data["raw"]["pid"] == pid

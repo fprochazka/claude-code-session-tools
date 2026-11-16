@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+from typing import Any
 
 import typer
 from rich.table import Table
@@ -15,6 +16,7 @@ from rich.text import Text
 from .active import SessionLookupError
 from .console import build_console
 from .inspection import DEFAULT_DAYS, find, to_inspect_json
+from .watch_events import format_duration
 
 
 def _value(value: object) -> str:
@@ -31,12 +33,55 @@ def _start(start: dict[str, object]) -> str:
     return f"{start['ts']}  pid {start['pid'] or '-'}  {start['source'] or '-'}  {start['profile'] or '-'}"
 
 
+def _usd(value: object) -> str:
+    if not isinstance(value, float):
+        return "$?"
+    return f"${value:.2f}" if value >= 0.01 or value == 0 else f"${value:.4f}"
+
+
+def _count(value: object) -> str:
+    return f"{value:,}" if isinstance(value, int) else "-"
+
+
+def _cost_lines(cost: dict[str, Any] | None, *, running: bool) -> list[str]:
+    """The cost as ``inspect`` prints it: the totals, then one line per model.
+
+    Claude Code records the cost when a process of the session exits, so for a running session it leaves out the
+    current run. The first line says which totals these are, so nobody reads them as the current cost.
+    """
+    if cost is None:
+        return ["- (recorded when the session exits; it has not exited yet)" if running else "-"]
+    parts = [_usd(cost["total_cost_usd"])]
+    if cost["has_unknown_model_cost"]:
+        parts[0] += " (too low: a model without a known price was used)"
+    durations = (("run", "duration_seconds"), ("API", "api_duration_seconds"), ("tools", "tool_duration_seconds"))
+    for label, key in durations:
+        if cost[key] is not None:
+            parts.append(f"{format_duration(cost[key])} {label}")
+    if cost["lines_added"] is not None or cost["lines_removed"] is not None:
+        parts.append(f"+{_count(cost['lines_added'])} -{_count(cost['lines_removed'])} lines")
+    when = "at its last exit before this run, which is not included" if running else "at its last exit"
+    lines = [f"{', '.join(parts)}; recorded {when}"]
+    for model, usage in cost["model_usage"].items():
+        lines.append(
+            f"{model}  {_usd(usage['cost_usd'])}  input {_count(usage['input_tokens'])}  "
+            f"output {_count(usage['output_tokens'])}  cache read {_count(usage['cache_read_input_tokens'])}  "
+            f"cache write {_count(usage['cache_creation_input_tokens'])}"
+        )
+    return lines
+
+
 def _print_details(data: dict[str, object]) -> None:
     table = Table(show_header=False, box=None, pad_edge=False)
     table.add_column("Field", style="cyan", no_wrap=True)
     table.add_column("Value")
     for key, value in data.items():
         if key == "raw":
+            continue
+        if key == "cost":
+            lines = _cost_lines(value, running=data["state"] == "running")  # type: ignore[arg-type]
+            for index, line in enumerate(lines):
+                table.add_row(Text(key if index == 0 else ""), Text(line))
             continue
         if key == "profile_starts" and isinstance(value, list) and value:
             for index, start in enumerate(value):
@@ -68,7 +113,9 @@ def inspect(
 
     A running session shows what list-active knows about it, with state running. An ended session shows what its
     transcript and the auth-switch start log recorded, with state ended: the profile that ran it last, its last name,
-    title and cwd, when it started and was last active, every start, and the command that resumes it.
+    title and cwd, when it started and last got a model response, every start, and the command that resumes it. Both
+    show the cost Claude Code recorded when the session last exited; for a running session it leaves out the current
+    run.
     """
     try:
         found = find(session, days=days)

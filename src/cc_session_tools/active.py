@@ -7,6 +7,10 @@ so this module looks them up again:
   session leaves the record stale. Only the pane id ``%N`` stays valid for the life of the pane, so the session and
   window are read from the running tmux server, with one ``tmux list-panes -a`` call for all sessions.
 - the git branch: the record has none. It comes from ``git rev-parse`` in the session's current directory.
+
+The record's ``updatedAt`` changes with the status and with local commands such as ``/login``, and can lag behind
+responses, so it does not say when the session last worked. That comes
+from the transcript: the newest model response in it or in any of its subagents' transcripts.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ import os
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -24,11 +28,11 @@ from cc_blackbox import (
     ActiveSession,
     AmbiguousSession,
     ClaudeProfile,
+    CostState,
     ProfileNotFound,
     SessionNotFound,
-    TranscriptNotFound,
+    SessionTranscript,
     find_session,
-    find_session_transcript,
     list_profiles,
 )
 
@@ -241,19 +245,33 @@ def lookup_session(query: str, sessions: Sequence[ActiveSession]) -> ActiveSessi
         raise SessionLookupError("\n".join(lines)) from exc
 
 
-def transcript_path(session: ActiveSession) -> Path | None:
-    """The session's transcript, looked up first in the project dirs of its launch dir, or ``None`` when it has none.
+@dataclass(frozen=True)
+class Activity:
+    """When a running session last worked: its newest model response, or its start when it has no response yet."""
 
-    A session that has not written a transcript yet costs a stat of every project dir of its profile.
+    at: datetime | None
+    started_only: bool
+    """``True`` when :attr:`at` is the session's start, because its transcript is missing or holds no response."""
+
+
+def activity_of(session: ActiveSession) -> Activity:
+    """Read the session's newest model response, in its main transcript or any subagent's, falling back to its start.
+
+    Costs a read of the transcript's start and end, and of the subagent transcripts written after that response.
     """
-    if session.session_id is None:
-        return None
-    try:
-        return find_session_transcript(
-            session.session_id, [session.profile], cwd=session.launch_cwd or session.cwd
-        ).path
-    except TranscriptNotFound:
-        return None
+    transcript = session.transcript
+    last = transcript.last_model_activity_at if transcript is not None else None
+    return Activity(last, False) if last is not None else Activity(session.started_at, True)
+
+
+def active_since(sessions: Iterable[ActiveSession], since: datetime) -> list[ActiveSession]:
+    """The sessions whose :func:`activity_of` is at or after ``since``. A session without any time never matches."""
+    kept = []
+    for session in sessions:
+        at = activity_of(session).at
+        if at is not None and at >= since:
+            kept.append(session)
+    return kept
 
 
 def waiting_for(session: ActiveSession) -> str | None:
@@ -270,6 +288,50 @@ def _path(value: Path | None) -> str | None:
     return str(value) if value is not None else None
 
 
+def _seconds(value: timedelta | None) -> float | None:
+    return value.total_seconds() if value is not None else None
+
+
+def cost_json(cost: CostState | None) -> dict[str, Any] | None:
+    """The ``cost`` object of ``--json``: the totals Claude Code recorded when a process of the session last exited."""
+    if cost is None:
+        return None
+    return {
+        "total_cost_usd": cost.total_cost_usd,
+        "has_unknown_model_cost": cost.has_unknown_model_cost,
+        "started_at": _iso(cost.started_at),
+        "duration_seconds": _seconds(cost.duration),
+        "api_duration_seconds": _seconds(cost.api_duration),
+        "api_duration_without_retries_seconds": _seconds(cost.api_duration_without_retries),
+        "tool_duration_seconds": _seconds(cost.tool_duration),
+        "lines_added": cost.lines_added,
+        "lines_removed": cost.lines_removed,
+        "model_usage": {
+            model: {
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "thinking_tokens": usage.thinking_tokens,
+                "cache_read_input_tokens": usage.cache_read_input_tokens,
+                "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+                "web_search_requests": usage.web_search_requests,
+                "cost_usd": usage.cost_usd,
+            }
+            for model, usage in cost.model_usage.items()
+        },
+    }
+
+
+def transcript_json(transcript: SessionTranscript | None) -> dict[str, Any]:
+    """The keys that come from the transcript: ``last_activity_at``, ``last_record_at`` and ``cost``."""
+    if transcript is None:
+        return {"last_activity_at": None, "last_record_at": None, "cost": None}
+    return {
+        "last_activity_at": _iso(transcript.last_model_activity_at),
+        "last_record_at": _iso(transcript.last_record_at),
+        "cost": cost_json(transcript.cost_state),
+    }
+
+
 def _plain(value: Any) -> Any:
     """A JSON-ready copy of a raw registry value; the record is JSON already, wrapped in read-only mappings."""
     if isinstance(value, Mapping):
@@ -279,9 +341,14 @@ def _plain(value: Any) -> Any:
     return value
 
 
-def to_json(view: SessionView, *, transcript: Path | None) -> dict[str, Any]:
-    """The JSON object of one session. The keys are the contract that ``--json`` documents; keep them stable."""
+def to_json(view: SessionView) -> dict[str, Any]:
+    """The JSON object of one session. The keys are the contract that ``--json`` documents; keep them stable.
+
+    Reads the session's transcript, the whole file when it has no ``cost-state`` record, which is the case for a running
+    session that was never resumed.
+    """
     s = view.session
+    from_transcript = transcript_json(s.transcript)
     return {
         "profile": s.profile.name,
         "profile_config_dir": str(s.profile.config_dir),
@@ -298,6 +365,8 @@ def to_json(view: SessionView, *, transcript: Path | None) -> dict[str, Any]:
         "version": s.version,
         "started_at": _iso(s.started_at),
         "updated_at": _iso(s.updated_at),
+        "last_activity_at": from_transcript["last_activity_at"],
+        "last_record_at": from_transcript["last_record_at"],
         "cwd": _path(s.cwd),
         "launch_cwd": _path(s.launch_cwd),
         "git_branch": view.git.branch if view.git else None,
@@ -315,7 +384,8 @@ def to_json(view: SessionView, *, transcript: Path | None) -> dict[str, Any]:
         "bridge_session_id": s.bridge_session_id,
         "scratchpad_dir": _path(s.scratchpad_dir),
         "scratchpad_dir_inferred": s.scratchpad_dir_inferred,
-        "transcript_path": _path(transcript),
+        "transcript_path": _path(s.transcript_path),
+        "cost": from_transcript["cost"],
         "record_path": str(s.record_path),
         "alive": True,
         "raw": _plain(s.raw),

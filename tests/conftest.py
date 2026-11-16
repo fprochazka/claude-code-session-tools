@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -139,6 +140,54 @@ def fake_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     bin_dir.mkdir()
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     return bin_dir
+
+
+def stamp(epoch_seconds: float) -> str:
+    """A transcript timestamp, as Claude Code writes it."""
+    return time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(epoch_seconds))
+
+
+def write_records(path: Path, records: list[dict[str, Any]]) -> Path:
+    """Write transcript records the way Claude Code does: one compact JSON object per line."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in records))
+    return path
+
+
+def response(epoch_seconds: float, *, model: str = "claude-opus-5-5") -> dict[str, Any]:
+    """An assistant record: a model response at ``epoch_seconds``."""
+    return {
+        "type": "assistant",
+        "timestamp": stamp(epoch_seconds),
+        "message": {"role": "assistant", "model": model, "content": [{"type": "text", "text": "ok"}]},
+    }
+
+
+def cost_state(total: float) -> dict[str, Any]:
+    """A ``cost-state`` record, which Claude Code appends when a session process exits."""
+    return {
+        "type": "cost-state",
+        "totalCostUSD": total,
+        "hasUnknownModelCost": False,
+        "startTime": STARTED_AT,
+        "totalDuration": 5_400_000,
+        "totalAPIDuration": 600_000,
+        "totalAPIDurationWithoutRetries": 590_000,
+        "totalToolDuration": 30_000,
+        "totalLinesAdded": 12,
+        "totalLinesRemoved": 3,
+        "modelUsage": {
+            "claude-opus-5-5": {
+                "inputTokens": 40,
+                "outputTokens": 1500,
+                "thinkingTokens": 100,
+                "cacheReadInputTokens": 90000,
+                "cacheCreationInputTokens": 800,
+                "webSearchRequests": 0,
+                "costUSD": total,
+            }
+        },
+    }
 
 
 def fake_tmux(bin_dir: Path, panes: list[str] | None, *, exit_code: int = 0) -> None:

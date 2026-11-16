@@ -133,22 +133,27 @@ cc-session-tools list-active --profile work --here    # sessions of one profile 
 cc-session-tools list-active --profile 'rohlik*'      # sessions of every profile whose name matches a glob
 cc-session-tools list-active --status busy --tmux     # busy sessions that run in tmux
 cc-session-tools list-active --name 'w?-*'            # names matching a glob, case-insensitively
+cc-session-tools list-active --active-within 1h       # sessions that got a model response in the last hour
 cc-session-tools list-active --json | jq length       # every field of every session, as JSON
 ```
 
 Claude Code keeps one registry record per running session in `<config dir>/sessions/<pid>.json`. `list-active` reads those of every profile through cc-blackbox, leaves out records whose process has ended, and lists a `sessions/` dir that several profiles share once, under the profile that runs each session.
 
-The table has six columns: **Profile**, **Name** (`pid:<pid>` dimmed for a session without a name), **Status** (`waiting: <reason>` when the record says what a waiting session waits for), **Updated** (time since the record last changed, which Claude Code does on every status change), **Branch or cwd** (the git branch of the session's cwd, or the cwd with `~` when it is not on a branch), and **Tmux pane**. Rows are sorted by profile, then start time.
+The table has six columns: **Profile**, **Name** (`pid:<pid>` dimmed for a session without a name), **Status** (`waiting: <reason>` when the record says what a waiting session waits for), **Active** (time since the session's last model response, in its transcript or any subagent's; `started …` dimmed for a session without a response yet), **Branch or cwd** (the git branch of the session's cwd, or the cwd with `~` when it is not on a branch), and **Tmux pane**. Rows are sorted by profile, then start time.
 
 **The tmux pane is resolved live.** Claude Code records `<session>:@<window>.%<pane>` once, at startup. When you move the window to another tmux session, the record keeps the old session name. Only the pane id stays valid, so the command reads the current session and window of every pane with one `tmux list-panes -a` call. The table shows `%14 <session>:<window>`, `%14 (gone)` when the tmux server has no such pane, and `%14 (tmux unknown)` when tmux is missing or has no server. `tmux capture-pane`, `switch-client` and `send-keys` all take the pane id as a target.
 
 **One session** is the job of [`inspect`](#inspect). `list-active` only lists: given a SESSION argument, it exits with `2` and prints the `inspect` command to run instead.
 
-**Filters** combine with AND. `--profile` takes a glob, matched case-sensitively against the profile names, so a plain name matches only that profile. A glob that matches no profile is an error that lists the known ones. `--here` uses the scope of `search` and matches the session's current cwd.
+**Activity comes from the transcript, not from the registry record.** The record's `updatedAt` changes with the status, but a local command such as `/login` moves it without the model, so a session idle for days can look fresh. It can also lag behind: a session can answer well after its last `updatedAt`. Its transcript's last record has the same problem: a `/login` or a rename notice is a record. The newest `assistant` record is a model response, so `list-active` uses that, from the main transcript or any subagent's, since a background subagent writes only to its own. The table reads the end of each transcript, which adds about 0.05 seconds for 35 sessions.
 
-**`--json`** prints an array of objects. The keys are a stable contract: snake_case, ISO 8601 timestamps, paths as strings, `null` for a missing value. They cover every field of the registry record (`raw` holds the record itself) plus derived ones: `waiting_for`, `tmux_pane`, `tmux_state`, `tmux_live`, `tmux_recorded`, `messaging_address`, `git_branch`, `git_worktree_root`, `git_repo_root` and `transcript_path`. The [active-sessions skill](coding-agent-plugins/claude-code/skills/active-sessions/SKILL.md) documents each key.
+**Filters** combine with AND. `--profile` takes a glob, matched case-sensitively against the profile names, so a plain name matches only that profile. A glob that matches no profile is an error that lists the known ones. `--here` uses the scope of `search` and matches the session's current cwd. `--active-within` takes a duration like `watch` does (`90s`, `30m`, `2h`, `1h30m`) and keeps the sessions whose last model response, or start when they have no response yet, is within it.
 
-Exit codes: `0`, including when no session matches the filters (the notice goes to stderr, and `--json` prints `[]`). `1` when a `--profile` glob matches no profile. `2` for an unknown `--status`, or a SESSION argument.
+**`--json`** prints an array of objects. The keys are a stable contract: snake_case, ISO 8601 timestamps, paths as strings, `null` for a missing value. They cover every field of the registry record (`raw` holds the record itself) plus derived ones: `waiting_for`, `tmux_pane`, `tmux_state`, `tmux_live`, `tmux_recorded`, `messaging_address`, `git_branch`, `git_worktree_root`, `git_repo_root` and `transcript_path`, and from the transcript `last_activity_at` (the last model response), `last_record_at` (the newest record of any kind) and `cost`. `updated_at` is the last change of the registry record, not activity. The [active-sessions skill](coding-agent-plugins/claude-code/skills/active-sessions/SKILL.md) documents each key.
+
+**`cost`** is what Claude Code records when a process of the session exits, never the current cost of a running session. For an ended session it is the session's total. For a running session that was resumed, it is the total as of its last exit and leaves out the current run. A running session that never exited has `null`. The object has `total_cost_usd`, `has_unknown_model_cost`, `started_at`, the durations in seconds (`duration_seconds`, `api_duration_seconds`, `api_duration_without_retries_seconds`, `tool_duration_seconds`), `lines_added`, `lines_removed`, and `model_usage` with the tokens and `cost_usd` of each model. Reading it costs a read of the whole transcript of a session that never exited, so `--json` takes about 0.4 seconds for 35 sessions, against 0.2 for the table. The table has no cost column, because a running session's cost would read as its current cost.
+
+Exit codes: `0`, including when no session matches the filters (the notice goes to stderr, and `--json` prints `[]`). `1` when a `--profile` glob matches no profile. `2` for an unknown `--status`, a duration `--active-within` cannot read, or a SESSION argument.
 
 ### inspect
 
@@ -160,7 +165,7 @@ cc-session-tools inspect old-name                     # a session renamed since,
 cc-session-tools inspect 1199796 --days 30            # an ended session by its pid, from the auth-switch start log
 ```
 
-`inspect` shows the full current picture of one session, running or ended. A running session shows every field `list-active --json` has, with `state` `running`. An ended session shows what its transcript and the [claude-code-auth-switch](https://github.com/fprochazka/claude-code-auth-switch) start log recorded, with `state` `ended`: the profile that ran it last and how that was decided (`profile_source`), its last name and title, its launch cwd and last cwd, the git branch of its last record, `started_at` and `last_activity_at`, every start in `profile_starts` (`ts`, `pid`, `source`, `profile`), `transcript_path`, and `resume_command`: `claude-<profile> --resume <id>` when an auth-switch profile ran it, else `claude --resume <id>`.
+`inspect` shows the full current picture of one session, running or ended. A running session shows every field `list-active --json` has, with `state` `running`. An ended session shows what its transcript and the [claude-code-auth-switch](https://github.com/fprochazka/claude-code-auth-switch) start log recorded, with `state` `ended`: the profile that ran it last and how that was decided (`profile_source`), its last name and title, its launch cwd and last cwd, the git branch of its last record, `started_at`, `last_activity_at` (its last model response), `last_record_at`, its `cost`, every start in `profile_starts` (`ts`, `pid`, `source`, `profile`), `transcript_path`, and `resume_command`: `claude-<profile> --resume <id>` when an auth-switch profile ran it, else `claude --resume <id>`.
 
 **SESSION** is looked up in this order, and the first step that finds something decides:
 
@@ -173,7 +178,9 @@ cc-session-tools inspect 1199796 --days 30            # an ended session by its 
 
 **Cost.** A running session takes about as long as `list-active`. Steps 2 to 4 run only when no running session matches. A session id costs a listing of every project dir. A name lists the transcripts active in the window, reading the head and tail of each, greps them for the name with ripgrep, or a built-in scan without it, and reads the title records of the files that contain it. About 0.8 seconds for 230 transcripts with 1.7 GB in the window. A pid also reads one small start log per transcript in the window.
 
-**`--json`** prints one object whose keys are a stable contract, the same for a running and an ended session: `state`, every key of `list-active --json`, `title`, `title_source`, `last_activity_at`, `profile_starts` and `resume_command`. Fields only a running session has, such as `pid`, `status`, the tmux and messaging fields, `record_path` and `raw`, are `null` for an ended one.
+The text output prints the cost as one line of totals and one line per model, and says whether the current run is left out, so a running session's cost does not read as its current cost.
+
+**`--json`** prints one object whose keys are a stable contract, the same for a running and an ended session: `state`, every key of `list-active --json`, `title`, `title_source`, `profile_starts` and `resume_command`. Fields only a running session has, such as `pid`, `status`, the tmux and messaging fields, `record_path` and `raw`, are `null` for an ended one.
 
 A session that has no name and was not started through an auth-switch wrapper can be found after it ended only by its session id.
 

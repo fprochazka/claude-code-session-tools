@@ -10,6 +10,7 @@ import enum
 import json
 import os
 import sys
+from datetime import UTC, datetime, timedelta
 from typing import get_args
 
 import typer
@@ -20,18 +21,20 @@ from rich.text import Text
 from .active import (
     Filters,
     SessionView,
+    active_since,
+    activity_of,
     apply_filters,
     build_views,
     resolve_profile_globs,
     shorten_home,
     sort_sessions,
     to_json,
-    transcript_path,
     waiting_for,
 )
 from .console import build_console
 from .discovery import resolve_scope
 from .timefmt import time_ago
+from .watch_events import parse_duration
 
 Status = enum.Enum("Status", {value: value for value in get_args(SessionStatus)}, type=str)
 """The status values Claude Code writes into a registry record, as cc-blackbox knows them."""
@@ -48,6 +51,15 @@ def _sessions(profile_globs: list[str] | None) -> list[ActiveSession]:
 def _status(session: ActiveSession) -> str:
     reason = waiting_for(session)
     return f"{session.status}: {reason}" if reason is not None else session.status or "-"
+
+
+def _active(session: ActiveSession) -> Text:
+    activity = activity_of(session)
+    if activity.at is None:
+        return Text("-", style="dim")
+    if activity.started_only:
+        return Text(f"started {time_ago(activity.at)}", style="dim")
+    return Text(time_ago(activity.at))
 
 
 def _where(view: SessionView) -> Text:
@@ -82,13 +94,12 @@ def _print_table(views: list[SessionView]) -> None:
     rows = []
     for view in views:
         s = view.session
-        when = s.updated_at or s.started_at
         rows.append(
             (
                 Text(s.profile.name),
                 Text(s.name) if s.name else Text(f"pid:{s.pid}", style="dim"),
                 Text(_status(s)),
-                Text(time_ago(when) if when is not None else "-"),
+                _active(s),
                 _where(view),
                 _pane(view),
             )
@@ -97,7 +108,7 @@ def _print_table(views: list[SessionView]) -> None:
     # row is wider than the console, rich shrinks every column; the first four are pinned to their content, so only
     # the branch and the tmux session lose their tail. The pane id leads its cell and survives.
     table = Table(show_lines=False, box=None, pad_edge=False)
-    for index, header in enumerate(("Profile", "Name", "Status", "Updated")):
+    for index, header in enumerate(("Profile", "Name", "Status", "Active")):
         width = max([len(header)] + [row[index].cell_len for row in rows])
         table.add_column(header, no_wrap=True, min_width=width)
     table.add_column("Branch or cwd", no_wrap=True, overflow="ellipsis")
@@ -129,13 +140,21 @@ def list_active(
     name: str = typer.Option(
         None, "--name", help="Only sessions whose name matches this glob, case-insensitively.", show_default=False
     ),
+    active_within: str = typer.Option(
+        None,
+        "--active-within",
+        metavar="<duration>",
+        help="Only sessions that got a model response within this long, for example 30m, 2h or 1h30m. A session "
+        "without a response yet counts from its start.",
+        show_default=False,
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print every field of every session as a JSON array."),
 ) -> None:
     """List the running Claude Code sessions of every profile.
 
-    One row per session, by profile and then start time. Updated is the time since the session's registry record last
-    changed, which happens on a status change. The tmux pane is the pane id with the tmux session and window that pane
-    is in now, read from the tmux server. The inspect command shows one session.
+    One row per session, by profile and then start time. Active is the time since the session's last model response, in
+    its transcript or a subagent's; a session without one shows its start, dimmed. The tmux pane is the pane id with the
+    tmux session and window that pane is in now, read from the tmux server. The inspect command shows one session.
     """
     if ctx.args:
         # The single-session mode moved to inspect; say where instead of failing with a bare usage error.
@@ -145,6 +164,17 @@ def list_active(
             err=True,
         )
         raise typer.Exit(code=2)
+    since: datetime | None = None
+    if active_within is not None:
+        try:
+            seconds = parse_duration(active_within)
+        except ValueError as exc:
+            typer.echo(f"Error: --active-within: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        if seconds <= 0:
+            typer.echo("Error: --active-within: the duration must be longer than zero", err=True)
+            raise typer.Exit(code=2)
+        since = datetime.now(UTC) - timedelta(seconds=seconds)
     filters = Filters(
         statuses=frozenset(s.value for s in status or []),
         scope=resolve_scope(os.getcwd()) if here else None,
@@ -152,10 +182,13 @@ def list_active(
         name_glob=name,
     )
     sessions = sort_sessions(apply_filters(_sessions(profile), filters))
+    if since is not None:
+        # After the registry filters: only this one reads transcripts.
+        sessions = active_since(sessions, since)
 
     views = build_views(sessions)
     if as_json:
-        array = [to_json(view, transcript=transcript_path(view.session)) for view in views]
+        array = [to_json(view) for view in views]
         sys.stdout.write(json.dumps(array, indent=2, ensure_ascii=False) + "\n")
         return
     if not views:

@@ -144,11 +144,11 @@ def _row(transcript: SessionTranscript, scope: Scope) -> SessionRow:
     return SessionRow(
         session_id=transcript.session_id,
         path=transcript.path,
-        last_ts=transcript.last_activity_at or transcript.modified_at,
+        last_ts=transcript.last_record_at or transcript.modified_at,
         name=name,
         name_is_derived=derived,
         worktree_rel=_worktree_rel(transcript, scope),
-        last_ts_from_transcript=transcript.last_activity_at is not None,
+        last_ts_from_transcript=transcript.last_record_at is not None,
         profile=profiles[0].name if profiles else str(transcript.projects_dir.path),
         transcript=transcript,
     )

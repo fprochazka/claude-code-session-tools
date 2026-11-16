@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import Machine, fake_tmux, sid
+from conftest import Machine, cost_state, fake_tmux, response, sid, stamp, write_records
 from typer.testing import CliRunner
 
 from cc_session_tools.cli import app
@@ -35,6 +35,8 @@ LIST_ACTIVE_KEYS = [
     "version",
     "started_at",
     "updated_at",
+    "last_activity_at",
+    "last_record_at",
     "cwd",
     "launch_cwd",
     "git_branch",
@@ -53,6 +55,7 @@ LIST_ACTIVE_KEYS = [
     "scratchpad_dir",
     "scratchpad_dir_inferred",
     "transcript_path",
+    "cost",
     "record_path",
     "alive",
     "raw",
@@ -83,15 +86,15 @@ def ended(
     cwds: list[str] | None = None,
     pid: int | None = None,
     age_days: float = 1,
+    tail: list[dict[str, Any]] | None = None,
 ) -> Path:
     """Write the transcript of an ended session ``key`` that was named ``names`` in turn, with an auth-switch start log
-    when ``pid`` is given. The file's mtime is ``age_days`` ago."""
+    when ``pid`` is given, and ``tail`` as its last records. The file's mtime is ``age_days`` ago."""
     cwds = cwds or [str(machine.home / "proj")]
     session_id = sid(key)
     project = machine.config_dir(profile) / "projects" / project_slug(cwds[0])
     project.mkdir(parents=True, exist_ok=True)
     started = time.time() - age_days * 86400
-    stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(started))
     records: list[dict[str, Any]] = []
     for index, cwd in enumerate(cwds):
         records.append(
@@ -102,15 +105,14 @@ def ended(
                 "gitBranch": f"branch-{index}",
                 "version": "2.1.322",
                 "entrypoint": "cli",
-                "timestamp": stamp,
+                "timestamp": stamp(started),
                 "message": {"role": "user", "content": f"prompt {index}"},
             }
         )
     for name in names:
         records.append({"type": "custom-title", "customTitle": name, "sessionId": session_id})
         records.append({"type": "agent-name", "agentName": name, "sessionId": session_id})
-    path = project / f"{session_id}.jsonl"
-    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    path = write_records(project / f"{session_id}.jsonl", records + (tail or []))
     if pid is not None:
         log = project / session_id / "auth-switch-profile-starts.jsonl"
         log.parent.mkdir(parents=True, exist_ok=True)
@@ -129,13 +131,12 @@ def ended(
     return path
 
 
-def test_the_json_keys_are_list_active_plus_the_transcript_fields() -> None:
+def test_the_json_keys_are_list_active_plus_the_ended_session_fields() -> None:
     assert [k for k in INSPECT_KEYS if k in LIST_ACTIVE_KEYS] == LIST_ACTIVE_KEYS
     assert set(INSPECT_KEYS) - set(LIST_ACTIVE_KEYS) == {
         "state",
         "title",
         "title_source",
-        "last_activity_at",
         "profile_starts",
         "resume_command",
     }
@@ -208,10 +209,45 @@ def test_an_ended_session_by_id_and_prefix(machine: Machine) -> None:
     assert data["git_branch"] == "branch-1"
     assert data["transcript_path"] == str(path)
     assert data["alive"] is False
-    assert data["started_at"] is not None and data["last_activity_at"] is not None
+    assert data["started_at"] is not None
     assert [(s["pid"], s["source"], s["profile"]) for s in data["profile_starts"]] == [(4242, "startup", "work")]
     assert data["resume_command"] == f"claude-work --resume {session_id}"
     assert all(data[key] is None for key in LIVE_ONLY_KEYS)
+
+
+def test_an_ended_session_reports_its_last_response_apart_from_its_last_record_and_its_cost(machine: Machine) -> None:
+    now = time.time()
+    login = {"type": "system", "subtype": "local_command", "timestamp": stamp(now - 600), "content": "/login"}
+    ended(machine, "work", "gone", names=["x"], tail=[response(now - 7200), cost_state(1.25), login])
+
+    data = json_of("x")
+
+    assert data["last_activity_at"] == f"{stamp(now - 7200)[:19]}+00:00"
+    assert data["last_record_at"] == f"{stamp(now - 600)[:19]}+00:00"
+    cost = data["cost"]
+    assert cost["total_cost_usd"] == 1.25
+    assert cost["duration_seconds"] == 5400.0
+    assert cost["api_duration_seconds"] == 600.0
+    assert cost["lines_added"] == 12 and cost["lines_removed"] == 3
+    assert cost["model_usage"]["claude-opus-5-5"]["output_tokens"] == 1500
+    text = invoke("x").stdout
+    assert "$1.25, 1h30m run, 10m API, 30s tools, +12 -3 lines; recorded at its last exit" in text
+    assert "before this run" not in text
+
+
+def test_a_running_session_has_a_cost_only_after_an_exit_and_without_the_current_run(machine: Machine) -> None:
+    cwd = machine.home / "proj"
+    machine.session("work", "resumed", cwd=str(cwd))
+    machine.session("work", "fresh", cwd=str(cwd))
+    project = machine.config_dir("work") / "projects" / project_slug(cwd)
+    first = {"type": "user", "cwd": str(cwd), "timestamp": stamp(time.time() - 60), "message": {"content": "hi"}}
+    write_records(project / f"{sid('resumed')}.jsonl", [first, cost_state(2.0), response(time.time() - 30)])
+    write_records(project / f"{sid('fresh')}.jsonl", [first, response(time.time() - 30)])
+
+    assert json_of("resumed")["cost"]["total_cost_usd"] == 2.0
+    assert "recorded at its last exit before this run, which is not included" in invoke("resumed").stdout
+    assert json_of("fresh")["cost"] is None
+    assert "it has not exited yet" in invoke("fresh").stdout
 
 
 def test_an_ended_session_by_its_name_or_an_earlier_one(machine: Machine) -> None:

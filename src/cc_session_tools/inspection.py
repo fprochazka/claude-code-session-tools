@@ -38,12 +38,11 @@ from cc_blackbox import (
     read_session_transcript,
 )
 
-from .active import SessionLookupError, build_views, lookup_session, to_json, transcript_path
+from .active import SessionLookupError, build_views, lookup_session, to_json, transcript_json
 from .search import search_session_ids
 
 DEFAULT_DAYS = 14
 MAX_LISTED = 20
-_TAIL_BYTES = 256 * 1024
 _ID_PREFIX = re.compile(r"^[0-9a-f][0-9a-f-]{3,}$")
 _TITLE_RECORDS = {"custom-title": "customTitle", "agent-name": "agentName", "ai-title": "aiTitle"}
 
@@ -64,7 +63,7 @@ class Found:
 def _fail(query: str, transcripts: Sequence[SessionTranscript], what: str) -> SessionLookupError:
     lines = [f"Error: {len(transcripts)} ended sessions match {query!r} by {what}:"]
     for t in transcripts[:MAX_LISTED]:
-        when = t.last_activity_at.isoformat(timespec="minutes") if t.last_activity_at else "-"
+        when = t.last_record_at.isoformat(timespec="minutes") if t.last_record_at else "-"
         lines.append(f"  {t.session_id}  {when}  {t.title or '-'}")
     if len(transcripts) > MAX_LISTED:
         lines.append(f"  … and {len(transcripts) - MAX_LISTED} more")
@@ -211,41 +210,12 @@ def find(query: str, *, days: int = DEFAULT_DAYS, live: Sequence[ActiveSession] 
     )
 
 
-def _tail_facts(path: Path) -> dict[str, str]:
-    """The last ``cwd``, ``gitBranch`` and session name the transcript recorded, from its tail."""
-    facts: dict[str, str] = {}
-    try:
-        with open(path, "rb") as fh:
-            fh.seek(0, os.SEEK_END)
-            size = fh.tell()
-            fh.seek(max(0, size - _TAIL_BYTES))
-            lines = fh.read().split(b"\n")
-    except OSError:
-        return facts
-    if size > _TAIL_BYTES:
-        lines = lines[1:]
-    for line in reversed(lines):
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(record, dict):
-            continue
-        for key, field in (("cwd", "cwd"), ("gitBranch", "git_branch")):
-            value = record.get(key)
-            if field not in facts and isinstance(value, str) and value:
-                facts[field] = value
-        name_field = {"custom-title": "customTitle", "agent-name": "agentName"}.get(record.get("type") or "")
-        value = record.get(name_field) if name_field else None
-        if "name" not in facts and isinstance(value, str) and value.strip():
-            facts["name"] = value.strip()
-        if len(facts) == 3:
-            break
-    return facts
-
-
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _path(value: Path | None) -> str | None:
+    return str(value) if value is not None else None
 
 
 def _starts(starts: Sequence[ProfileStart]) -> list[dict[str, Any]]:
@@ -310,6 +280,7 @@ INSPECT_KEYS = (
     "started_at",
     "updated_at",
     "last_activity_at",
+    "last_record_at",
     "cwd",
     "launch_cwd",
     "git_branch",
@@ -328,6 +299,7 @@ INSPECT_KEYS = (
     "scratchpad_dir",
     "scratchpad_dir_inferred",
     "transcript_path",
+    "cost",
     "record_path",
     "alive",
     "profile_starts",
@@ -335,7 +307,7 @@ INSPECT_KEYS = (
     "raw",
 )
 """The keys of ``inspect --json``, a stable contract: every key of ``list-active --json``, plus ``state``, the title,
-``last_activity_at``, the auth-switch starts and the resume command."""
+the auth-switch starts and the resume command."""
 
 
 def to_inspect_json(found: Found) -> dict[str, Any]:
@@ -344,21 +316,16 @@ def to_inspect_json(found: Found) -> dict[str, Any]:
     transcript = found.transcript
     if found.live is not None:
         view = build_views([found.live])[0]
-        path = transcript.path if transcript is not None else transcript_path(found.live)
-        if transcript is None and path is not None:
-            try:
-                transcript = read_session_transcript(path)
-            except OSError:
-                transcript = None
-        data: dict[str, Any] = {"state": "running", **to_json(view, transcript=path)}
+        data: dict[str, Any] = {"state": "running", **to_json(view)}
+        if transcript is None:
+            transcript = found.live.transcript
         profile: ClaudeProfile | None = found.live.profile
         session_id = found.live.session_id
     else:
         assert transcript is not None
         owner = transcript.owner()
         profile = owner[0] if owner is not None else None
-        facts = _tail_facts(transcript.path)
-        name = facts.get("name")
+        name = transcript.name
         session_id = transcript.session_id
         data = {
             "state": "ended",
@@ -371,16 +338,16 @@ def to_inspect_json(found: Found) -> dict[str, Any]:
             "entrypoint": transcript.entrypoint,
             "version": transcript.version,
             "started_at": _iso(transcript.started_at),
-            "cwd": facts.get("cwd", str(transcript.cwd) if transcript.cwd else None),
+            "cwd": _path(transcript.last_cwd or transcript.cwd),
             "launch_cwd": str(transcript.cwd) if transcript.cwd else None,
-            "git_branch": facts.get("git_branch", transcript.git_branch),
+            "git_branch": transcript.last_git_branch or transcript.git_branch,
             "transcript_path": str(transcript.path),
             "alive": False,
+            **transcript_json(transcript),
         }
         data.update(dict.fromkeys(LIVE_ONLY_KEYS))
     data["title"] = transcript.title if transcript is not None else None
     data["title_source"] = transcript.title_source if transcript is not None else None
-    data["last_activity_at"] = _iso(transcript.last_activity_at) if transcript is not None else None
     data["profile_starts"] = _starts(transcript.profile_starts()) if transcript is not None else []
     data["resume_command"] = resume_command(profile, session_id)
     return {key: data.get(key) for key in INSPECT_KEYS}

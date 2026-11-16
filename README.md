@@ -2,7 +2,7 @@
 
 Commands and skills for finding and distilling past Claude Code sessions, and for listing the running ones, with the `cc-session-tools` CLI.
 
-The CLI has three subcommands. `search` lists and greps the sessions that belong to the directory you run it in. `distill` condenses one session transcript into markdown. `list-active` lists the sessions that run on the machine now, in every profile, with their live tmux pane.
+The CLI has four subcommands. `search` lists and greps the sessions that belong to the directory you run it in. `distill` condenses one session transcript into markdown. `list-active` lists the sessions that run on the machine now, in every profile, with their live tmux pane. `inspect` shows every field of one session, running or ended.
 
 ## Why
 
@@ -51,7 +51,7 @@ This repository is also a [Claude Code](https://docs.anthropic.com/en/docs/claud
 - `/session-tools:search <keywords or topic>` — mine past sessions for decisions and context, writing the findings to `./.claude/plans/past-sessions-<slug>.md`.
 - `/session-tools:distill <session-id | latest>` — condense one session into a recap at `./.claude/plans/session-distill-<slug>.md`.
 - The `session-tools` skill, which teaches Claude `search` and `distill` and how they scope their results.
-- The `active-sessions` skill, which teaches Claude `list-active`: finding another running session, its profile, tmux pane and messaging address, through `--json` and `jq`.
+- The `active-sessions` skill, which teaches Claude `list-active` and `inspect`: finding another session, running or ended, its profile, tmux pane, messaging address and resume command, through `--json` and `jq`.
 
 Install the CLI first, then add the marketplace and the plugin:
 
@@ -132,7 +132,6 @@ cc-session-tools list-active --profile work --here    # sessions of one profile 
 cc-session-tools list-active --profile 'rohlik*'      # sessions of every profile whose name matches a glob
 cc-session-tools list-active --status busy --tmux     # busy sessions that run in tmux
 cc-session-tools list-active --name 'w?-*'            # names matching a glob, case-insensitively
-cc-session-tools list-active w1-order-planner         # every field of one session
 cc-session-tools list-active --json | jq length       # every field of every session, as JSON
 ```
 
@@ -142,13 +141,42 @@ The table has six columns: **Profile**, **Name** (`pid:<pid>` dimmed for a sessi
 
 **The tmux pane is resolved live.** Claude Code records `<session>:@<window>.%<pane>` once, at startup. When you move the window to another tmux session, the record keeps the old session name. Only the pane id stays valid, so the command reads the current session and window of every pane with one `tmux list-panes -a` call. The table shows `%14 <session>:<window>`, `%14 (gone)` when the tmux server has no such pane, and `%14 (tmux unknown)` when tmux is missing or has no server. `tmux capture-pane`, `switch-client` and `send-keys` all take the pane id as a target.
 
-**SESSION** matches an exact session id, an exact name, a pid, or a unique session id prefix, in that order. An all-digit SESSION is a pid when a live session has that pid. The filters apply before the lookup. No match or several matches exit with `1` and list the candidates on stderr.
+**One session** is the job of [`inspect`](#inspect). `list-active` only lists: given a SESSION argument, it exits with `2` and prints the `inspect` command to run instead.
 
 **Filters** combine with AND. `--profile` takes a glob, matched case-sensitively against the profile names, so a plain name matches only that profile. A glob that matches no profile is an error that lists the known ones. `--here` uses the scope of `search` and matches the session's current cwd.
 
-**`--json`** prints an array, or one object with SESSION, with the same keys either way. The keys are a stable contract: snake_case, ISO 8601 timestamps, paths as strings, `null` for a missing value. They cover every field of the registry record (`raw` holds the record itself) plus derived ones: `waiting_for`, `tmux_pane`, `tmux_state`, `tmux_live`, `tmux_recorded`, `messaging_address`, `git_branch`, `git_worktree_root`, `git_repo_root` and `transcript_path`. The [active-sessions skill](coding-agent-plugins/claude-code/skills/active-sessions/SKILL.md) documents each key.
+**`--json`** prints an array of objects. The keys are a stable contract: snake_case, ISO 8601 timestamps, paths as strings, `null` for a missing value. They cover every field of the registry record (`raw` holds the record itself) plus derived ones: `waiting_for`, `tmux_pane`, `tmux_state`, `tmux_live`, `tmux_recorded`, `messaging_address`, `git_branch`, `git_worktree_root`, `git_repo_root` and `transcript_path`. The [active-sessions skill](coding-agent-plugins/claude-code/skills/active-sessions/SKILL.md) documents each key.
 
-Exit codes: `0`, including when no session matches the filters (the notice goes to stderr, and `--json` prints `[]`). `1` when SESSION matches nothing or more than one session, or a `--profile` glob matches no profile. `2` for an unknown `--status`.
+Exit codes: `0`, including when no session matches the filters (the notice goes to stderr, and `--json` prints `[]`). `1` when a `--profile` glob matches no profile. `2` for an unknown `--status`, or a SESSION argument.
+
+### inspect
+
+```bash
+cc-session-tools inspect w1-order-planner             # every field of one running session
+cc-session-tools inspect rohlik-team/w1-order-planner # the same, by address
+cc-session-tools inspect 27906ead --json              # an ended session by a session id prefix, as JSON
+cc-session-tools inspect old-name                     # a session renamed since, ended or running
+cc-session-tools inspect 1199796 --days 30            # an ended session by its pid, from the auth-switch start log
+```
+
+`inspect` shows the full current picture of one session, running or ended. A running session shows every field `list-active --json` has, with `state` `running`. An ended session shows what its transcript and the [claude-code-auth-switch](https://github.com/fprochazka/claude-code-auth-switch) start log recorded, with `state` `ended`: the profile that ran it last and how that was decided (`profile_source`), its last name and title, its launch cwd and last cwd, the git branch of its last record, `started_at` and `last_activity_at`, every start in `profile_starts` (`ts`, `pid`, `source`, `profile`), `transcript_path`, and `resume_command`: `claude-<profile> --resume <id>` when an auth-switch profile ran it, else `claude --resume <id>`.
+
+**SESSION** is looked up in this order, and the first step that finds something decides:
+
+1. A running session, as cc-blackbox matches it: session id, name, `<profile>/<name>`, `<profile>/pid:<pid>`, pid, or a unique session id prefix. An all-digit SESSION is a pid when a running session has that pid.
+2. An ended session by session id or session id prefix, in every transcript of every profile. Only file names are read.
+3. An ended session by its name or any earlier name or title the transcript recorded, compared without case, among the transcripts active in the last `--days` days (14 by default). A renamed session is found under its old names too.
+4. An ended session by its pid, from the auth-switch start logs next to the transcripts active in that window.
+
+`<profile>/` in front restricts steps 2 to 4 to sessions that profile ran last. A step that finds several sessions exits with `1` and lists them. A transcript found in steps 2 to 4 whose session still runs is shown as running.
+
+**Cost.** A running session takes about as long as `list-active`. Steps 2 to 4 run only when no running session matches. A session id costs a listing of every project dir. A name lists the transcripts active in the window, reading the head and tail of each, greps them for the name with ripgrep, or a built-in scan without it, and reads the title records of the files that contain it. About 0.8 seconds for 230 transcripts with 1.7 GB in the window. A pid also reads one small start log per transcript in the window.
+
+**`--json`** prints one object whose keys are a stable contract, the same for a running and an ended session: `state`, every key of `list-active --json`, `title`, `title_source`, `last_activity_at`, `profile_starts` and `resume_command`. Fields only a running session has, such as `pid`, `status`, the tmux and messaging fields, `record_path` and `raw`, are `null` for an ended one.
+
+A session that has no name and was not started through an auth-switch wrapper can be found after it ended only by its session id.
+
+Exit codes: `0` when one session is shown. `1` when SESSION matches nothing or more than one session in a step.
 
 ## Requirements
 
@@ -166,6 +194,8 @@ src/cc_session_tools/
 ├── search_cmd.py      # the `search` command
 ├── distill_cmd.py     # the `distill` command
 ├── list_active_cmd.py # the `list-active` command
+├── inspect_cmd.py     # the `inspect` command
+├── inspection.py      # one session, running or ended: the lookup and its fields
 ├── active.py          # running sessions with the live tmux pane and git location, the JSON shape
 ├── console.py         # the console every table prints on
 ├── gitrepo.py         # git worktree resolution and the branch of a dir

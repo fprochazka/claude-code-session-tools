@@ -1,8 +1,7 @@
 """The ``cc-session-tools list-active`` command: the Claude Code sessions running on this machine, in every profile.
 
-Without an argument it prints one table row per session, or with ``--json`` an array of every field. With a SESSION
-argument it prints every field of that one session. Sessions come from cc-blackbox; ``active`` resolves the live tmux
-pane and the git branch.
+It prints one table row per session, or with ``--json`` an array of every field. ``inspect`` shows one session.
+Sessions come from cc-blackbox; ``active`` resolves the live tmux pane and the git branch.
 """
 
 from __future__ import annotations
@@ -20,11 +19,9 @@ from rich.text import Text
 
 from .active import (
     Filters,
-    SessionLookupError,
     SessionView,
     apply_filters,
     build_views,
-    lookup_session,
     resolve_profile_globs,
     shorten_home,
     sort_sessions,
@@ -45,14 +42,6 @@ def _sessions(profile_globs: list[str] | None) -> list[ActiveSession]:
         return list_active_sessions(resolve_profile_globs(profile_globs) if profile_globs else None)
     except ProfileNotFound as exc:
         typer.echo(f"Error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-
-
-def _find(query: str, sessions: list[ActiveSession]) -> ActiveSession:
-    try:
-        return lookup_session(query, sessions)
-    except SessionLookupError as exc:
-        typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
 
@@ -118,34 +107,8 @@ def _print_table(views: list[SessionView]) -> None:
     build_console().print(table)
 
 
-def _value(value: object) -> str:
-    if value is None:
-        return "-"
-    if isinstance(value, dict):
-        return ", ".join(f"{k}={'-' if v is None else v}" for k, v in value.items())
-    if isinstance(value, list):
-        return ", ".join(str(v) for v in value) or "-"
-    return str(value)
-
-
-def _print_details(data: dict[str, object]) -> None:
-    table = Table(show_header=False, box=None, pad_edge=False)
-    table.add_column("Field", style="cyan", no_wrap=True)
-    table.add_column("Value")
-    for key, value in data.items():
-        if key == "raw":
-            continue
-        table.add_row(Text(key), Text(_value(value)))
-    build_console().print(table)
-
-
 def list_active(
-    session: str = typer.Argument(
-        None,
-        help="Show every field of one session: a session id, a unique session id prefix, a name, or a pid.",
-        show_default=False,
-        metavar="SESSION",
-    ),
+    ctx: typer.Context,
     profile: list[str] = typer.Option(
         None,
         "--profile",
@@ -166,16 +129,22 @@ def list_active(
     name: str = typer.Option(
         None, "--name", help="Only sessions whose name matches this glob, case-insensitively.", show_default=False
     ),
-    as_json: bool = typer.Option(
-        False, "--json", help="Print every field as JSON: an array of sessions, or one object with SESSION."
-    ),
+    as_json: bool = typer.Option(False, "--json", help="Print every field of every session as a JSON array."),
 ) -> None:
     """List the running Claude Code sessions of every profile.
 
     One row per session, by profile and then start time. Updated is the time since the session's registry record last
     changed, which happens on a status change. The tmux pane is the pane id with the tmux session and window that pane
-    is in now, read from the tmux server.
+    is in now, read from the tmux server. The inspect command shows one session.
     """
+    if ctx.args:
+        # The single-session mode moved to inspect; say where instead of failing with a bare usage error.
+        session = " ".join(ctx.args)
+        typer.echo(
+            f"Error: list-active only lists sessions. To show one session, run: cc-session-tools inspect {session}",
+            err=True,
+        )
+        raise typer.Exit(code=2)
     filters = Filters(
         statuses=frozenset(s.value for s in status or []),
         scope=resolve_scope(os.getcwd()) if here else None,
@@ -183,15 +152,6 @@ def list_active(
         name_glob=name,
     )
     sessions = sort_sessions(apply_filters(_sessions(profile), filters))
-
-    if session is not None:
-        view = build_views([_find(session, sessions)])[0]
-        data = to_json(view, transcript=transcript_path(view.session))
-        if as_json:
-            sys.stdout.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
-        else:
-            _print_details(data)
-        return
 
     views = build_views(sessions)
     if as_json:

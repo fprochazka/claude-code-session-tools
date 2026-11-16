@@ -204,6 +204,10 @@ def sort_sessions(sessions: Iterable[ActiveSession]) -> list[ActiveSession]:
 class SessionLookupError(LookupError):
     """A SESSION argument matched no session or several; the message lists the candidates, one per line."""
 
+    def __init__(self, message: str, *, ambiguous: bool = False) -> None:
+        super().__init__(message)
+        self.ambiguous = ambiguous
+
 
 def describe_session(session: ActiveSession) -> str:
     return f"{session.address}  pid {session.pid}  {session.session_id or '-'}  {session.status or '-'}"
@@ -224,7 +228,7 @@ def lookup_session(query: str, sessions: Sequence[ActiveSession]) -> ActiveSessi
     except AmbiguousSession as exc:
         lines = [f"Error: {len(exc.candidates)} sessions match {query!r}:"]
         lines += [f"  {describe_session(s)}" for s in exc.candidates]
-        raise SessionLookupError("\n".join(lines)) from exc
+        raise SessionLookupError("\n".join(lines), ambiguous=True) from exc
     except SessionNotFound as exc:
         lines = [f"Error: no active session matches {query!r}."]
         if sessions:

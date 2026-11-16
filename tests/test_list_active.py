@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import sid
+from conftest import Machine, fake_tmux, sid
 from typer.testing import CliRunner
 
 from cc_session_tools.active import list_tmux_panes, pane_id_of
@@ -21,94 +19,14 @@ pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="li
 
 runner = CliRunner()
 
-STARTED_AT = 1794100000000
-
-
-def _proc_start(pid: int) -> str:
-    stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
-    return stat[stat.rfind(")") + 2 :].split(" ")[19]
-
-
-class Machine:
-    """A home dir with three profiles and session records that belong to real, running processes.
-
-    Each record's pid is a sleeping child process, so cc-blackbox's own liveness check keeps it.
-    """
-
-    def __init__(self, home: Path) -> None:
-        self.home = home
-        self.processes: list[subprocess.Popen[bytes]] = []
-        (home / ".claude" / "sessions").mkdir(parents=True)
-        (home / ".claude" / "auth-switch.yaml").write_text("profiles:\n  work: {}\n  lab: {}\n")
-        for name in ("work", "lab"):
-            (home / ".claude-profiles" / name / "sessions").mkdir(parents=True)
-
-    def config_dir(self, profile: str) -> Path:
-        return self.home / ".claude" if profile == "default" else self.home / ".claude-profiles" / profile
-
-    def session(self, profile: str, name: str | None, **fields: Any) -> int:
-        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-        self.processes.append(process)
-        pid = process.pid
-        record: dict[str, Any] = {
-            "pid": pid,
-            "sessionId": sid(name or str(pid)),
-            "cwd": str(self.home / "elsewhere"),
-            "startedAt": STARTED_AT + len(self.processes) * 1000,
-            "procStart": _proc_start(pid),
-            "version": "2.1.319",
-            "peerProtocol": 1,
-            "peerFeatures": ["notify_idle"],
-            "kind": "interactive",
-            "entrypoint": "cli",
-            "messagingSocketPath": f"/run/user/1000/cc-socks/{pid}.sock",
-            "name": name,
-            "nameSource": "user",
-            "status": "idle",
-            "updatedAt": STARTED_AT + 60000,
-        }
-        record.update(fields)
-        record = {k: v for k, v in record.items() if v is not None}
-        (self.config_dir(profile) / "sessions" / f"{pid}.json").write_text(json.dumps(record))
-        return pid
-
-    def stop(self) -> None:
-        for process in self.processes:
-            process.kill()
-            process.wait()
-
-
-@pytest.fixture
-def machine(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Machine]:
-    monkeypatch.setenv("COLUMNS", "200")
-    m = Machine(isolated_home)
-    try:
-        yield m
-    finally:
-        m.stop()
-
-
-@pytest.fixture
-def fake_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A dir first on PATH, for fake commands."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    return bin_dir
-
-
-def fake_tmux(bin_dir: Path, panes: list[str] | None, *, exit_code: int = 0) -> None:
-    """Install a ``tmux`` that prints ``panes`` (tab-separated list-panes lines) and exits with ``exit_code``."""
-    output = "".join(f"{line}\n" for line in panes or [])
-    data = bin_dir / "tmux-panes.txt"
-    data.write_text(output)
-    script = bin_dir / "tmux"
-    script.write_text(f"#!/bin/sh\ncat '{data}'\nexit {exit_code}\n")
-    script.chmod(0o755)
-
 
 def invoke(*args: str) -> Any:
     return runner.invoke(app, ["list-active", *args])
+
+
+def one(name: str) -> Any:
+    """The JSON object of the session called ``name``."""
+    return next(s for s in json_of() if s["name"] == name)
 
 
 def json_of(*args: str) -> Any:
@@ -300,45 +218,12 @@ def test_here_outside_a_repo_is_the_exact_cwd(
 # --- one session ---
 
 
-def test_lookup_by_id_prefix_name_and_pid(machine: Machine, fake_bin: Path) -> None:
-    fake_tmux(fake_bin, [])
-    pid = machine.session("work", "target")
-    machine.session("work", "other")
-    session_id = sid("target")
-    for query in (session_id, session_id[:8], "target", str(pid)):
-        data = json_of(query)
-        assert data["pid"] == pid, query
-
-
-def test_lookup_without_json_prints_every_field(machine: Machine, fake_bin: Path) -> None:
-    fake_tmux(fake_bin, [])
-    machine.session("lab", "target")
+def test_a_session_argument_points_to_inspect(machine: Machine) -> None:
+    machine.session("work", "target")
     result = invoke("target")
-    assert result.exit_code == 0, result.output
-    keys = [line.split()[0] for line in result.stdout.splitlines() if line.strip()]
-    assert keys[:3] == ["profile", "profile_config_dir", "profile_source"]
-    assert "tmux_live" in keys and "messaging_address" in keys and "raw" not in keys
-
-
-def test_ambiguous_name_lists_the_candidates(machine: Machine, fake_bin: Path) -> None:
-    fake_tmux(fake_bin, [])
-    first = machine.session("work", "twin", sessionId=sid("twin-1"))
-    second = machine.session("lab", "twin", sessionId=sid("twin-2"))
-    result = invoke("twin")
-    assert result.exit_code == 1
-    assert "2 sessions match" in result.stderr
-    assert f"pid {first}" in result.stderr and f"pid {second}" in result.stderr
-    # A filter narrows the candidates before the lookup.
-    assert json_of("twin", "--profile", "lab")["pid"] == second
-
-
-def test_no_match_lists_the_active_sessions(machine: Machine, fake_bin: Path) -> None:
-    fake_tmux(fake_bin, [])
-    machine.session("work", "only")
-    result = invoke("missing")
-    assert result.exit_code == 1
-    assert "no active session matches 'missing'" in result.stderr
-    assert "work/only" in result.stderr
+    assert result.exit_code == 2
+    assert "cc-session-tools inspect target" in result.stderr
+    assert result.stdout == ""
 
 
 # --- JSON ---
@@ -404,8 +289,6 @@ def test_json_shape(machine: Machine, fake_bin: Path) -> None:
     assert data["bridge_session_id"] is None
     assert data["alive"] is True
     assert data["raw"]["pid"] == pid
-    # One session prints one object with the same keys.
-    assert list(json_of("target")) == JSON_KEYS
 
 
 def test_json_finds_the_transcript(machine: Machine, fake_bin: Path) -> None:
@@ -418,7 +301,7 @@ def test_json_finds_the_transcript(machine: Machine, fake_bin: Path) -> None:
     record = {"type": "user", "cwd": str(cwd), "timestamp": "2026-11-08T12:00:00.000Z", "message": {"content": "hi"}}
     transcript.write_text(json.dumps(record) + "\n")
 
-    assert json_of("target")["transcript_path"] == str(transcript)
+    assert one("target")["transcript_path"] == str(transcript)
 
 
 def test_json_of_no_sessions_is_an_empty_array(machine: Machine) -> None:
@@ -437,7 +320,7 @@ def test_tmux_missing_reports_the_pane_as_unknown(
     monkeypatch.setenv("PATH", str(empty))
     assert list_tmux_panes() is None
 
-    data = json_of("target")
+    data = one("target")
 
     assert data["tmux_pane"] == "%1"
     assert data["tmux_state"] == "unknown"
@@ -450,13 +333,13 @@ def test_tmux_missing_reports_the_pane_as_unknown(
 def test_tmux_without_a_server_reports_the_pane_as_unknown(machine: Machine, fake_bin: Path) -> None:
     fake_tmux(fake_bin, None, exit_code=1)
     machine.session("work", "target", tmux="s:@1.%1")
-    assert json_of("target")["tmux_state"] == "unknown"
+    assert one("target")["tmux_state"] == "unknown"
 
 
 def test_a_pane_that_no_longer_exists_is_gone(machine: Machine, fake_bin: Path) -> None:
     fake_tmux(fake_bin, ["%2\tother\t0\t@2\t"])
     machine.session("work", "target", tmux="s:@1.%1")
-    data = json_of("target")
+    data = one("target")
     assert data["tmux_state"] == "gone"
     assert data["tmux_live"] is None
     assert data["tmux_pane"] == "%1"

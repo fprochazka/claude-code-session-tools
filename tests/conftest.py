@@ -1,13 +1,27 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-# Variables that point cc-blackbox at the real Claude Code setup. Tests often run inside a Claude Code session, so
-# every test starts without them and with an empty home dir, and reads only the projects dir it builds.
-_REAL_SETUP_ENV = ("CLAUDE_CONFIG_DIR", "FP_CC_AUTH_SWITCH_PROFILE", "CLAUDE_PROJECTS_DIR")
+# Variables that point cc-blackbox at the real Claude Code setup, or at the session the tests run under. Tests often run
+# inside a Claude Code session, so every test starts without them and with an empty home dir, and reads only the
+# projects and sessions dirs it builds.
+_REAL_SETUP_ENV = (
+    "CLAUDE_CONFIG_DIR",
+    "FP_CC_AUTH_SWITCH_PROFILE",
+    "CLAUDE_PROJECTS_DIR",
+    "CLAUDE_PID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -23,3 +37,118 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def sid(name: str) -> str:
     """A stable session id for a readable fixture name. Claude Code names sessions only by UUID."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"session:{name}"))
+
+
+STARTED_AT = 1794100000000
+
+
+def _proc_start(pid: int) -> str:
+    stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    return stat[stat.rfind(")") + 2 :].split(" ")[19]
+
+
+class Machine:
+    """A home dir with three profiles and session records that belong to real, running processes.
+
+    Each record's pid is a sleeping child process, so cc-blackbox's own liveness check keeps it.
+    """
+
+    def __init__(self, home: Path) -> None:
+        self.home = home
+        self.processes: dict[int, subprocess.Popen[bytes]] = {}
+        self.records: dict[int, Path] = {}
+        (home / ".claude" / "sessions").mkdir(parents=True)
+        (home / ".claude" / "auth-switch.yaml").write_text("profiles:\n  work: {}\n  lab: {}\n")
+        for name in ("work", "lab"):
+            (home / ".claude-profiles" / name / "sessions").mkdir(parents=True)
+
+    def config_dir(self, profile: str) -> Path:
+        return self.home / ".claude" if profile == "default" else self.home / ".claude-profiles" / profile
+
+    def session(self, profile: str, name: str | None, **fields: Any) -> int:
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+        pid = process.pid
+        self.processes[pid] = process
+        record: dict[str, Any] = {
+            "pid": pid,
+            "sessionId": sid(name or str(pid)),
+            "cwd": str(self.home / "elsewhere"),
+            "startedAt": STARTED_AT + len(self.processes) * 1000,
+            "procStart": _proc_start(pid),
+            "version": "2.1.319",
+            "peerProtocol": 1,
+            "peerFeatures": ["notify_idle"],
+            "kind": "interactive",
+            "entrypoint": "cli",
+            "messagingSocketPath": f"/run/user/1000/cc-socks/{pid}.sock",
+            "name": name,
+            "nameSource": "user",
+            "status": "idle",
+            "updatedAt": STARTED_AT + 60000,
+        }
+        record.update(fields)
+        path = self.config_dir(profile) / "sessions" / f"{pid}.json"
+        self.records[pid] = path
+        self._write(path, record)
+        return pid
+
+    @staticmethod
+    def _write(path: Path, record: dict[str, Any]) -> None:
+        record = {k: v for k, v in record.items() if v is not None}
+        previous = path.stat().st_mtime_ns if path.exists() else None
+        path.write_text(json.dumps(record))
+        if previous is not None:
+            # Two writes within the file system's timestamp granularity would look unchanged to a watcher.
+            os.utime(path, ns=(previous + 1_000_000, previous + 1_000_000))
+
+    def update(self, pid: int, **fields: Any) -> None:
+        """Rewrite the record of ``pid`` with ``fields`` changed, as Claude Code does on a status change or rename."""
+        path = self.records[pid]
+        record = json.loads(path.read_text())
+        record.update(fields)
+        self._write(path, record)
+
+    def remove_record(self, pid: int) -> None:
+        self.records[pid].unlink()
+
+    def kill(self, pid: int) -> None:
+        process = self.processes[pid]
+        process.kill()
+        process.wait()
+
+    def stop(self) -> None:
+        for process in self.processes.values():
+            process.kill()
+            process.wait()
+
+
+@pytest.fixture
+def machine(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Machine]:
+    monkeypatch.setenv("COLUMNS", "200")
+    m = Machine(isolated_home)
+    try:
+        yield m
+    finally:
+        m.stop()
+
+
+@pytest.fixture
+def fake_bin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A dir first on PATH, for fake commands."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return bin_dir
+
+
+def fake_tmux(bin_dir: Path, panes: list[str] | None, *, exit_code: int = 0) -> None:
+    """Install a ``tmux`` that prints ``panes`` (tab-separated list-panes lines) and exits with ``exit_code``.
+
+    Calling it again changes what the installed ``tmux`` prints from then on.
+    """
+    output = "".join(f"{line}\n" for line in panes or [])
+    data = bin_dir / "tmux-panes.txt"
+    data.write_text(output)
+    script = bin_dir / "tmux"
+    script.write_text(f"#!/bin/sh\ncat '{data}'\nexit {exit_code}\n")
+    script.chmod(0o755)

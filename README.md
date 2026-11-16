@@ -51,6 +51,7 @@ This repository is also a [Claude Code](https://docs.anthropic.com/en/docs/claud
 - `/session-tools:search <keywords or topic>` — mine past sessions for decisions and context, writing the findings to `./.claude/plans/past-sessions-<slug>.md`.
 - `/session-tools:distill <session-id | latest>` — condense one session into a recap at `./.claude/plans/session-distill-<slug>.md`.
 - The `session-tools` skill, which teaches Claude `search` and `distill` and how they scope their results.
+- The `session-watch` skill, which teaches Claude `watch`: waiting for other sessions to finish a turn, wait for their user or end, with the events arriving as messages, and never watching its own session.
 - The `active-sessions` skill, which teaches Claude `list-active` and `inspect`: finding another session, running or ended, its profile, tmux pane, messaging address and resume command, through `--json` and `jq`.
 
 Install the CLI first, then add the marketplace and the plugin:
@@ -291,7 +292,7 @@ tests/                # unit tests
 coding-agent-plugins/claude-code/        # the plugin
 ├── .claude-plugin/plugin.json
 ├── commands/{search,distill}.md
-└── skills/{session-tools,active-sessions}/SKILL.md
+└── skills/{session-tools,active-sessions,session-watch}/SKILL.md
 ```
 
 ## Development

@@ -1,7 +1,7 @@
 {
   "name": "session-tools",
-  "version": "0.3.0",
-  "description": "Commands and skills for finding and distilling past Claude Code sessions, and listing the running ones, with the cc-session-tools CLI",
+  "version": "0.4.0",
+  "description": "Commands and skills for finding and distilling past Claude Code sessions, listing and watching the running ones, and inspecting any one, with the cc-session-tools CLI",
   "author": {
     "name": "Filip Procházka"
   },

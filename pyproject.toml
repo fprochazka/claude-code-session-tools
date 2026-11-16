@@ -1,6 +1,6 @@
 [project]
 name = "claude-code-session-tools"
-version = "0.2.0"
+version = "0.3.0"
 description = "Search and distill past Claude Code session transcripts"
 readme = "README.md"
 license = "MIT"
@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Software Development",
 ]
 dependencies = [
-    "cc-blackbox>=0.3,<0.4",
+    "cc-blackbox>=0.6.1,<0.7",
     "rich>=14.0.0",
     "typer>=0.15.0",
 ]

@@ -11,11 +11,11 @@ import sys
 
 import typer
 
-from . import __version__, distill_cmd, search_cmd
+from . import __version__, distill_cmd, list_active_cmd, search_cmd
 
 app = typer.Typer(
     name="cc-session-tools",
-    help="Search and distill Claude Code session transcripts.",
+    help="Search and distill Claude Code session transcripts, and list the running sessions.",
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode=None,
@@ -39,11 +39,12 @@ def root(
         is_eager=True,
     ),
 ) -> None:
-    """Search and distill Claude Code session transcripts."""
+    """Search and distill Claude Code session transcripts, and list the running sessions."""
 
 
 app.command("search")(search_cmd.search)
 app.command("distill")(distill_cmd.distill)
+app.command("list-active")(list_active_cmd.list_active)
 
 
 def main() -> None:

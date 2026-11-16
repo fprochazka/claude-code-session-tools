@@ -1,0 +1,218 @@
+"""The ``cc-session-tools list-active`` command: the Claude Code sessions running on this machine, in every profile.
+
+Without an argument it prints one table row per session, or with ``--json`` an array of every field. With a SESSION
+argument it prints every field of that one session. Sessions come from cc-blackbox; ``active`` resolves the live tmux
+pane and the git branch.
+"""
+
+from __future__ import annotations
+
+import enum
+import json
+import os
+import sys
+from typing import get_args
+
+import typer
+from cc_blackbox import (
+    ActiveSession,
+    AmbiguousSession,
+    ProfileNotFound,
+    SessionNotFound,
+    SessionStatus,
+    find_session,
+    list_active_sessions,
+)
+from rich.table import Table
+from rich.text import Text
+
+from .active import (
+    Filters,
+    SessionView,
+    apply_filters,
+    build_views,
+    shorten_home,
+    sort_sessions,
+    to_json,
+    transcript_path,
+)
+from .console import build_console
+from .discovery import resolve_scope
+from .timefmt import time_ago
+
+Status = enum.Enum("Status", {value: value for value in get_args(SessionStatus)}, type=str)
+"""The status values Claude Code writes into a registry record, as cc-blackbox knows them."""
+
+
+def _sessions(profiles: list[str] | None) -> list[ActiveSession]:
+    try:
+        return list_active_sessions(profiles or None)
+    except ProfileNotFound as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+def _describe(session: ActiveSession) -> str:
+    return f"{session.address}  pid {session.pid}  {session.session_id or '-'}  {session.status or '-'}"
+
+
+def _find(query: str, sessions: list[ActiveSession]) -> ActiveSession:
+    """Match a full session id, an exact name, a pid, or a unique session id prefix, in that order of preference.
+
+    An all-digit query is a pid when a session has that pid, so it never falls through to a session id prefix.
+    """
+    if query.isdecimal() and any(s.pid == int(query) for s in sessions):
+        query = f"pid:{query}"
+    try:
+        return find_session(query, sessions=sessions)
+    except AmbiguousSession as exc:
+        lines = [f"Error: {len(exc.candidates)} sessions match {query!r}:"]
+        lines += [f"  {_describe(s)}" for s in exc.candidates]
+        typer.echo("\n".join(lines), err=True)
+        raise typer.Exit(code=1) from exc
+    except SessionNotFound as exc:
+        lines = [f"Error: no active session matches {query!r}."]
+        if sessions:
+            lines.append("Active sessions:")
+            lines += [f"  {_describe(s)}" for s in sessions]
+        typer.echo("\n".join(lines), err=True)
+        raise typer.Exit(code=1) from exc
+
+
+def _where(view: SessionView) -> Text:
+    if view.git is not None and view.git.branch is not None:
+        return Text(view.git.branch)
+    cwd = view.session.cwd
+    return Text(shorten_home(cwd) if cwd is not None else "-", style="dim")
+
+
+# Long tmux session names are shortened in the middle, so the window index after them stays visible.
+MAX_TMUX_SESSION_WIDTH = 48
+
+
+def _middle_ellipsis(text: str, width: int) -> str:
+    if len(text) <= width:
+        return text
+    head = (width - 1) // 2
+    return text[:head] + "…" + text[len(text) - (width - 1 - head) :]
+
+
+def _pane(view: SessionView) -> Text:
+    if view.tmux_pane is None:
+        return Text("")
+    if view.tmux_live is not None:
+        live = view.tmux_live
+        return Text(f"{view.tmux_pane} {_middle_ellipsis(live.session, MAX_TMUX_SESSION_WIDTH)}:{live.window_index}")
+    label = "gone" if view.tmux_state == "gone" else "tmux unknown"
+    return Text(f"{view.tmux_pane} ({label})", style="dim")
+
+
+def _print_table(views: list[SessionView]) -> None:
+    rows = []
+    for view in views:
+        s = view.session
+        when = s.updated_at or s.started_at
+        rows.append(
+            (
+                Text(s.profile.name),
+                Text(s.name) if s.name else Text(f"pid:{s.pid}", style="dim"),
+                Text(s.status or "-"),
+                Text(time_ago(when) if when is not None else "-"),
+                _where(view),
+                _pane(view),
+            )
+        )
+    # Borderless like the search table, but not expanded: the columns are short and stay next to each other. When a
+    # row is wider than the console, rich shrinks every column; the first four are pinned to their content, so only
+    # the branch and the tmux session lose their tail. The pane id leads its cell and survives.
+    table = Table(show_lines=False, box=None, pad_edge=False)
+    for index, header in enumerate(("Profile", "Name", "Status", "Updated")):
+        width = max([len(header)] + [row[index].cell_len for row in rows])
+        table.add_column(header, no_wrap=True, min_width=width)
+    table.add_column("Branch or cwd", no_wrap=True, overflow="ellipsis")
+    table.add_column("Tmux pane", no_wrap=True, overflow="ellipsis")
+    for row in rows:
+        table.add_row(*row)
+    build_console().print(table)
+
+
+def _value(value: object) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, dict):
+        return ", ".join(f"{k}={'-' if v is None else v}" for k, v in value.items())
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value) or "-"
+    return str(value)
+
+
+def _print_details(data: dict[str, object]) -> None:
+    table = Table(show_header=False, box=None, pad_edge=False)
+    table.add_column("Field", style="cyan", no_wrap=True)
+    table.add_column("Value")
+    for key, value in data.items():
+        if key == "raw":
+            continue
+        table.add_row(Text(key), Text(_value(value)))
+    build_console().print(table)
+
+
+def list_active(
+    session: str = typer.Argument(
+        None,
+        help="Show every field of one session: a session id, a unique session id prefix, a name, or a pid.",
+        show_default=False,
+        metavar="SESSION",
+    ),
+    profile: list[str] = typer.Option(
+        None, "--profile", "-p", help="Only sessions of this profile. Repeatable.", show_default=False
+    ),
+    status: list[Status] = typer.Option(None, "--status", help="Only sessions with this status. Repeatable."),
+    here: bool = typer.Option(
+        False,
+        "--here",
+        help="Only sessions whose cwd is in the current git repo or any of its worktrees; outside a repo, the exact "
+        "current directory.",
+    ),
+    tmux: bool = typer.Option(
+        None, "--tmux/--no-tmux", help="Only sessions that run in tmux, or only those that do not.", show_default=False
+    ),
+    name: str = typer.Option(
+        None, "--name", help="Only sessions whose name matches this glob, case-insensitively.", show_default=False
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print every field as JSON: an array of sessions, or one object with SESSION."
+    ),
+) -> None:
+    """List the running Claude Code sessions of every profile.
+
+    One row per session, by profile and then start time. Updated is the time since the session's registry record last
+    changed, which happens on a status change. The tmux pane is the pane id with the tmux session and window that pane
+    is in now, read from the tmux server.
+    """
+    filters = Filters(
+        statuses=frozenset(s.value for s in status or []),
+        scope=resolve_scope(os.getcwd()) if here else None,
+        in_tmux=tmux,
+        name_glob=name,
+    )
+    sessions = sort_sessions(apply_filters(_sessions(profile), filters))
+
+    if session is not None:
+        view = build_views([_find(session, sessions)])[0]
+        data = to_json(view, transcript=transcript_path(view.session))
+        if as_json:
+            sys.stdout.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        else:
+            _print_details(data)
+        return
+
+    views = build_views(sessions)
+    if as_json:
+        array = [to_json(view, transcript=transcript_path(view.session)) for view in views]
+        sys.stdout.write(json.dumps(array, indent=2, ensure_ascii=False) + "\n")
+        return
+    if not views:
+        typer.echo("No active sessions found", err=True)
+        return
+    _print_table(views)

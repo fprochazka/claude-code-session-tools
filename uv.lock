@@ -13,19 +13,19 @@ wheels = [
 
 [[package]]
 name = "cc-blackbox"
-version = "0.3.0"
+version = "0.6.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a5/d5/c841cae3479000390dfdd7adbdde6724af12a6c09fef15c406a093f294c7/cc_blackbox-0.3.0.tar.gz", hash = "sha256:e6ab8e92bc1969c3ac3976fca6464ed02b85f093ade9ac5d856b7e42e4b62c4a", size = 103568, upload-time = "2026-11-09T19:17:25.698Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1a/0c/9b7b8325d509c7635013243fbe88a68ad1cab1354fe634e142b3dc60956f/cc_blackbox-0.6.1.tar.gz", hash = "sha256:15921152a093f012ff11e0137bc5940cd1cf79ea620be34df3646d0ab1aa83fe", size = 158538, upload-time = "2026-11-16T10:54:26.984Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/1d/340e3771d2752b0f20c3c6ff7fad4183421d93ed7fb38c8f066ef96de718/cc_blackbox-0.3.0-py3-none-any.whl", hash = "sha256:e3ac90df0469efde38e2f258ad5783e5f36577ee18b76454c5dd7dee0b3b8f47", size = 58361, upload-time = "2026-11-09T19:17:23.912Z" },
+    { url = "https://files.pythonhosted.org/packages/58/0a/6d88dfe56b4d275e3f047f72f2b54283444812ee82989e7b3e21671f42ff/cc_blackbox-0.6.1-py3-none-any.whl", hash = "sha256:a0a645c194e562b9a8b791b1ac43aa25ec7b2aec77bc2d795404fcf704bd71f2", size = 99830, upload-time = "2026-11-16T10:54:25.272Z" },
 ]
 
 [[package]]
 name = "claude-code-session-tools"
-version = "0.2.0"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "cc-blackbox" },
@@ -41,7 +41,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cc-blackbox", specifier = ">=0.3,<0.4" },
+    { name = "cc-blackbox", specifier = ">=0.6.1,<0.7" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "typer", specifier = ">=0.15.0" },
 ]

@@ -135,3 +135,18 @@ def test_real_git_init_sanity(tmp_path):
 
     assert [NAMES[row.session_id] for row in rows] == ["s1"]
     assert rows[0].worktree_rel == ""
+
+
+def test_scope_covers_the_repo_its_worktrees_and_the_legacy_dir(tmp_path):
+    root = tmp_path / "repo"
+    scope = discovery.Scope(root=root, legacy_base=tmp_path / "repo-worktrees", cwd=root)
+    assert scope.covers(root)
+    assert scope.covers(root / ".worktrees" / "fp-x" / "src")
+    assert scope.covers(tmp_path / "repo-worktrees" / "fp-y")
+    assert not scope.covers(tmp_path / "repo-other")
+
+
+def test_scope_outside_a_repo_covers_only_the_exact_cwd(tmp_path):
+    scope = discovery.Scope(root=None, legacy_base=None, cwd=tmp_path)
+    assert scope.covers(tmp_path)
+    assert not scope.covers(tmp_path / "sub")

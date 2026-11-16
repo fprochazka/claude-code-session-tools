@@ -1,8 +1,8 @@
 # claude-code-session-tools
 
-Commands and skill for finding and distilling past Claude Code sessions with the `cc-session-tools` CLI.
+Commands and skills for finding and distilling past Claude Code sessions, and for listing the running ones, with the `cc-session-tools` CLI.
 
-The CLI has two subcommands. `search` lists and greps the sessions that belong to the directory you run it in. `distill` condenses one session transcript into markdown.
+The CLI has three subcommands. `search` lists and greps the sessions that belong to the directory you run it in. `distill` condenses one session transcript into markdown. `list-active` lists the sessions that run on the machine now, in every profile, with their live tmux pane.
 
 ## Why
 
@@ -50,7 +50,8 @@ This repository is also a [Claude Code](https://docs.anthropic.com/en/docs/claud
 
 - `/session-tools:search <keywords or topic>` — mine past sessions for decisions and context, writing the findings to `./.claude/plans/past-sessions-<slug>.md`.
 - `/session-tools:distill <session-id | latest>` — condense one session into a recap at `./.claude/plans/session-distill-<slug>.md`.
-- The `session-tools` skill, which teaches Claude the two subcommands and how they scope their results.
+- The `session-tools` skill, which teaches Claude `search` and `distill` and how they scope their results.
+- The `active-sessions` skill, which teaches Claude `list-active`: finding another running session, its profile, tmux pane and messaging address, through `--json` and `jq`.
 
 Install the CLI first, then add the marketplace and the plugin:
 
@@ -68,7 +69,7 @@ claude plugin update session-tools@fprochazka-claude-code-session-tools
 
 ## Usage
 
-Claude Code stores each session at `<config dir>/projects/<encoded-cwd>/<session-id>.jsonl`, where `<encoded-cwd>` is the absolute launch directory with every non-alphanumeric character replaced by `-`. Both subcommands read the projects dir of every Claude Code profile on the machine and never write to it. Profiles that share a projects dir through a symlink are read once. Set `CLAUDE_PROJECTS_DIR` to read only that dir instead. Finding and parsing transcripts comes from the [cc-blackbox](https://github.com/fprochazka/cc-blackbox) library.
+`search` and `distill` read transcripts. Claude Code stores each session at `<config dir>/projects/<encoded-cwd>/<session-id>.jsonl`, where `<encoded-cwd>` is the absolute launch directory with every non-alphanumeric character replaced by `-`. Both read the projects dir of every Claude Code profile on the machine and never write to it. Profiles that share a projects dir through a symlink are read once. Set `CLAUDE_PROJECTS_DIR` to read only that dir instead. Finding and parsing transcripts comes from the [cc-blackbox](https://github.com/fprochazka/cc-blackbox) library.
 
 ### search
 
@@ -123,27 +124,56 @@ A session id is looked up across every project directory, so it works from anywh
 
 Exit code `1` when the target does not resolve or the file cannot be read.
 
+### list-active
+
+```bash
+cc-session-tools list-active                          # every running session, one row each
+cc-session-tools list-active --profile work --here    # sessions of one profile in this repo and its worktrees
+cc-session-tools list-active --status busy --tmux     # busy sessions that run in tmux
+cc-session-tools list-active --name 'w?-*'            # names matching a glob, case-insensitively
+cc-session-tools list-active w1-order-planner         # every field of one session
+cc-session-tools list-active --json | jq length       # every field of every session, as JSON
+```
+
+Claude Code keeps one registry record per running session in `<config dir>/sessions/<pid>.json`. `list-active` reads those of every profile through cc-blackbox, leaves out records whose process has ended, and lists a `sessions/` dir that several profiles share once, under the profile that runs each session.
+
+The table has six columns: **Profile**, **Name** (`pid:<pid>` dimmed for a session without a name), **Status**, **Updated** (time since the record last changed, which Claude Code does on every status change), **Branch or cwd** (the git branch of the session's cwd, or the cwd with `~` when it is not on a branch), and **Tmux pane**. Rows are sorted by profile, then start time.
+
+**The tmux pane is resolved live.** Claude Code records `<session>:@<window>.%<pane>` once, at startup. When you move the window to another tmux session, the record keeps the old session name. Only the pane id stays valid, so the command reads the current session and window of every pane with one `tmux list-panes -a` call. The table shows `%14 <session>:<window>`, `%14 (gone)` when the tmux server has no such pane, and `%14 (tmux unknown)` when tmux is missing or has no server. `tmux capture-pane`, `switch-client` and `send-keys` all take the pane id as a target.
+
+**SESSION** matches an exact session id, an exact name, a pid, or a unique session id prefix, in that order. An all-digit SESSION is a pid when a live session has that pid. The filters apply before the lookup. No match or several matches exit with `1` and list the candidates on stderr.
+
+**Filters** combine with AND. `--here` uses the scope of `search` and matches the session's current cwd.
+
+**`--json`** prints an array, or one object with SESSION, with the same keys either way. The keys are a stable contract: snake_case, ISO 8601 timestamps, paths as strings, `null` for a missing value. They cover every field of the registry record (`raw` holds the record itself) plus derived ones: `tmux_pane`, `tmux_state`, `tmux_live`, `tmux_recorded`, `messaging_address`, `git_branch`, `git_worktree_root`, `git_repo_root` and `transcript_path`. The [active-sessions skill](coding-agent-plugins/claude-code/skills/active-sessions/SKILL.md) documents each key.
+
+Exit codes: `0`, including when no session matches the filters (the notice goes to stderr, and `--json` prints `[]`). `1` when SESSION matches nothing or more than one session, or `--profile` names no profile. `2` for an unknown `--status`.
+
 ## Requirements
 
 - Python 3.11+
 - [ripgrep](https://github.com/BurntSushi/ripgrep) — optional. It makes `search --rg` faster; without it a built-in scan runs.
-- git — only for worktree-aware scoping. Outside a repo both subcommands fall back to the exact current directory.
+- git — only for worktree-aware scoping and the branch in `list-active`. Outside a repo every subcommand falls back to the exact current directory.
+- tmux — optional. Without it `list-active` reports every tmux pane as unknown.
 
 ## Project structure
 
 ```
 src/cc_session_tools/
-├── __init__.py       # package version
-├── cli.py            # root Typer app, --version, the error guard
-├── search_cmd.py     # the `search` command
-├── distill_cmd.py    # the `distill` command
-├── gitrepo.py        # git worktree resolution
-├── discovery.py      # which sessions belong to a cwd, distill target resolution
-├── titles.py         # display title derived from the first user message
-├── search.py         # ripgrep shell-out with the built-in fallback
-├── timefmt.py        # relative "time ago" formatting
-├── render.py         # condensed conversation -> markdown
-└── stats.py          # size and token estimates
+├── __init__.py        # package version
+├── cli.py             # root Typer app, --version, the error guard
+├── search_cmd.py      # the `search` command
+├── distill_cmd.py     # the `distill` command
+├── list_active_cmd.py # the `list-active` command
+├── active.py          # running sessions with the live tmux pane and git location, the JSON shape
+├── console.py         # the console every table prints on
+├── gitrepo.py         # git worktree resolution and the branch of a dir
+├── discovery.py       # which sessions belong to a cwd, distill target resolution
+├── titles.py          # display title derived from the first user message
+├── search.py          # ripgrep shell-out with the built-in fallback
+├── timefmt.py         # relative "time ago" formatting
+├── render.py          # condensed conversation -> markdown
+└── stats.py           # size and token estimates
 
 tests/                # unit tests
 
@@ -151,7 +181,7 @@ tests/                # unit tests
 coding-agent-plugins/claude-code/        # the plugin
 ├── .claude-plugin/plugin.json
 ├── commands/{search,distill}.md
-└── skills/session-tools/SKILL.md
+└── skills/{session-tools,active-sessions}/SKILL.md
 ```
 
 ## Development
@@ -174,7 +204,7 @@ The plugin version lives in two files and must stay in lockstep. Bump both when 
 
 This version is independent of the Python package version in `pyproject.toml`.
 
-The skill embeds the `--help` output of both subcommands. Regenerate those blocks with `COLUMNS=80` so the wrapping stays stable.
+The skills embed the `--help` output of the subcommands they cover. Regenerate those blocks with `COLUMNS=80` so the wrapping stays stable.
 
 ## License
 

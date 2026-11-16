@@ -84,3 +84,52 @@ def main_repo_root(cwd: str | Path) -> Path | None:
 def is_git_repo(cwd: str | Path) -> bool:
     """True if ``cwd`` is inside a git repo."""
     return main_repo_root(cwd) is not None
+
+
+@dataclass(frozen=True)
+class GitLocation:
+    """Where a directory sits in git: its checkout, the repo that checkout belongs to, and the branch it has out."""
+
+    worktree_root: Path
+    """The top of the checkout holding the directory: the main checkout or a linked worktree."""
+    repo_root: Path
+    """The main checkout of the repo, the same for every worktree of it."""
+    branch: str | None
+    """The short branch name, or ``None`` for a detached HEAD or an unborn branch."""
+
+
+def _rev_parse(cwd: str | Path, *args: str) -> list[str] | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", *args],
+            cwd=os.fspath(cwd),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.splitlines()
+
+
+def git_location(cwd: str | Path) -> GitLocation | None:
+    """Return where ``cwd`` sits in git, or ``None`` when it is not in a work tree, does not exist, or git is missing.
+
+    One ``git rev-parse`` call. An unborn branch makes ``--abbrev-ref HEAD`` fail, so only then a second call runs
+    without it.
+    """
+    lines = _rev_parse(cwd, "--abbrev-ref", "HEAD")
+    branch: str | None = None
+    if lines is not None and len(lines) >= 3:
+        branch = lines[2] if lines[2] != "HEAD" else None
+    else:
+        lines = _rev_parse(cwd)
+        if lines is None or len(lines) < 2:
+            return None
+    worktree_root, common_dir = Path(lines[0]), Path(lines[1])
+    # A non-bare repo keeps its common dir at <main checkout>/.git. Anything else, such as a submodule's
+    # .git/modules/<name>, names no main checkout, so the checkout itself stands in for it.
+    repo_root = common_dir.parent if common_dir.name == ".git" else worktree_root
+    return GitLocation(worktree_root=worktree_root, repo_root=repo_root, branch=branch)

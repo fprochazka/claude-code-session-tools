@@ -3,7 +3,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from cc_session_tools.gitrepo import _parse_worktree_list, main_repo_root
+from cc_session_tools.gitrepo import GitLocation, _parse_worktree_list, git_location, main_repo_root
 
 _ROOT = "/home/u/devel/libs/github.com/u/metabasecli"
 
@@ -59,3 +59,40 @@ def test_main_repo_root_real_git_init(tmp_path: Path) -> None:
 
 def test_main_repo_root_none_outside_repo(tmp_path: Path) -> None:
     assert main_repo_root(tmp_path) is None
+
+
+def _git(*args: str, cwd: Path) -> None:
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], cwd=cwd, check=True)
+
+
+def test_git_location_of_a_worktree_names_the_main_checkout(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", "-q", "-b", "main", cwd=repo)
+    _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+    _git("worktree", "add", "-q", "-b", "fp/x", str(repo / ".worktrees" / "fp-x"), cwd=repo)
+    sub = repo / ".worktrees" / "fp-x" / "src"
+    sub.mkdir()
+
+    location = git_location(sub)
+
+    assert location == GitLocation(
+        worktree_root=(repo / ".worktrees" / "fp-x").resolve(), repo_root=repo.resolve(), branch="fp/x"
+    )
+
+
+def test_git_location_detached_and_unborn_have_no_branch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", "-q", cwd=repo)
+    unborn = git_location(repo)
+    assert unborn is not None and unborn.branch is None and unborn.repo_root == repo.resolve()
+    _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+    _git("checkout", "-q", "--detach", cwd=repo)
+    detached = git_location(repo)
+    assert detached is not None and detached.branch is None
+
+
+def test_git_location_outside_a_repo_or_of_a_missing_dir_is_none(tmp_path: Path) -> None:
+    assert git_location(tmp_path) is None
+    assert git_location(tmp_path / "missing") is None

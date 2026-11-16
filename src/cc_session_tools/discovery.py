@@ -65,6 +65,18 @@ class Scope:
             return [self.root, self.legacy_base]
         return [self.cwd]
 
+    def covers(self, path: str | os.PathLike[str]) -> bool:
+        """Whether a directory belongs to the scope: under the repo root or the legacy worktrees dir, or the exact cwd
+        outside a git repo. Decided lexically, so a directory that no longer exists still belongs."""
+        if self.all_projects:
+            return True
+        real = _abspath(path)
+        if self.root is None:
+            return real == self.cwd
+        return real.is_relative_to(self.root) or (
+            self.legacy_base is not None and real.is_relative_to(self.legacy_base)
+        )
+
     def contains(self, transcript: SessionTranscript) -> bool:
         """Outside a git repo, keep only sessions launched in the exact cwd; the listing already covers the rest."""
         if self.all_projects or self.root is not None or transcript.cwd is None:

@@ -11,26 +11,13 @@ from __future__ import annotations
 import os
 
 import typer
-from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from .console import build_console
 from .discovery import build_session_rows, projects_dirs_override, resolve_scope
 from .search import RipgrepError, search_session_ids
 from .timefmt import time_ago
-
-# Rich sizes output to the detected terminal and falls back to 80 columns when piped.
-# Either is far too narrow for a row carrying a UUID, a session name and a worktree
-# path: the cells wrap into stacks that are unreadable. Never render below this.
-MIN_CONSOLE_WIDTH = 210
-
-
-def _build_console() -> Console:
-    """A console that renders at the detected width, but never narrower than the minimum."""
-    console = Console(highlight=False)
-    if console.width >= MIN_CONSOLE_WIDTH:
-        return console
-    return Console(highlight=False, width=MIN_CONSOLE_WIDTH)
 
 
 def search(
@@ -80,7 +67,7 @@ def search(
     if limit > 0:
         rows = rows[:limit]
 
-    console = _build_console()
+    console = build_console()
 
     if not rows:
         where = "any project" if all_projects else cwd

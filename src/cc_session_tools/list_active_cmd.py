@@ -22,6 +22,7 @@ from .active import (
     Filters,
     SessionView,
     TmuxPane,
+    TmuxSession,
     TmuxSessionNotFound,
     active_since,
     activity_of,
@@ -64,8 +65,10 @@ TMUX_SESSION_HELP = (
 )
 
 
-def tmux_session_filter(value: str | None, in_tmux: bool | None) -> tuple[str | None, dict[str, TmuxPane] | None]:
-    """The tmux session name ``--tmux-session`` selects, and the listing of the tmux server it was resolved from.
+def tmux_session_filter(
+    value: str | None, in_tmux: bool | None
+) -> tuple[TmuxSession | None, dict[str, TmuxPane] | None]:
+    """The tmux session ``--tmux-session`` selects, and the listing of the tmux server it was resolved from.
 
     Raises:
         TmuxSessionNotFound: the value names no tmux session, or tmux cannot tell.
@@ -214,7 +217,7 @@ def list_active(
             raise typer.Exit(code=2)
         since = datetime.now(UTC) - timedelta(seconds=seconds)
     try:
-        tmux_session_name, panes = tmux_session_filter(tmux_session, tmux)
+        selected_tmux, panes = tmux_session_filter(tmux_session, tmux)
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=2) from exc
@@ -226,7 +229,7 @@ def list_active(
         scope=resolve_scope(os.getcwd()) if here else None,
         in_tmux=tmux,
         name_glob=name,
-        tmux_session=tmux_session_name,
+        tmux_session_id=selected_tmux.id if selected_tmux is not None else None,
         role_globs=tuple(role or ()),
     )
     sessions = sort_sessions(apply_filters(_sessions(profile), filters, panes))

@@ -11,7 +11,7 @@ from cc_blackbox import project_slug
 from conftest import Machine, RealTmux, fake_tmux, log_start, response, sid, write_records
 from typer.testing import CliRunner
 
-from cc_session_tools.active import Filters, resolve_profile_globs
+from cc_session_tools.active import Filters, list_tmux_panes, resolve_profile_globs, resolve_tmux_session
 from cc_session_tools.cli import app
 from cc_session_tools.watch_events import (
     FilterError,
@@ -266,7 +266,7 @@ def test_a_new_session_in_a_new_pane_is_placed_at_once(machine: Machine, no_tmux
 def test_a_window_moved_into_or_out_of_the_tmux_session_joins_or_leaves(machine: Machine, no_tmux: Path) -> None:
     fake_tmux(no_tmux, ["%14\talpha\t3\t@14\t"])
     machine.session("work", "worker", tmux="alpha:@14.%14")
-    t = tracker(Selection(Filters(tmux_session="beta")))
+    t = tracker(Selection(Filters(tmux_session_id="$beta")))
     assert t.matched() == []
 
     fake_tmux(no_tmux, ["%14\tbeta\t1\t@14\t"])
@@ -288,7 +288,7 @@ def test_a_window_moved_into_or_out_of_the_tmux_session_joins_or_leaves(machine:
 
 
 def test_a_new_session_in_the_tmux_session_joins_at_once(machine: Machine, no_tmux: Path) -> None:
-    t = tracker(Selection(Filters(tmux_session="beta")))
+    t = tracker(Selection(Filters(tmux_session_id="$beta")))
     fake_tmux(no_tmux, ["%20\tbeta\t1\t@20\t", "%21\talpha\t1\t@21\t"])
     machine.session("work", "inside", tmux="beta:@20.%20")
     machine.session("work", "outside", tmux="alpha:@21.%21")
@@ -300,11 +300,34 @@ def test_move_window_on_a_real_tmux_server_joins_the_watch(machine: Machine, rea
     real_tmux.new_session("beta")
     pane = real_tmux.new_window("alpha")
     machine.session("work", "worker", tmux=real_tmux.recorded(pane))
-    t = tracker(Selection(Filters(tmux_session="beta")))
+    t = tracker(Selection(Filters(tmux_session_id=resolve_tmux_session("beta", list_tmux_panes()).id)))
     assert t.matched() == []
 
     real_tmux.move_window(pane, "beta")
     assert kinds(t.poll(NOW + 1)) == ["session_matched"]
+
+
+def test_a_renamed_tmux_session_keeps_its_sessions(machine: Machine, no_tmux: Path) -> None:
+    fake_tmux(no_tmux, ["%14\tbeta\t1\t@14\t$7\t"])
+    machine.session("work", "worker", tmux="beta:@14.%14")
+    t = tracker(Selection(Filters(tmux_session_id="$7")))
+    assert len(t.matched()) == 1
+
+    fake_tmux(no_tmux, ["%14\tgamma\t1\t@14\t$7\t"])
+    assert [(e.kind, e.data) for e in t.poll(NOW + 1)] == [("tmux_moved", {"session": "work/worker", "to": "gamma:1"})]
+    assert len(t.matched()) == 1
+
+
+def test_a_renamed_tmux_session_on_a_real_tmux_server_keeps_its_sessions(machine: Machine, real_tmux: RealTmux) -> None:
+    real_tmux.new_session("beta")
+    pane = real_tmux.new_window("beta")
+    machine.session("work", "worker", tmux=real_tmux.recorded(pane))
+    t = tracker(Selection(Filters(tmux_session_id=resolve_tmux_session("beta", list_tmux_panes()).id)))
+    assert len(t.matched()) == 1
+
+    real_tmux.rename_session("beta", "gamma")
+    assert kinds(t.poll(NOW + 1)) == ["tmux_moved"]
+    assert len(t.matched()) == 1
 
 
 def test_session_ended_by_a_removed_record_or_a_gone_process(machine: Machine) -> None:

@@ -326,7 +326,7 @@ def watch(
     except ProfileNotFound as exc:
         _fail(str(exc), EXIT_ERROR)
     try:
-        tmux_session_name, _ = tmux_session_filter(tmux_session, tmux)
+        selected_tmux, _ = tmux_session_filter(tmux_session, tmux)
     except ValueError as exc:
         _fail(str(exc))
     except TmuxSessionNotFound as exc:
@@ -338,7 +338,7 @@ def watch(
         scope=resolve_scope(os.getcwd()) if here else None,
         in_tmux=tmux,
         name_glob=name,
-        tmux_session=tmux_session_name,
+        tmux_session_id=selected_tmux.id if selected_tmux is not None else None,
         role_globs=tuple(role or ()),
     )
     own = current_session_or_none()
@@ -358,7 +358,7 @@ def watch(
         [s.value for s in status or []],
         scope_dir,
         tmux,
-        tmux_session_name,
+        selected_tmux.name if selected_tmux is not None else None,
         role or [],
     )
     changelog = Changelog(Changelog.default_path(own))
@@ -366,7 +366,7 @@ def watch(
 
     matched = tracker.matched()
     notes = [f"profiles: {', '.join(profiles)}"] if profile else []
-    if tmux_session is not None and tmux_session != tmux_session_name:
+    if selected_tmux is not None and tmux_session != selected_tmux.name:
         notes.append(f"tmux-session {tmux_session} resolved at the start")
     notes_text = f" ({'; '.join(notes)})" if notes else ""
     status_line(f"selection: {selection}{notes_text}; {len(matched)} matching now")

@@ -49,7 +49,7 @@ installed, or ``tmux list-panes`` failed, for example because no server runs on 
 
 _FIELD_SEPARATOR = "\t"
 _LIST_PANES_FORMAT = _FIELD_SEPARATOR.join(
-    ("#{pane_id}", "#{session_name}", "#{window_index}", "#{window_id}", "#{pane_title}")
+    ("#{pane_id}", "#{session_name}", "#{window_index}", "#{window_id}", "#{session_id}", "#{pane_title}")
 )
 
 
@@ -61,6 +61,8 @@ class TmuxPane:
     session: str
     window_index: int | None
     window_id: str
+    session_id: str
+    """The tmux session's ``$N`` id, which stays when the session is renamed."""
     pane_title: str
 
     def to_json(self) -> dict[str, Any]:
@@ -100,15 +102,16 @@ def list_tmux_panes() -> dict[str, TmuxPane] | None:
     panes: dict[str, TmuxPane] = {}
     for line in result.stdout.splitlines():
         # The pane title comes last and may itself hold the separator.
-        fields = line.split(_FIELD_SEPARATOR, 4)
-        if len(fields) != 5 or not fields[0].startswith("%"):
+        fields = line.split(_FIELD_SEPARATOR, 5)
+        if len(fields) != 6 or not fields[0].startswith("%"):
             continue
-        pane_id, session, window_index, window_id, title = fields
+        pane_id, session, window_index, window_id, session_id, title = fields
         panes[pane_id] = TmuxPane(
             pane_id=pane_id,
             session=session,
             window_index=int(window_index) if window_index.isdecimal() else None,
             window_id=window_id,
+            session_id=session_id,
             pane_title=title,
         )
     return panes
@@ -200,12 +203,22 @@ CURRENT_TMUX_SESSION = "current"
 """The ``--tmux-session`` value that stands for the tmux session this command runs in."""
 
 
+@dataclass(frozen=True)
+class TmuxSession:
+    """A tmux session that ``--tmux-session`` selected."""
+
+    id: str
+    """The ``$N`` id, which the selection matches, so that renaming the tmux session keeps its panes selected."""
+    name: str
+    """The name at the moment it was resolved."""
+
+
 class TmuxSessionNotFound(LookupError):
     """A ``--tmux-session`` value names no tmux session of the running server."""
 
 
-def resolve_tmux_session(value: str, panes: Mapping[str, TmuxPane] | None) -> str:
-    """The tmux session name that ``--tmux-session`` selects.
+def resolve_tmux_session(value: str, panes: Mapping[str, TmuxPane] | None) -> TmuxSession:
+    """The tmux session that ``--tmux-session`` selects.
 
     ``current`` is the session of the pane in ``$TMUX_PANE``, the pane this command runs in, where that pane is now.
     Any other value must be the exact name of a session of the tmux server, so a typo is an error instead of an empty
@@ -222,13 +235,13 @@ def resolve_tmux_session(value: str, panes: Mapping[str, TmuxPane] | None) -> st
             raise TmuxSessionNotFound("--tmux-session current: this command does not run in tmux ($TMUX_PANE is unset)")
         if pane not in panes:
             raise TmuxSessionNotFound(f"--tmux-session current: the tmux server has no pane {pane} ($TMUX_PANE)")
-        return panes[pane].session
-    names = sorted({p.session for p in panes.values()})
-    if value not in names:
+        return TmuxSession(panes[pane].session_id, panes[pane].session)
+    ids = {p.session: p.session_id for p in panes.values()}
+    if value not in ids:
         raise TmuxSessionNotFound(
-            f"--tmux-session: no tmux session is named {value!r}. tmux sessions: {', '.join(names) or 'none'}."
+            f"--tmux-session: no tmux session is named {value!r}. tmux sessions: {', '.join(sorted(ids)) or 'none'}."
         )
-    return value
+    return TmuxSession(ids[value], value)
 
 
 def live_pane(session: ActiveSession, panes: Mapping[str, TmuxPane] | None) -> TmuxPane | None:
@@ -304,14 +317,15 @@ class Filters:
     in_tmux: bool | None = None
     name_glob: str | None = None
     """Matched case-insensitively against the whole name. A session without a name never matches."""
-    tmux_session: str | None = None
-    """The exact name of the tmux session the session's pane must be in now, by the live tmux server."""
+    tmux_session_id: str | None = None
+    """The ``$N`` id of the tmux session the session's pane must be in now, by the live tmux server. The id, not the
+    name, so a tmux session renamed during a watch keeps its panes."""
     role_globs: tuple[str, ...] = ()
     """The auth-switch role must match one of these, case-sensitively. A session without a role never matches."""
 
     def matches(self, session: ActiveSession, tmux_live: TmuxPane | None = None, role: str | None = None) -> bool:
         """``tmux_live`` is where the session's pane is now, and ``role`` its auth-switch role; only
-        :attr:`tmux_session` and :attr:`role_globs` read them."""
+        :attr:`tmux_session_id` and :attr:`role_globs` read them."""
         if self.statuses and session.status not in self.statuses:
             return False
         if self.profiles and session.profile.name not in self.profiles:
@@ -320,7 +334,7 @@ class Filters:
             return False
         if self.in_tmux is not None and (pane_id_of(session.tmux) is not None) != self.in_tmux:
             return False
-        if self.tmux_session is not None and (tmux_live is None or tmux_live.session != self.tmux_session):
+        if self.tmux_session_id is not None and (tmux_live is None or tmux_live.session_id != self.tmux_session_id):
             return False
         if self.role_globs and (role is None or not any(fnmatch.fnmatchcase(role, g) for g in self.role_globs)):
             return False
@@ -332,7 +346,7 @@ class Filters:
 def apply_filters(
     sessions: Iterable[ActiveSession], filters: Filters, panes: Mapping[str, TmuxPane] | None = None
 ) -> list[ActiveSession]:
-    """``panes`` is the listing of the tmux server, needed only by :attr:`Filters.tmux_session`. The role is read
+    """``panes`` is the listing of the tmux server, needed only by :attr:`Filters.tmux_session_id`. The role is read
     only for :attr:`Filters.role_globs`."""
     return [
         s

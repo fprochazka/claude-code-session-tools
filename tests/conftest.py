@@ -234,9 +234,16 @@ def cost_state(total: float) -> dict[str, Any]:
 def fake_tmux(bin_dir: Path, panes: list[str] | None, *, exit_code: int = 0) -> None:
     """Install a ``tmux`` that prints ``panes`` (tab-separated list-panes lines) and exits with ``exit_code``.
 
-    Calling it again changes what the installed ``tmux`` prints from then on.
+    A line of five fields, ``pane, session name, window index, window id, title``, gets the tmux session id ``$<name>``
+    inserted before the title; a line of six gives it itself. Calling it again changes what the installed ``tmux``
+    prints from then on.
     """
-    output = "".join(f"{line}\n" for line in panes or [])
+
+    def with_session_id(line: str) -> str:
+        fields = line.split("\t")
+        return "\t".join([*fields[:4], f"${fields[1]}", *fields[4:]]) if len(fields) == 5 else line
+
+    output = "".join(f"{with_session_id(line)}\n" for line in panes or [])
     data = bin_dir / "tmux-panes.txt"
     data.write_text(output)
     script = bin_dir / "tmux"
@@ -263,6 +270,9 @@ class RealTmux:
     def move_window(self, pane: str, to_session: str) -> None:
         """Move the window that holds ``pane`` to another tmux session."""
         self.run("move-window", "-s", pane, "-t", f"{to_session}:")
+
+    def rename_session(self, old: str, new: str) -> None:
+        self.run("rename-session", "-t", old, new)
 
     def recorded(self, pane: str) -> str:
         """The pane as Claude Code records it at startup: ``<session>:@<window>.%<pane>``."""

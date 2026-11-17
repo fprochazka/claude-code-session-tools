@@ -500,11 +500,12 @@ def test_a_pane_that_no_longer_exists_is_gone(machine: Machine, fake_bin: Path) 
 
 
 def test_list_tmux_panes_parses_one_call(fake_bin: Path) -> None:
-    fake_tmux(fake_bin, ["%1\ta/b\t0\t@1\ttitle\twith tab", "garbage", "%7\tc\tx\t@7\t"])
+    fake_tmux(fake_bin, ["%1\ta/b\t0\t@1\t$3\ttitle\twith tab", "garbage", "%7\tc\tx\t@7\t"])
     panes = list_tmux_panes()
     assert panes is not None
     assert set(panes) == {"%1", "%7"}
     assert panes["%1"].pane_title == "title\twith tab"
+    assert panes["%1"].session_id == "$3"
     assert panes["%7"].window_index is None
 
 

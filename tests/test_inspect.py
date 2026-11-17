@@ -387,7 +387,7 @@ def screen_tmux(
     script.chmod(0o755)
 
 
-PANE = "%14\tmain\t3\t@14\tw1"
+PANE = "%14\tmain\t3\t@14\t$1\tw1"
 
 
 def test_screen_classifies_the_pane_and_keeps_the_other_keys(machine: Machine, fake_bin: Path) -> None:

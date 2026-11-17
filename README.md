@@ -335,6 +335,7 @@ uv sync --dev
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
+uv run mypy
 ```
 
 `uv run ruff format .` fixes the formatting. Run the CLI from the clone without installing it with `uv run cc-session-tools …`.
@@ -388,7 +389,7 @@ Bump the minor version for features and for breaking changes, and the patch vers
 
 The skills embed the `--help` output of the subcommands they cover. When a subcommand's options or help text change, regenerate those blocks with `COLUMNS=80`, for example `COLUMNS=80 uv run cc-session-tools inspect --help`, so the wrapping stays stable.
 
-CI runs on every push to master and on pull requests: ruff check and ruff format check, and the tests on Python 3.12, 3.13, 3.14 and 3.15. It does not run on tags.
+CI runs on every push to master and on pull requests: ruff check, ruff format check and mypy, and the tests on Python 3.12, 3.13, 3.14 and 3.15. It does not run on tags.
 
 To release version `X.Y.Z`:
 

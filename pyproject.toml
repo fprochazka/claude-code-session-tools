@@ -65,8 +65,14 @@ extend-immutable-calls = ["typer.Option", "typer.Argument"]
 [tool.ruff.format]
 quote-style = "double"
 
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src", "tests"]
+
 [dependency-groups]
 dev = [
+    "mypy>=1.15",
     "pytest>=8.0.0",
     "ruff>=0.11.0",
 ]

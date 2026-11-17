@@ -1,6 +1,8 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
+from typing import Any
 
 from cc_blackbox import ReadDiagnostics, iter_entries
 
@@ -8,23 +10,23 @@ from cc_session_tools.render import distill_entries
 from cc_session_tools.stats import compute_stats, estimate_tokens, human_bytes
 
 
-def _jsonl(*entries: dict) -> str:
+def _jsonl(*entries: dict[str, Any]) -> str:
     return "\n".join(json.dumps(e) for e in entries)
 
 
-def test_estimate_tokens_uses_four_chars_per_token():
+def test_estimate_tokens_uses_four_chars_per_token() -> None:
     assert estimate_tokens("") == 0
     assert estimate_tokens("a" * 4) == 1
     assert estimate_tokens("a" * 10) == round(10 / 4)
 
 
-def test_human_bytes_scales_units():
+def test_human_bytes_scales_units() -> None:
     assert human_bytes(512) == "512 B"
     assert human_bytes(1536) == "1.5 KB"
     assert human_bytes(5 * 1024 * 1024) == "5.0 MB"
 
 
-def test_compute_stats_on_small_fixture(tmp_path):
+def test_compute_stats_on_small_fixture(tmp_path: Path) -> None:
     text = _jsonl(
         {"type": "user", "cwd": "/repo", "timestamp": "t1", "message": {"content": "do the thing"}},
     )
@@ -43,7 +45,7 @@ def test_compute_stats_on_small_fixture(tmp_path):
     assert stats.estimated_tokens == round(len(markdown) / 4)
 
 
-def test_stdout_mode_keeps_stats_off_stdout(tmp_path):
+def test_stdout_mode_keeps_stats_off_stdout(tmp_path: Path) -> None:
     entry = {"type": "user", "cwd": "/repo", "timestamp": "t1", "message": {"content": "hello world"}}
     session_file = tmp_path / "abc123.jsonl"
     session_file.write_text(_jsonl(entry), encoding="utf-8")

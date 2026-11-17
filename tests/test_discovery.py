@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
+import pytest
 from cc_blackbox import project_slug
 from conftest import git, sid
 
@@ -19,7 +21,7 @@ def _make_session(projects_dir: Path, dir_name: str, session_id: str, *, cwd: st
     project_dir.mkdir(parents=True, exist_ok=True)
     name, session_id = session_id, sid(session_id)
     NAMES[session_id] = name
-    record: dict = {
+    record: dict[str, Any] = {
         "type": "user",
         "sessionId": session_id,
         "timestamp": ts,
@@ -32,7 +34,7 @@ def _make_session(projects_dir: Path, dir_name: str, session_id: str, *, cwd: st
     return path
 
 
-def test_git_repo_matrix_includes_worktrees_excludes_decoy(tmp_path, monkeypatch):
+def test_git_repo_matrix_includes_worktrees_excludes_decoy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     projects = tmp_path / "projects"
     root = Path("/home/u/metabasecli")
     monkeypatch.setattr(discovery, "main_repo_root", lambda cwd: root)
@@ -70,7 +72,7 @@ def test_git_repo_matrix_includes_worktrees_excludes_decoy(tmp_path, monkeypatch
     assert not (root / ".worktrees" / "fp-deleted").exists()
 
 
-def test_legacy_worktree_is_included_and_labeled(tmp_path, monkeypatch):
+def test_legacy_worktree_is_included_and_labeled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     projects = tmp_path / "projects"
     root = Path("/home/u/metabasecli")
     monkeypatch.setattr(discovery, "main_repo_root", lambda cwd: root)
@@ -84,7 +86,7 @@ def test_legacy_worktree_is_included_and_labeled(tmp_path, monkeypatch):
     assert rows[0].worktree_rel == "metabasecli-worktrees/fp-legacy"
 
 
-def test_git_repo_missing_cwd_falls_back_to_prefix_match(tmp_path, monkeypatch):
+def test_git_repo_missing_cwd_falls_back_to_prefix_match(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     projects = tmp_path / "projects"
     root = Path("/home/u/metabasecli")
     monkeypatch.setattr(discovery, "main_repo_root", lambda cwd: root)
@@ -99,7 +101,7 @@ def test_git_repo_missing_cwd_falls_back_to_prefix_match(tmp_path, monkeypatch):
     assert rows[0].worktree_rel == ""
 
 
-def test_not_a_git_repo_returns_only_exact_cwd_dir(tmp_path, monkeypatch):
+def test_not_a_git_repo_returns_only_exact_cwd_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     projects = tmp_path / "projects"
     monkeypatch.setattr(discovery, "main_repo_root", lambda cwd: None)
 
@@ -120,7 +122,7 @@ def test_not_a_git_repo_returns_only_exact_cwd_dir(tmp_path, monkeypatch):
     assert all(row.worktree_rel == "" for row in rows)
 
 
-def test_real_git_init_sanity(tmp_path):
+def test_real_git_init_sanity(tmp_path: Path) -> None:
     """One end-to-end check that the real ``main_repo_root`` wiring resolves rows."""
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -136,7 +138,7 @@ def test_real_git_init_sanity(tmp_path):
     assert rows[0].worktree_rel == ""
 
 
-def test_scope_covers_the_repo_its_worktrees_and_the_legacy_dir(tmp_path):
+def test_scope_covers_the_repo_its_worktrees_and_the_legacy_dir(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     scope = discovery.Scope(root=root, legacy_base=tmp_path / "repo-worktrees", cwd=root)
     assert scope.covers(root)
@@ -145,7 +147,7 @@ def test_scope_covers_the_repo_its_worktrees_and_the_legacy_dir(tmp_path):
     assert not scope.covers(tmp_path / "repo-other")
 
 
-def test_scope_outside_a_repo_covers_only_the_exact_cwd(tmp_path):
+def test_scope_outside_a_repo_covers_only_the_exact_cwd(tmp_path: Path) -> None:
     scope = discovery.Scope(root=None, legacy_base=None, cwd=tmp_path)
     assert scope.covers(tmp_path)
     assert not scope.covers(tmp_path / "sub")

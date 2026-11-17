@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from cc_blackbox import AssistantText, ReadDiagnostics, SubagentRun, Thinking, iter_entries
 
 from cc_session_tools.render import DistilledSession, RenderedPrompt, distill_entries, render_markdown
 
 
-def _distill(tmp_path: Path, *records: dict | str, include_thinking: bool = False) -> DistilledSession:
+def _distill(tmp_path: Path, *records: dict[str, Any] | str, include_thinking: bool = False) -> DistilledSession:
     path = tmp_path / "sess.jsonl"
     path.write_text("".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in records), encoding="utf-8")
     diagnostics = ReadDiagnostics()
@@ -16,19 +17,20 @@ def _distill(tmp_path: Path, *records: dict | str, include_thinking: bool = Fals
     return distill_entries("sess", entries, diagnostics, include_thinking=include_thinking)
 
 
-def _user(content: object, **extra: object) -> dict:
+def _user(content: object, **extra: object) -> dict[str, Any]:
     return {"type": "user", "message": {"role": "user", "content": content}, **extra}
 
 
-def test_genuine_prompt_is_kept(tmp_path):
+def test_genuine_prompt_is_kept(tmp_path: Path) -> None:
     session = _distill(tmp_path, _user("do the thing", cwd="/repo", timestamp="2026-07-24T10:00:00.000Z"))
     assert [type(i) for i in session.items] == [RenderedPrompt]
+    assert isinstance(session.items[0], RenderedPrompt)
     assert session.items[0].text == "do the thing"
     assert session.cwd == "/repo"
     assert session.started_at == session.ended_at == "2026-07-24T10:00:00.000Z"
 
 
-def test_tool_results_and_meta_injections_are_not_prompts(tmp_path):
+def test_tool_results_and_meta_injections_are_not_prompts(tmp_path: Path) -> None:
     session = _distill(
         tmp_path,
         _user([{"type": "tool_result", "tool_use_id": "x", "content": "output"}]),
@@ -37,7 +39,7 @@ def test_tool_results_and_meta_injections_are_not_prompts(tmp_path):
     assert session.items == []
 
 
-def test_assistant_text_kept_tool_use_dropped(tmp_path):
+def test_assistant_text_kept_tool_use_dropped(tmp_path: Path) -> None:
     session = _distill(
         tmp_path,
         {
@@ -51,18 +53,20 @@ def test_assistant_text_kept_tool_use_dropped(tmp_path):
         },
     )
     assert [type(i) for i in session.items] == [AssistantText]
+    assert isinstance(session.items[0], AssistantText)
     assert session.items[0].text == "here is my answer"
 
 
-def test_thinking_excluded_by_default_included_on_flag(tmp_path):
+def test_thinking_excluded_by_default_included_on_flag(tmp_path: Path) -> None:
     record = {"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "hmm"}]}}
     assert _distill(tmp_path, record).items == []
     included = _distill(tmp_path, record, include_thinking=True)
     assert [type(i) for i in included.items] == [Thinking]
+    assert isinstance(included.items[0], Thinking)
     assert included.items[0].text == "hmm"
 
 
-def test_subagent_prompt_and_final_are_paired(tmp_path):
+def test_subagent_prompt_and_final_are_paired(tmp_path: Path) -> None:
     session = _distill(
         tmp_path,
         _user("kick off research"),
@@ -86,6 +90,7 @@ def test_subagent_prompt_and_final_are_paired(tmp_path):
     )
     assert [type(i) for i in session.items] == [RenderedPrompt, SubagentRun]
     sub = session.items[1]
+    assert isinstance(sub, SubagentRun)
     assert (sub.description, sub.subagent_type, sub.prompt, sub.result) == (
         "Research foo",
         "researcher",
@@ -98,12 +103,12 @@ def test_subagent_prompt_and_final_are_paired(tmp_path):
     assert "foo is bar" in markdown
 
 
-def test_tool_use_result_as_string_does_not_crash(tmp_path):
+def test_tool_use_result_as_string_does_not_crash(tmp_path: Path) -> None:
     session = _distill(tmp_path, _user("a prompt", toolUseResult="plain string"))
     assert [type(i) for i in session.items] == [RenderedPrompt]
 
 
-def test_malformed_and_unknown_types_are_counted_not_thrown(tmp_path):
+def test_malformed_and_unknown_types_are_counted_not_thrown(tmp_path: Path) -> None:
     session = _distill(tmp_path, "{not json", {"type": "progress"}, {"type": "totally-new-type"}, _user("real"))
     assert session.diagnostics.malformed_lines == 1
     assert session.diagnostics.unknown_types == {"totally-new-type": 1}
@@ -111,12 +116,12 @@ def test_malformed_and_unknown_types_are_counted_not_thrown(tmp_path):
     assert "unknown entry types encountered: totally-new-type×1" in render_markdown(session)
 
 
-def test_system_reminder_stripped_from_prompt(tmp_path):
+def test_system_reminder_stripped_from_prompt(tmp_path: Path) -> None:
     session = _distill(tmp_path, _user("<system-reminder>ctx</system-reminder>actual ask"))
     assert [i.text for i in session.items if isinstance(i, RenderedPrompt)] == ["actual ask"]
 
 
-def test_slash_and_shell_commands_are_one_line_notes(tmp_path):
+def test_slash_and_shell_commands_are_one_line_notes(tmp_path: Path) -> None:
     session = _distill(
         tmp_path,
         _user("<command-name>/review</command-name><command-args>42</command-args>"),
@@ -129,7 +134,7 @@ def test_slash_and_shell_commands_are_one_line_notes(tmp_path):
     ]
 
 
-def test_headings_name_who_sent_a_prompt(tmp_path):
+def test_headings_name_who_sent_a_prompt(tmp_path: Path) -> None:
     session = _distill(
         tmp_path,
         _user("typed by the user", origin={"kind": "human"}),

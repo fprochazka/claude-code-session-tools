@@ -166,7 +166,7 @@ def recorded_titles(transcript: SessionTranscript) -> list[str]:
                     record = json.loads(line)
                 except ValueError:
                     continue
-                key = _TITLE_RECORDS.get(record.get("type")) if isinstance(record, dict) else None
+                key = _TITLE_RECORDS.get(record.get("type", "")) if isinstance(record, dict) else None
                 value = record.get(key) if key else None
                 if isinstance(value, str) and value.strip():
                     titles.append(value.strip())

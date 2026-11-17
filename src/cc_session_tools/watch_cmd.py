@@ -26,10 +26,8 @@ from cc_blackbox import (
     ActiveSession,
     EventEnvelope,
     EventSink,
-    EventStreamMode,
     MessageEventSink,
     MessagingUnavailable,
-    Priority,
     ProfileNotFound,
     StdoutEventSink,
     choose_event_stream,
@@ -133,7 +131,7 @@ def _sink(
     priority: MessagePriority,
 ) -> tuple[EventSink[WatchEvent], str | None]:
     try:
-        choice = choose_event_stream(cast(EventStreamMode, mode.value), own)
+        choice = choose_event_stream(mode.value, own)
     except MessagingUnavailable as exc:
         _fail(f"--events-stream=claude-message is not possible: {exc}; use --events-stream=stdout", EXIT_ERROR)
     if choice.mode == "stdout":
@@ -153,7 +151,7 @@ def _sink(
         sender=f"cc-session-tools-watch:{os.getpid()}",
         sender_name=f"cc-session-tools watch {selection}",
         status=status_line,
-        priority=cast(Priority, priority.value),
+        priority=priority.value,
         flush_on={WATCH_ENDED},
     )
     return sink, None

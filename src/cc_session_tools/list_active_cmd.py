@@ -42,7 +42,8 @@ from .discovery import resolve_scope
 from .timefmt import time_ago
 from .watch_events import parse_duration
 
-Status = enum.Enum("Status", {value: value for value in get_args(SessionStatus)}, type=str)
+# mypy cannot see the members of an Enum built from a computed dict; the values come from cc-blackbox at runtime.
+Status = enum.Enum("Status", {value: value for value in get_args(SessionStatus)}, type=str)  # type: ignore[misc]
 """The status values Claude Code writes into a registry record, as cc-blackbox knows them."""
 
 

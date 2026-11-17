@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
@@ -18,7 +19,7 @@ ALPHA, BRAVO, CHARLIE = sid("alpha"), sid("bravo"), sid("charlie")
 runner = CliRunner()
 
 
-def _write_session(project_dir: Path, session_id: str, *, cwd: str, ts: str, records: list[dict]) -> None:
+def _write_session(project_dir: Path, session_id: str, *, cwd: str, ts: str, records: list[dict[str, Any]]) -> None:
     """Write a session ``.jsonl`` whose records already carry ``cwd`` and ``timestamp``."""
     project_dir.mkdir(parents=True, exist_ok=True)
     lines = []
@@ -29,7 +30,7 @@ def _write_session(project_dir: Path, session_id: str, *, cwd: str, ts: str, rec
 
 
 @pytest.fixture
-def tree(tmp_path, monkeypatch):
+def tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A fake, non-git projects tree wired through env + patched cwd/repo-root.
 
     Outside a git repo (D5) discovery only considers the exact ``project_slug(cwd)``
@@ -76,14 +77,14 @@ def tree(tmp_path, monkeypatch):
     return projects
 
 
-def test_lists_sessions_newest_first(tree):
+def test_lists_sessions_newest_first(tree: Path) -> None:
     result = runner.invoke(app, ["search"])
     assert result.exit_code == 0, result.output
     out = result.output
     assert out.index(ALPHA) < out.index(BRAVO) < out.index(CHARLIE)
 
 
-def test_limit_caps_rows(tree):
+def test_limit_caps_rows(tree: Path) -> None:
     result = runner.invoke(app, ["search", "-n", "1"])
     assert result.exit_code == 0, result.output
     assert ALPHA in result.output
@@ -91,14 +92,14 @@ def test_limit_caps_rows(tree):
     assert CHARLIE not in result.output
 
 
-def test_limit_zero_means_unlimited(tree):
+def test_limit_zero_means_unlimited(tree: Path) -> None:
     result = runner.invoke(app, ["search", "--limit", "0"])
     assert result.exit_code == 0, result.output
     for session_id in (ALPHA, BRAVO, CHARLIE):
         assert session_id in result.output
 
 
-def test_derived_name_is_shown(tree):
+def test_derived_name_is_shown(tree: Path) -> None:
     result = runner.invoke(app, ["search"])
     assert result.exit_code == 0, result.output
     # The derived title comes from bravo's first user message via clean_title.
@@ -107,7 +108,7 @@ def test_derived_name_is_shown(tree):
     assert "Alpha genuine name" in result.output
 
 
-def test_empty_result_prints_friendly_message(tree, monkeypatch):
+def test_empty_result_prints_friendly_message(tree: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Point at an empty projects tree so no sessions are discovered.
     empty = tree.parent / "empty-projects"
     empty.mkdir()
@@ -123,7 +124,7 @@ def _widest_line(output: str) -> int:
     return max((len(line) for line in output.splitlines()), default=0)
 
 
-def test_table_is_never_narrower_than_the_minimum(tree, monkeypatch):
+def test_table_is_never_narrower_than_the_minimum(tree: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # A narrow terminal — and the 80-column fallback rich uses when piped — would
     # otherwise wrap the cells into unreadable stacks.
     monkeypatch.setenv("COLUMNS", "80")
@@ -132,7 +133,7 @@ def test_table_is_never_narrower_than_the_minimum(tree, monkeypatch):
     assert _widest_line(result.output) >= 210
 
 
-def test_table_uses_the_full_width_of_a_wide_terminal(tree, monkeypatch):
+def test_table_uses_the_full_width_of_a_wide_terminal(tree: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COLUMNS", "300")
     result = runner.invoke(app, ["search"])
     assert result.exit_code == 0, result.output
@@ -140,7 +141,7 @@ def test_table_uses_the_full_width_of_a_wide_terminal(tree, monkeypatch):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep (rg) not installed")
-def test_rg_narrows_to_matching_sessions(tree):
+def test_rg_narrows_to_matching_sessions(tree: Path) -> None:
     result = runner.invoke(app, ["search", "--rg", "UNIQUEMARKER"])
     assert result.exit_code == 0, result.output
     assert BRAVO in result.output
@@ -149,7 +150,7 @@ def test_rg_narrows_to_matching_sessions(tree):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep (rg) not installed")
-def test_repeated_rg_requires_every_keyword(tree):
+def test_repeated_rg_requires_every_keyword(tree: Path) -> None:
     # "start" alone covers alpha and charlie; adding "charlie" narrows to the one session with both.
     both = runner.invoke(app, ["search", "--rg", "start", "--rg", "charlie"])
     assert both.exit_code == 0, both.output
@@ -159,7 +160,7 @@ def test_repeated_rg_requires_every_keyword(tree):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep (rg) not installed")
-def test_rg_any_widens_repeated_keywords_to_a_union(tree):
+def test_rg_any_widens_repeated_keywords_to_a_union(tree: Path) -> None:
     # The same keywords the AND test narrows to charlie alone: under OR, alpha (only "start") joins it.
     result = runner.invoke(app, ["search", "--rg", "start", "--rg", "charlie", "--rg-any"])
     assert result.exit_code == 0, result.output
@@ -169,7 +170,7 @@ def test_rg_any_widens_repeated_keywords_to_a_union(tree):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep (rg) not installed")
-def test_rg_any_without_keywords_is_a_no_op(tree):
+def test_rg_any_without_keywords_is_a_no_op(tree: Path) -> None:
     result = runner.invoke(app, ["search", "--rg-any"])
     assert result.exit_code == 0, result.output
     for session_id in (ALPHA, BRAVO, CHARLIE):
@@ -177,7 +178,7 @@ def test_rg_any_without_keywords_is_a_no_op(tree):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep (rg) not installed")
-def test_rg_any_no_match_names_the_or_semantics(tree):
+def test_rg_any_no_match_names_the_or_semantics(tree: Path) -> None:
     result = runner.invoke(app, ["search", "--rg", "no-such-text-anywhere-xyzzy", "--rg-any"])
     assert result.exit_code == 0, result.output
     assert "matching any of" in result.output
@@ -185,7 +186,7 @@ def test_rg_any_no_match_names_the_or_semantics(tree):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep (rg) not installed")
-def test_repeated_rg_with_an_unmatched_keyword_yields_nothing(tree):
+def test_repeated_rg_with_an_unmatched_keyword_yields_nothing(tree: Path) -> None:
     result = runner.invoke(app, ["search", "--rg", "UNIQUEMARKER", "--rg", "no-such-text-anywhere-xyzzy"])
     assert result.exit_code == 0, result.output
     assert "No sessions found" in result.output
@@ -194,7 +195,7 @@ def test_repeated_rg_with_an_unmatched_keyword_yields_nothing(tree):
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep (rg) not installed")
-def test_rg_no_match_prints_friendly_message(tree):
+def test_rg_no_match_prints_friendly_message(tree: Path) -> None:
     result = runner.invoke(app, ["search", "--rg", "no-such-text-anywhere-xyzzy"])
     assert result.exit_code == 0, result.output
     assert "No sessions found" in result.output
@@ -202,7 +203,7 @@ def test_rg_no_match_prints_friendly_message(tree):
 
 
 @pytest.fixture
-def two_project_tree(tmp_path, monkeypatch):
+def two_project_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Two unrelated project dirs, neither of them the (patched) cwd.
 
     ``--all`` must reach both even though normal discovery, anchored on the cwd,
@@ -242,7 +243,7 @@ def two_project_tree(tmp_path, monkeypatch):
     return projects
 
 
-def test_all_lists_sessions_from_every_project(two_project_tree):
+def test_all_lists_sessions_from_every_project(two_project_tree: Path) -> None:
     result = runner.invoke(app, ["search", "--all"])
     assert result.exit_code == 0, result.output
     out = result.output
@@ -258,7 +259,7 @@ def test_all_lists_sessions_from_every_project(two_project_tree):
     assert "agent-deadbeef" not in out
 
 
-def test_without_all_the_same_tree_yields_nothing(two_project_tree):
+def test_without_all_the_same_tree_yields_nothing(two_project_tree: Path) -> None:
     # Same fixture, no --all: the cwd matches no project dir, so scope is empty.
     result = runner.invoke(app, ["search"])
     assert result.exit_code == 0, result.output
@@ -266,7 +267,7 @@ def test_without_all_the_same_tree_yields_nothing(two_project_tree):
     assert "First project session" not in result.output
 
 
-def test_rg_falls_back_to_python_when_ripgrep_is_missing(tree, monkeypatch):
+def test_rg_falls_back_to_python_when_ripgrep_is_missing(tree: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda _name: None)
     both = runner.invoke(app, ["search", "--rg", "start", "--rg", "charlie"])
     assert both.exit_code == 0, both.output
@@ -278,7 +279,7 @@ def test_rg_falls_back_to_python_when_ripgrep_is_missing(tree, monkeypatch):
     assert ALPHA not in either.output
 
 
-def test_sessions_of_every_profile_are_listed(tmp_path, monkeypatch):
+def test_sessions_of_every_profile_are_listed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home = Path(os.environ["HOME"])
     cwd = "/home/u/plain-project"
     shared = home / ".claude" / "projects"
@@ -307,7 +308,7 @@ def test_sessions_of_every_profile_are_listed(tmp_path, monkeypatch):
     assert result.output.count(ALPHA) == 1
 
 
-def test_profile_column_is_hidden_for_a_single_projects_dir(tree):
+def test_profile_column_is_hidden_for_a_single_projects_dir(tree: Path) -> None:
     result = runner.invoke(app, ["search"])
     assert result.exit_code == 0, result.output
     assert "Profile" not in result.output

@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from typing import NoReturn
 
 import pytest
 from cc_blackbox import SessionTranscript, list_session_transcripts
@@ -12,7 +13,7 @@ import cc_session_tools.search as search
 from cc_session_tools.search import RipgrepError, build_rg_args, search_session_ids
 
 
-def test_build_rg_args_exact_vector():
+def test_build_rg_args_exact_vector() -> None:
     dirs = [Path("/p/one"), Path("/p/two")]
     assert build_rg_args(["needle"], dirs) == [
         "--files-with-matches",
@@ -29,7 +30,7 @@ def test_build_rg_args_exact_vector():
     ]
 
 
-def test_build_rg_args_repeats_e_for_every_pattern_in_order():
+def test_build_rg_args_repeats_e_for_every_pattern_in_order() -> None:
     args = build_rg_args(["one", "two", "three"], [Path("/p/one")])
     sep = args.index("--")
     assert args[sep - 6 : sep] == ["-e", "one", "-e", "two", "-e", "three"]
@@ -37,14 +38,14 @@ def test_build_rg_args_repeats_e_for_every_pattern_in_order():
     assert args[sep + 1 :] == ["/p/one"]
 
 
-def test_build_rg_args_dash_query_is_an_option_value():
+def test_build_rg_args_dash_query_is_an_option_value() -> None:
     args = build_rg_args(["-foo"], [Path("/p/one")])
     # The dash-prefixed keyword is consumed as the value of its own `-e`, never read as a flag.
     assert args[args.index("-e") + 1] == "-foo"
     assert args[args.index("--") + 1] == "/p/one"
 
 
-def _fake_completed(returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess:
+def _fake_completed(returncode: int, stdout: str = "", stderr: str = "") -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(args=["rg"], returncode=returncode, stdout=stdout, stderr=stderr)
 
 
@@ -90,54 +91,54 @@ def _names(ids: set[str]) -> set[str]:
 
 
 @pytest.fixture(params=["rg", "python"])
-def backend(request, monkeypatch):
+def backend(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
     """Run each content-search test through ripgrep and through the pure-Python fallback."""
     if request.param == "rg":
         if shutil.which("rg") is None:
             pytest.skip("ripgrep (rg) not installed")
     else:
-        monkeypatch.setattr(search.shutil, "which", lambda _name: None)
-    return request.param
+        monkeypatch.setattr(shutil, "which", lambda _name: None)
+    return str(request.param)
 
 
-def test_single_keyword_matches_every_session_containing_it(tmp_path, backend):
+def test_single_keyword_matches_every_session_containing_it(tmp_path: Path, backend: str) -> None:
     sessions = _keyword_fixture(tmp_path)
     assert _names(search_session_ids(["WORKTREE"], sessions)) == {"both", "split", "partial", "sidecar"}
 
 
-def test_two_keywords_and_across_records_and_sidecars(tmp_path, backend):
+def test_two_keywords_and_across_records_and_sidecars(tmp_path: Path, backend: str) -> None:
     sessions = _keyword_fixture(tmp_path)
     # "split" proves the AND is session-level, not line-level; "sidecar" proves subagent transcripts count.
     assert _names(search_session_ids(["worktree", "deleted"], sessions)) == {"both", "split", "sidecar"}
 
 
-def test_unmatched_keyword_empties_the_intersection(tmp_path, backend):
+def test_unmatched_keyword_empties_the_intersection(tmp_path: Path, backend: str) -> None:
     sessions = _keyword_fixture(tmp_path)
     assert search_session_ids(["worktree", "absent-needle-zzz"], sessions) == set()
 
 
-def test_any_keeps_sessions_holding_only_one_keyword(tmp_path, backend):
+def test_any_keeps_sessions_holding_only_one_keyword(tmp_path: Path, backend: str) -> None:
     sessions = _keyword_fixture(tmp_path)
     ids = search_session_ids(["worktree", "deleted"], sessions, match_any=True)
     assert _names(ids) == {"both", "split", "partial", "sidecar"}
 
 
-def test_any_ignores_keywords_nothing_contains(tmp_path, backend):
+def test_any_ignores_keywords_nothing_contains(tmp_path: Path, backend: str) -> None:
     sessions = _keyword_fixture(tmp_path)
     ids = search_session_ids(["deleted", "absent-needle-zzz"], sessions, match_any=True)
     assert _names(ids) == {"both", "split", "sidecar"}
 
 
-def test_only_the_given_sessions_can_match(tmp_path, backend):
+def test_only_the_given_sessions_can_match(tmp_path: Path, backend: str) -> None:
     sessions = [s for s in _keyword_fixture(tmp_path) if s.session_id != sid("both")]
     assert _names(search_session_ids(["worktree", "deleted"], sessions)) == {"split", "sidecar"}
 
 
-def test_blank_queries_and_no_sessions_short_circuit(tmp_path, monkeypatch):
-    def _boom(*_a, **_k):
+def test_blank_queries_and_no_sessions_short_circuit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom(*_a: object, **_k: object) -> NoReturn:
         raise AssertionError("no search may run without queries or sessions")
 
-    monkeypatch.setattr(search.subprocess, "run", _boom)
+    monkeypatch.setattr(subprocess, "run", _boom)
     monkeypatch.setattr(search, "sessions_containing", _boom)
     sessions = _keyword_fixture(tmp_path)
     assert search_session_ids([], sessions) == set()
@@ -145,40 +146,40 @@ def test_blank_queries_and_no_sessions_short_circuit(tmp_path, monkeypatch):
     assert search_session_ids(["needle"], []) == set()
 
 
-def test_rg_exit_2_raises(tmp_path, monkeypatch):
+def test_rg_exit_2_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sessions = _keyword_fixture(tmp_path)
-    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
-    monkeypatch.setattr(search.subprocess, "run", lambda *a, **k: _fake_completed(2, stderr="boom"))
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: _fake_completed(2, stderr="boom"))
     with pytest.raises(RipgrepError):
         search_session_ids(["needle"], sessions)
     with pytest.raises(RipgrepError):
         search_session_ids(["one", "two"], sessions, match_any=True)
 
 
-def test_rg_and_stops_after_an_empty_pass(tmp_path, monkeypatch):
+def test_rg_and_stops_after_an_empty_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sessions = _keyword_fixture(tmp_path)
     calls: list[list[str]] = []
 
-    def _run(args, **_k):
+    def _run(args: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
         calls.append(_patterns(args))
         return _fake_completed(1)
 
-    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
-    monkeypatch.setattr(search.subprocess, "run", _run)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(subprocess, "run", _run)
     assert search_session_ids(["first", "second", "third"], sessions) == set()
     # The first pass matched nothing, so the intersection is already empty — no further rg runs.
     assert calls == [["first"]]
 
 
-def test_rg_any_is_a_single_pass_carrying_every_keyword(tmp_path, monkeypatch):
+def test_rg_any_is_a_single_pass_carrying_every_keyword(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     sessions = _keyword_fixture(tmp_path)
     calls: list[list[str]] = []
 
-    def _run(args, **_k):
+    def _run(args: list[str], **_k: object) -> subprocess.CompletedProcess[str]:
         calls.append(_patterns(args))
         return _fake_completed(1)
 
-    monkeypatch.setattr(search.shutil, "which", lambda _name: "/usr/bin/rg")
-    monkeypatch.setattr(search.subprocess, "run", _run)
+    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(subprocess, "run", _run)
     assert search_session_ids(["first", "second", "third"], sessions, match_any=True) == set()
     assert calls == [["first", "second", "third"]]

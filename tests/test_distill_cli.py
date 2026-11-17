@@ -42,7 +42,7 @@ def _write_stub_session(project_dir: Path, session_id: str) -> Path:
 
 
 @pytest.fixture
-def tree(tmp_path, monkeypatch):
+def tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A fake, non-git projects tree with two sessions whose mtime order is inverted.
 
     The older *transcript* is touched last, so any implementation that ranks by file
@@ -65,7 +65,7 @@ def tree(tmp_path, monkeypatch):
     return projects
 
 
-def test_distill_by_path_writes_a_file_and_prints_only_the_path(tree, tmp_path):
+def test_distill_by_path_writes_a_file_and_prints_only_the_path(tree: Path, tmp_path: Path) -> None:
     session = tree / project_slug(CWD) / f"{NEW_ID}.jsonl"
     out_dir = tmp_path / "out"
 
@@ -84,7 +84,7 @@ def test_distill_by_path_writes_a_file_and_prints_only_the_path(tree, tmp_path):
     assert "the newer prompt" in body
 
 
-def test_stats_table_goes_to_stderr_in_file_mode(tree, tmp_path):
+def test_stats_table_goes_to_stderr_in_file_mode(tree: Path, tmp_path: Path) -> None:
     session = tree / project_slug(CWD) / f"{NEW_ID}.jsonl"
     result = runner.invoke(app, ["distill", str(session), "--output-dir", str(tmp_path / "out")])
     assert result.exit_code == 0, result.output
@@ -92,14 +92,14 @@ def test_stats_table_goes_to_stderr_in_file_mode(tree, tmp_path):
     assert "Transcript stats" not in result.stdout
 
 
-def test_distill_by_uuid_finds_the_session_across_project_dirs(tree, tmp_path):
+def test_distill_by_uuid_finds_the_session_across_project_dirs(tree: Path, tmp_path: Path) -> None:
     result = runner.invoke(app, ["distill", OLD_ID, "--output-dir", str(tmp_path / "out")])
     assert result.exit_code == 0, result.output
     assert Path(result.stdout.strip()).name == f"{OLD_ID}.md"
     assert "the older prompt" in Path(result.stdout.strip()).read_text(encoding="utf-8")
 
 
-def test_uuid_lookup_never_reaches_a_subagent_sidecar(tree, tmp_path):
+def test_uuid_lookup_never_reaches_a_subagent_sidecar(tree: Path, tmp_path: Path) -> None:
     sidecar_id = "cccccccc-0000-0000-0000-000000000003"
     _write_session(
         tree / project_slug(CWD) / NEW_ID / "subagents",
@@ -113,13 +113,15 @@ def test_uuid_lookup_never_reaches_a_subagent_sidecar(tree, tmp_path):
     assert f"could not resolve session target: {sidecar_id}" in result.stderr
 
 
-def test_latest_picks_the_newest_transcript_timestamp_not_the_newest_mtime(tree, tmp_path):
+def test_latest_picks_the_newest_transcript_timestamp_not_the_newest_mtime(tree: Path, tmp_path: Path) -> None:
     result = runner.invoke(app, ["distill", "latest", "--output-dir", str(tmp_path / "out")])
     assert result.exit_code == 0, result.output
     assert Path(result.stdout.strip()).name == f"{NEW_ID}.md"
 
 
-def test_latest_honors_the_worktree_scope_across_two_encoded_dirs(tmp_path, monkeypatch):
+def test_latest_honors_the_worktree_scope_across_two_encoded_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     projects = tmp_path / "projects"
     root = Path("/home/u/repo")
     worktree = root / ".worktrees" / "fp-foo"
@@ -154,7 +156,9 @@ def test_latest_honors_the_worktree_scope_across_two_encoded_dirs(tmp_path, monk
     assert Path(result.stdout.strip()).name == f"{NEW_ID}.md"
 
 
-def test_latest_in_an_empty_scope_fails_instead_of_falling_back(tmp_path, monkeypatch):
+def test_latest_in_an_empty_scope_fails_instead_of_falling_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     projects = tmp_path / "projects"
     # A session exists, but it belongs to another project: `latest` must not reach it.
     _write_session(
@@ -174,14 +178,14 @@ def test_latest_in_an_empty_scope_fails_instead_of_falling_back(tmp_path, monkey
     assert result.stdout == ""
 
 
-def test_unresolvable_target_reports_plainly(tree):
+def test_unresolvable_target_reports_plainly(tree: Path) -> None:
     result = runner.invoke(app, ["distill", "not-a-session"])
     assert result.exit_code == 1
     assert result.stderr.strip() == "Error: could not resolve session target: not-a-session"
     assert result.stdout == ""
 
 
-def test_stdout_mode_emits_markdown_only(tree):
+def test_stdout_mode_emits_markdown_only(tree: Path) -> None:
     session = tree / project_slug(CWD) / f"{NEW_ID}.jsonl"
     result = runner.invoke(app, ["distill", str(session), "--stdout"])
     assert result.exit_code == 0, result.output
@@ -190,7 +194,7 @@ def test_stdout_mode_emits_markdown_only(tree):
     assert "Transcript stats" in result.stderr
 
 
-def test_default_output_dir_is_not_used_when_output_dir_is_given(tree, tmp_path):
+def test_default_output_dir_is_not_used_when_output_dir_is_given(tree: Path, tmp_path: Path) -> None:
     out_dir = tmp_path / "custom" / "nested"
     session = tree / project_slug(CWD) / f"{NEW_ID}.jsonl"
     result = runner.invoke(app, ["distill", str(session), "--output-dir", str(out_dir)])
@@ -200,7 +204,9 @@ def test_default_output_dir_is_not_used_when_output_dir_is_given(tree, tmp_path)
     assert result.stdout.strip() == str((out_dir / f"{NEW_ID}.md").resolve())
 
 
-def test_latest_skips_a_stub_transcript_that_is_newest_by_mtime(tmp_path, monkeypatch):
+def test_latest_skips_a_stub_transcript_that_is_newest_by_mtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A bridge-session stub has no timestamp, so its last_ts is the file mtime.
 
     Given the newest mtime in the scope it would otherwise win `latest` and distill to
@@ -232,7 +238,7 @@ def test_latest_skips_a_stub_transcript_that_is_newest_by_mtime(tmp_path, monkey
     assert "eeeeeeee-0000-0000-0000-000000000005" in listing.output
 
 
-def test_latest_fails_when_the_scope_holds_only_stubs(tmp_path, monkeypatch):
+def test_latest_fails_when_the_scope_holds_only_stubs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     projects = tmp_path / "projects"
     _write_stub_session(projects / project_slug(CWD), "eeeeeeee-0000-0000-0000-000000000005")
 

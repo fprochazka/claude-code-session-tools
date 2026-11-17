@@ -408,8 +408,8 @@ class SessionTracker:
         by_path = {t.session.record_path: t for t in self.tracked.values()}
         reload = False
 
-        for pid, tracked in list(self.tracked.items()):
-            path = tracked.session.record_path
+        for pid, known in list(self.tracked.items()):
+            path = known.session.record_path
             if path not in stamps:
                 events += self._end(pid, "record_removed", observed)
             elif not self._is_running(pid):

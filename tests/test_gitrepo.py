@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
+
+import pytest
+from conftest import git
 
 from cc_session_tools.gitrepo import GitLocation, _parse_worktree_list, git_location, main_repo_root
 
@@ -51,7 +53,7 @@ def test_parse_worktree_list_empty() -> None:
 def test_main_repo_root_real_git_init(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    git("init", "-q", cwd=repo)
     sub = repo / "src" / "pkg"
     sub.mkdir(parents=True)
     assert main_repo_root(sub) == repo.resolve()
@@ -61,16 +63,12 @@ def test_main_repo_root_none_outside_repo(tmp_path: Path) -> None:
     assert main_repo_root(tmp_path) is None
 
 
-def _git(*args: str, cwd: Path) -> None:
-    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args], cwd=cwd, check=True)
-
-
 def test_git_location_of_a_worktree_names_the_main_checkout(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git("init", "-q", "-b", "main", cwd=repo)
-    _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
-    _git("worktree", "add", "-q", "-b", "fp/x", str(repo / ".worktrees" / "fp-x"), cwd=repo)
+    git("init", "-q", "-b", "main", cwd=repo)
+    git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+    git("worktree", "add", "-q", "-b", "fp/x", str(repo / ".worktrees" / "fp-x"), cwd=repo)
     sub = repo / ".worktrees" / "fp-x" / "src"
     sub.mkdir()
 
@@ -84,11 +82,11 @@ def test_git_location_of_a_worktree_names_the_main_checkout(tmp_path: Path) -> N
 def test_git_location_detached_and_unborn_have_no_branch(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git("init", "-q", cwd=repo)
+    git("init", "-q", cwd=repo)
     unborn = git_location(repo)
     assert unborn is not None and unborn.branch is None and unborn.repo_root == repo.resolve()
-    _git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
-    _git("checkout", "-q", "--detach", cwd=repo)
+    git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+    git("checkout", "-q", "--detach", cwd=repo)
     detached = git_location(repo)
     assert detached is not None and detached.branch is None
 
@@ -96,3 +94,36 @@ def test_git_location_detached_and_unborn_have_no_branch(tmp_path: Path) -> None
 def test_git_location_outside_a_repo_or_of_a_missing_dir_is_none(tmp_path: Path) -> None:
     assert git_location(tmp_path) is None
     assert git_location(tmp_path / "missing") is None
+
+
+def _snapshot(git_dir: Path) -> dict[str, bytes]:
+    return {str(path.relative_to(git_dir)): path.read_bytes() for path in git_dir.rglob("*") if path.is_file()}
+
+
+@pytest.fixture
+def inherited_git_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, bytes]:
+    """A dummy repo that GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE name, as in a hook or a ``git rebase --exec``.
+
+    Returns the dummy's ``.git`` as it was before the test, to compare it against afterwards.
+    """
+    dummy = tmp_path / "dummy"
+    dummy.mkdir()
+    git("init", "-q", "-b", "dummy", cwd=dummy)
+    git("commit", "-q", "--allow-empty", "-m", "dummy", cwd=dummy)
+    monkeypatch.setenv("GIT_DIR", str(dummy / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(dummy))
+    monkeypatch.setenv("GIT_INDEX_FILE", str(dummy / ".git" / "index"))
+    return _snapshot(dummy / ".git")
+
+
+def test_git_in_a_test_leaves_the_repo_of_an_inherited_git_dir_alone(
+    tmp_path: Path, inherited_git_dir: dict[str, bytes]
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git("init", "-q", "-b", "main", cwd=repo)
+    git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+    git("worktree", "add", "-q", "-b", "fp/x", str(repo / ".worktrees" / "fp-x"), cwd=repo)
+
+    assert _snapshot(tmp_path / "dummy" / ".git") == inherited_git_dir
+    assert (repo / ".git" / "refs" / "heads" / "fp" / "x").is_file()

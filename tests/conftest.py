@@ -31,6 +31,35 @@ _REAL_SETUP_ENV = (
 )
 
 
+# A git call that inherits GIT_DIR, GIT_WORK_TREE or GIT_INDEX_FILE from a hook or a `git rebase --exec` acts on that
+# repo instead of the one in its cwd: a `git init` in tmp_path once made the real checkout bare. Every test starts
+# without any GIT_* variable but these.
+_KEPT_GIT_ENV = ("GIT_CONFIG_NOSYSTEM",)
+
+
+def _inherited_git_env(environ: dict[str, str] | os._Environ[str]) -> list[str]:
+    return [name for name in environ if name.startswith("GIT_") and name not in _KEPT_GIT_ENV]
+
+
+@pytest.fixture(autouse=True)
+def no_inherited_git_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in _inherited_git_env(os.environ):
+        monkeypatch.delenv(name)
+
+
+# A test identity, and no automatic maintenance: a commit would start it in the background, and it would write to the
+# repo after the test step that caused it.
+_GIT_CONFIG = ("-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "maintenance.auto=false")
+
+
+def git(*args: str, cwd: Path) -> None:
+    """Run git in ``cwd`` with a test identity, and without the GIT_* variables a test may have set since it started."""
+    env = dict(os.environ)
+    for name in _inherited_git_env(env):
+        del env[name]
+    subprocess.run(["git", *_GIT_CONFIG, *args], cwd=cwd, check=True, env=env)
+
+
 @pytest.fixture(autouse=True)
 def isolated_home(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     if request.node.get_closest_marker("live") is not None:

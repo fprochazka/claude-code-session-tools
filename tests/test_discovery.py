@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
 
 from cc_blackbox import project_slug
-from conftest import sid
+from conftest import git, sid
 
 import cc_session_tools.discovery as discovery
 from cc_session_tools.discovery import build_session_rows, resolve_scope
@@ -125,7 +124,7 @@ def test_real_git_init_sanity(tmp_path):
     """One end-to-end check that the real ``main_repo_root`` wiring resolves rows."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    git("init", "-q", cwd=repo)
     repo_abs = str(repo.resolve())
 
     projects = tmp_path / "projects"

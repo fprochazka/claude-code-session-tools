@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -9,7 +8,7 @@ from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import Machine, RealTmux, fake_tmux, log_start, response, sid, write_records
+from conftest import Machine, RealTmux, fake_tmux, git, log_start, response, sid, write_records
 from typer.testing import CliRunner
 
 from cc_session_tools.active import list_tmux_panes, pane_id_of
@@ -74,9 +73,8 @@ def test_table_shows_the_branch_in_a_repo_and_the_shortened_cwd_outside(machine:
     fake_tmux(fake_bin, [])
     repo = machine.home / "devel" / "repo"
     repo.mkdir(parents=True)
-    git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com"]
-    subprocess.run([*git, "init", "-q", "-b", "feature/x"], cwd=repo, check=True)
-    subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "init"], cwd=repo, check=True)
+    git("init", "-q", "-b", "feature/x", cwd=repo)
+    git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
     machine.session("work", "in-repo", cwd=str(repo))
     machine.session("work", "outside", cwd=str(machine.home / "notes"))
 
@@ -343,7 +341,7 @@ def test_here_covers_the_repo_and_its_worktrees(
     fake_tmux(fake_bin, [])
     repo = machine.home / "repo"
     (repo / ".worktrees" / "fp-x").mkdir(parents=True)
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    git("init", "-q", cwd=repo)
     machine.session("work", "main", cwd=str(repo))
     machine.session("lab", "worktree", cwd=str(repo / ".worktrees" / "fp-x"))
     machine.session("work", "legacy", cwd=str(machine.home / "repo-worktrees" / "fp-y"))

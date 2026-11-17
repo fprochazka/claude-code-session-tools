@@ -22,6 +22,7 @@ Start it with the Bash tool and `run_in_background: true`, and leave `--events-s
 cc-session-tools watch --name 'w*-order-planner' --events=turns,membership
 cc-session-tools watch w1-order-planner --until=turn_finished
 cc-session-tools watch --profile 'rohlik*' --events=turns --busy-after=30m --waiting-after=5m --stop-after-quiet=2h
+cc-session-tools watch --tmux-session current --events=thresholds --idle-after=10m --idle-every=50m
 ```
 
 - **The default stream, `auto`,** sends each batch of events to this session as a message. With `--events-stream=stdout` nothing tells you that an event arrived; that mode is for scripts and terminals.
@@ -88,6 +89,12 @@ Options:
                                   session that stays busy this long.
   --waiting-after <str>           Report waiting_long once per waiting stretch
                                   of a session that waits this long.
+  --idle-after <str>              Report idle_long once per idle stretch of a
+                                  session that is idle this long after its
+                                  last model response. A stretch ends at the
+                                  next model response. Repeatable.
+  --idle-every <str>              Report idle_long at every multiple of this
+                                  duration within an idle stretch.
   --events-stream <auto|stdout|claude-message>
                                   Where events go: auto picks claude-message
                                   under a Claude Code session that accepts
@@ -117,7 +124,7 @@ Events are small on purpose: `{"kind", "seq", "observed_at", "data"}`, where a s
 - `membership`: `session_started` and `session_matched` (`session`, `status`), `session_ended` (`session`, `reason`: `record_removed` or `process_gone`), `session_unmatched` (`session`).
 - `status`: `status_changed` (`session`, `from`, `to`, and `waiting_for` when `to` is `waiting`).
 - `turns`, derived from the same transition: `turn_finished` (`session`, `from`: `busy` or `waiting`), `waiting` (`session`, `waiting_for`).
-- `thresholds`: `busy_long` with `--busy-after`, `waiting_long` with `--waiting-after`, each once per stretch (`session`, `after`).
+- `thresholds`: `busy_long` with `--busy-after`, `waiting_long` with `--waiting-after`, each once per stretch (`session`, `after`). `idle_long` (`session`, `threshold`) with `--idle-after`, repeatable, once per threshold, and with `--idle-every` at every multiple of its duration. They count from the session's last model response, and a new response ends the idle stretch, so a message that makes the session answer starts the count again. Past several thresholds at once, only the longest is reported.
 - `changes`: `renamed` (`session` with the new name, `from`: the old `session`), `cwd_changed` (`session`, `to`), `tmux_moved` (`session`, `to`: `<tmux session>:<window index>` or `null`).
 
 One transition can yield two events: `busy` to `idle` is `status_changed` plus `turn_finished`. Subscribe with `--events=turns` when the derived events are all you need. A typo, or a kind this watch never produces, is a start-up error.
@@ -125,7 +132,7 @@ One transition can yield two events: `busy` to `idle` is `status_changed` plus `
 ## Ends
 
 - `--until=turn_finished`: stop after the first event of that kind, from any watched session.
-- `--timeout=30m`: stop that long after the start. `--stop-after-quiet=2h`: stop when nothing was reported for that long; `busy_long` and `waiting_long` do not count.
+- `--timeout=30m`: stop that long after the start. `--stop-after-quiet=2h`: stop when nothing was reported for that long; `busy_long`, `waiting_long` and `idle_long` do not count.
 - Named sessions: the watch ends when all of them have ended.
 - `watch_ended` reasons: `until`, `timeout`, `quiet`, `sessions_ended`, `session_gone` (this session can no longer receive messages), or a signal. A background task that ends without `watch_ended` ended for an unknown reason; if you still need the watch, start the same command again and tell the user in one line.
 
@@ -147,6 +154,7 @@ Stop a watch by stopping its background task.
 
 - **`turn_finished`**: the worker is idle. Get its `tmux_pane` and `messaging_address` with `cc-session-tools inspect <session> --json`, read what it did (`tmux capture-pane -p -t <tmux_pane> | tail -40`, or its transcript), then give it the next task by messaging its `messaging_address`.
 - **`waiting`**, **`waiting_long`**: the session waits for its user, usually a permission prompt (`waiting_for`). Tell the user which session and what it waits for. Never answer the prompt by sending keys to its pane.
+- **`idle_long`**: a session has had nothing to do for `threshold` since its last model response. Give it work, or tell the user it is idle; whether to keep its cache warm or let it go is their decision.
 - **`busy_long`**: a session has been busy for a long time. Peek at its pane before you decide it hangs; tell the user rather than interrupt it.
 - **`session_ended`**: the worker is gone. `process_gone` without a clean exit can mean a crash. `cc-session-tools inspect <session> --json` shows its last state and its `resume_command`.
 - Never send keys to a tmux pane unless the user asks for exactly that.

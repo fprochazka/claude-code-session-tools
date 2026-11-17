@@ -207,6 +207,7 @@ cc-session-tools watch --profile 'rohlik*' --events=turns      # only turn_finis
 cc-session-tools watch --name 'w*-order-planner' --until=turn_finished   # stop at the first finished turn of a worker
 cc-session-tools watch w1-order-planner w2-order-planner       # these two sessions, until both have ended
 cc-session-tools watch --busy-after=30m --waiting-after=5m --stop-after-quiet=2h
+cc-session-tools watch --tmux-session current --idle-after=10m --idle-every=50m   # idle workers next to this session
 cc-session-tools watch --here --events-stream=stdout --timeout=10m
 ```
 
@@ -231,6 +232,7 @@ cc-session-tools watch --here --events-stream=stdout --timeout=10m
 | `turn_finished` | `turns` | `session`, `from`: `busy` or `waiting`, the status before `idle` |
 | `waiting` | `turns` | `session`, `waiting_for` |
 | `busy_long`, `waiting_long` | `thresholds` | `session`, `after` |
+| `idle_long` | `thresholds` | `session`, `threshold`: the idle duration reached, such as `50m` |
 | `renamed` | `changes` | `session` with the new name, `from`: the `session` string before the rename |
 | `cwd_changed` | `changes` | `session`, `to`: the new cwd |
 | `tmux_moved` | `changes` | `session`, `to`: `<tmux session>:<window index>`, or `null` when the tmux server no longer has the pane |
@@ -241,9 +243,13 @@ cc-session-tools watch --here --events-stream=stdout --timeout=10m
 
 One status transition can yield two events: `busy` to `idle` is `status_changed` and `turn_finished`, anything to `waiting` is `status_changed` and `waiting`. Take `--events=turns` for the derived events alone. A change is reported for a session that matched before it, so a rename out of a `--name` glob is `renamed`, then `session_unmatched`. A session that starts to match is reported once, as `session_matched` with its new state.
 
-`--events` and `--exclude-events` take kinds and groups, comma-separated and repeatable. `lifecycle` is always on. An unknown kind or group, or one this watch never produces, is an error at start: `busy_long` needs `--busy-after`, `waiting_long` needs `--waiting-after`, and a watch of named sessions never produces `session_started`, `session_matched` or `session_unmatched`.
+`--events` and `--exclude-events` take kinds and groups, comma-separated and repeatable. `lifecycle` is always on. An unknown kind or group, or one this watch never produces, is an error at start: `busy_long` needs `--busy-after`, `waiting_long` needs `--waiting-after`, `idle_long` needs `--idle-after` or `--idle-every`, and a watch of named sessions never produces `session_started`, `session_matched` or `session_unmatched`.
 
-**Ends and thresholds.** `--until=<kind>` stops after the first reported event of that kind. `--timeout` stops that long after the start, `--stop-after-quiet` when nothing was reported for that long; `busy_long` and `waiting_long` do not count as activity. `--busy-after` reports `busy_long` once per busy stretch of a session, `--waiting-after` reports `waiting_long` once per waiting stretch. A stretch starts at the record's `statusUpdatedAt`, so a session that was already busy for an hour when the watch started gets its `busy_long` at once. Durations are `90s`, `30m`, `2h`, `1h30m` or plain seconds.
+**Ends and thresholds.** `--until=<kind>` stops after the first reported event of that kind. `--timeout` stops that long after the start, `--stop-after-quiet` when nothing was reported for that long; `busy_long`, `waiting_long` and `idle_long` do not count as activity. `--busy-after` reports `busy_long` once per busy stretch of a session, `--waiting-after` reports `waiting_long` once per waiting stretch. A stretch starts at the record's `statusUpdatedAt`, so a session that was already busy for an hour when the watch started gets its `busy_long` at once.
+
+**Idle thresholds.** `--idle-after` reports `idle_long` once per idle stretch, when a session has had the status `idle` for that long since its last model response, in its transcript or any subagent's. It is repeatable: `--idle-after 10m --idle-after 50m` gives two events per stretch. `--idle-every` reports `idle_long` again at every multiple of its duration within the stretch, for example to decide whether to keep a session's prompt cache warm. A stretch ends at the next model response, so a message that makes the session answer starts the count again. A turn without a response, such as a local command, does not. A session without any response counts from its start. When a watch starts, or polls late, past several thresholds of one stretch, it reports the longest one once, so a session idle for three hours when the watch starts gets one `idle_long`. The watcher reads the end of the transcript when a session becomes idle and again before it reports `idle_long`, because a background subagent can answer while its session stays idle.
+
+Durations are `90s`, `30m`, `2h`, `1h30m` or plain seconds.
 
 **Startup header.** The header, the `ended: <reason>` line and errors go to stderr, each line prefixed `cc-session-tools watch: ` and never starting with `{`, so in merged output every line that starts with `{` is an event:
 

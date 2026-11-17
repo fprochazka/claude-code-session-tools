@@ -27,13 +27,16 @@ from typing import Any, Literal
 from cc_blackbox import (
     ActiveSession,
     AmbiguousSession,
+    ClaudeBlackboxError,
     ClaudeProfile,
     CostState,
     ProfileNotFound,
     SessionNotFound,
     SessionTranscript,
     find_session,
+    find_session_transcript,
     list_profiles,
+    read_session_transcript,
 )
 
 from .discovery import Scope
@@ -366,6 +369,28 @@ def activity_of(session: ActiveSession) -> Activity:
     transcript = session.transcript
     last = transcript.last_model_activity_at if transcript is not None else None
     return Activity(last, False) if last is not None else Activity(session.started_at, True)
+
+
+def read_last_response(session: ActiveSession) -> datetime | None:
+    """The session's newest model response, in its main transcript or any subagent's, read from the files now.
+
+    :attr:`ActiveSession.transcript` is a snapshot of the moment the session was listed; a watch needs the current
+    value. A transcript that is not at :attr:`ActiveSession.transcript_path`, because the session wrote none when it was
+    listed or moved it on a cwd change, is looked up by session id. ``None`` when there is no transcript or no response.
+    """
+    try:
+        path = session.transcript_path
+        if path is not None and path.is_file():
+            transcript = read_session_transcript(path)
+        elif session.session_id is not None:
+            transcript = find_session_transcript(
+                session.session_id, [session.profile], cwd=session.launch_cwd or session.cwd
+            )
+        else:
+            return None
+        return transcript.last_model_activity_at
+    except (ClaudeBlackboxError, OSError):
+        return None
 
 
 def active_since(sessions: Iterable[ActiveSession], since: datetime) -> list[ActiveSession]:

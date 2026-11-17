@@ -26,6 +26,7 @@ TURN_FINISHED = "turn_finished"
 WAITING = "waiting"
 BUSY_LONG = "busy_long"
 WAITING_LONG = "waiting_long"
+IDLE_LONG = "idle_long"
 RENAMED = "renamed"
 CWD_CHANGED = "cwd_changed"
 TMUX_MOVED = "tmux_moved"
@@ -34,7 +35,7 @@ GROUPS: Mapping[str, tuple[str, ...]] = {
     "membership": (SESSION_STARTED, SESSION_ENDED, SESSION_MATCHED, SESSION_UNMATCHED),
     "status": (STATUS_CHANGED,),
     "turns": (TURN_FINISHED, WAITING),
-    "thresholds": (BUSY_LONG, WAITING_LONG),
+    "thresholds": (BUSY_LONG, WAITING_LONG, IDLE_LONG),
     "changes": (RENAMED, CWD_CHANGED, TMUX_MOVED),
     "lifecycle": LIFECYCLE_KINDS,
 }
@@ -44,7 +45,11 @@ GROUPS: Mapping[str, tuple[str, ...]] = {
 SESSION_KINDS: tuple[str, ...] = tuple(kind for name, kinds in GROUPS.items() if name != "lifecycle" for kind in kinds)
 ALL_KINDS: frozenset[str] = frozenset(SESSION_KINDS) | frozenset(LIFECYCLE_KINDS)
 
-THRESHOLD_OPTIONS: Mapping[str, str] = {BUSY_LONG: "--busy-after", WAITING_LONG: "--waiting-after"}
+THRESHOLD_OPTIONS: Mapping[str, str] = {
+    BUSY_LONG: "--busy-after",
+    WAITING_LONG: "--waiting-after",
+    IDLE_LONG: "--idle-after or --idle-every",
+}
 """The kinds the watch reports only when their option is given."""
 
 JOIN_LEAVE_KINDS: tuple[str, ...] = (SESSION_STARTED, SESSION_MATCHED, SESSION_UNMATCHED)
@@ -94,7 +99,7 @@ def _expand(values: Iterable[str], option: str, produced: frozenset[str], why_no
 
 def _why_not(fixed_set: bool) -> dict[str, str]:
     reasons = {kind: f"it needs {option}" for kind, option in THRESHOLD_OPTIONS.items()}
-    reasons["thresholds"] = "it needs --busy-after or --waiting-after"
+    reasons["thresholds"] = "it needs --busy-after, --waiting-after, --idle-after or --idle-every"
     if fixed_set:
         for kind in JOIN_LEAVE_KINDS:
             reasons[kind] = "a watch of named sessions has a fixed set"

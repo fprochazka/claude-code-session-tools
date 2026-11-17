@@ -32,10 +32,11 @@ from typing import Any
 
 from cc_blackbox import ActiveSession, EventSink, list_active_sessions, list_profiles
 
-from .active import Filters, TmuxPane, TmuxState, list_tmux_panes, pane_id_of, waiting_for
+from .active import Filters, TmuxPane, TmuxState, list_tmux_panes, pane_id_of, read_last_response, waiting_for
 from .watch_events import (
     BUSY_LONG,
     CWD_CHANGED,
+    IDLE_LONG,
     RENAMED,
     SESSION_ENDED,
     SESSION_MATCHED,
@@ -171,6 +172,12 @@ class Tracked:
     tmux_live: TmuxPane | None = None
     threshold_sent: bool = False
     """Whether ``busy_long`` or ``waiting_long`` was reported for the current status stretch."""
+    idle_since: float | None = None
+    """The start of the current idle stretch: the last model response, else the session's start."""
+    idle_checked: bool = False
+    """Whether :attr:`idle_since` was read from the transcript since the status last changed."""
+    idle_reported: float = 0.0
+    """The longest ``idle_long`` threshold reported in the current idle stretch, ``0`` for none."""
 
     @property
     def pid(self) -> int:
@@ -202,6 +209,10 @@ class Selection:
 class Thresholds:
     busy_after: float | None = None
     waiting_after: float | None = None
+    idle_after: tuple[float, ...] = ()
+    """``--idle-after``: each is reported once per idle stretch."""
+    idle_every: float | None = None
+    """``--idle-every``: every multiple is reported once per idle stretch."""
 
     def enabled(self) -> list[str]:
         kinds = []
@@ -209,7 +220,27 @@ class Thresholds:
             kinds.append(BUSY_LONG)
         if self.waiting_after is not None:
             kinds.append(WAITING_LONG)
+        if self.idles:
+            kinds.append(IDLE_LONG)
         return kinds
+
+    @property
+    def idles(self) -> bool:
+        return bool(self.idle_after) or self.idle_every is not None
+
+    def idle_due(self, idle_for: float) -> float | None:
+        """The longest idle threshold that ``idle_for`` seconds have reached, or ``None``."""
+        reached = [after for after in self.idle_after if after <= idle_for]
+        if self.idle_every is not None and idle_for >= self.idle_every:
+            reached.append((idle_for // self.idle_every) * self.idle_every)
+        return max(reached, default=None)
+
+    def next_idle(self, reported: float) -> float | None:
+        """The shortest idle threshold above ``reported``, or ``None`` when no threshold is left."""
+        ahead = [after for after in self.idle_after if after > reported]
+        if self.idle_every is not None:
+            ahead.append((reported // self.idle_every + 1) * self.idle_every)
+        return min(ahead, default=None)
 
     def for_status(self, status: str | None) -> tuple[str, float] | None:
         if status == "busy" and self.busy_after is not None:
@@ -224,11 +255,17 @@ class Thresholds:
             parts.append(f"{BUSY_LONG} after {format_duration(self.busy_after)}")
         if self.waiting_after is not None:
             parts.append(f"{WAITING_LONG} after {format_duration(self.waiting_after)}")
+        idle = [format_duration(after) for after in self.idle_after]
+        if self.idle_every is not None:
+            idle.append(f"every {format_duration(self.idle_every)}")
+        if idle:
+            parts.append(f"{IDLE_LONG} after {', '.join(idle)} since the last model response")
         return ", ".join(parts)
 
 
 ListSessions = Callable[[], list[ActiveSession]]
 ListPanes = Callable[[], dict[str, TmuxPane] | None]
+ReadLastResponse = Callable[[ActiveSession], datetime | None]
 
 
 class SessionTracker:
@@ -243,6 +280,7 @@ class SessionTracker:
         list_sessions: ListSessions = list_active_sessions,
         list_panes: ListPanes = list_tmux_panes,
         is_running: Callable[[int], bool] = process_running,
+        last_response: ReadLastResponse = read_last_response,
         tmux_interval: float = TMUX_INTERVAL,
     ) -> None:
         self.selection = selection
@@ -251,6 +289,7 @@ class SessionTracker:
         self._list_sessions = list_sessions
         self._list_panes = list_panes
         self._is_running = is_running
+        self._last_response = last_response
         self.tmux_interval = tmux_interval
         self.tracked: dict[int, Tracked] = {}
         self._stamps: dict[Path, Stamp] = {}
@@ -422,6 +461,7 @@ class SessionTracker:
         if new.status != old.status:
             tracked.status_since = _status_since(new, now)
             tracked.threshold_sent = False
+            tracked.idle_checked = False
             reason = waiting_for(new)
             change: dict[str, Any] = {"from": old.status, "to": new.status}
             if reason is not None:
@@ -480,9 +520,50 @@ class SessionTracker:
                     events.append(self._event(SESSION_UNMATCHED, tracked, observed))
         return events
 
+    def _read_idle_since(self, tracked: Tracked) -> None:
+        """Read the start of the idle stretch from the transcript. A newer model response starts a new stretch."""
+        response = self._last_response(tracked.session)
+        started = tracked.session.started_at
+        if response is not None:
+            since = response.timestamp()
+        elif started is not None:
+            since = started.timestamp()
+        else:
+            since = tracked.status_since
+        if since != tracked.idle_since:
+            tracked.idle_since = since
+            tracked.idle_reported = 0.0
+        tracked.idle_checked = True
+
+    def _idle_long(self, tracked: Tracked, now: float, observed: str) -> WatchEvent | None:
+        """``idle_long`` for the longest threshold the idle stretch has reached and not yet reported.
+
+        The transcript is read when the session becomes idle, and again before a threshold is reported, because a
+        response does not always show in the registry: a background subagent answers while its session stays idle, and
+        a turn shorter than one poll is missed.
+        """
+        fresh = not tracked.idle_checked
+        if fresh:
+            self._read_idle_since(tracked)
+        assert tracked.idle_since is not None
+        due = self.thresholds.idle_due(now - tracked.idle_since)
+        if due is None or due <= tracked.idle_reported:
+            return None
+        if not fresh:
+            self._read_idle_since(tracked)
+            due = self.thresholds.idle_due(now - tracked.idle_since)
+            if due is None or due <= tracked.idle_reported:
+                return None
+        tracked.idle_reported = due
+        return self._event(IDLE_LONG, tracked, observed, threshold=format_duration(due))
+
     def _thresholds(self, now: float, observed: str) -> list[WatchEvent]:
         events = []
         for tracked in self.ordered():
+            if self.thresholds.idles and tracked.matched and tracked.session.status == "idle":
+                event = self._idle_long(tracked, now, observed)
+                if event is not None:
+                    events.append(event)
             due = self.thresholds.for_status(tracked.session.status)
             if due is None or tracked.threshold_sent or not tracked.matched:
                 continue
@@ -498,6 +579,13 @@ class SessionTracker:
             due = self.thresholds.for_status(tracked.session.status)
             if due is not None and tracked.matched and not tracked.threshold_sent:
                 waits.append(max(0.0, tracked.status_since + due[1] - now))
+            if self.thresholds.idles and tracked.matched and tracked.session.status == "idle":
+                if not tracked.idle_checked or tracked.idle_since is None:
+                    waits.append(0.0)
+                    continue
+                ahead = self.thresholds.next_idle(tracked.idle_reported)
+                if ahead is not None:
+                    waits.append(max(0.0, tracked.idle_since + ahead - now))
         return min(waits) if waits else None
 
 

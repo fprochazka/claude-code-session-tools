@@ -273,6 +273,19 @@ def watch(
         help="Report waiting_long once per waiting stretch of a session that waits this long.",
         show_default=False,
     ),
+    idle_after: list[str] = typer.Option(
+        None,
+        "--idle-after",
+        help="Report idle_long once per idle stretch of a session that is idle this long after its last model "
+        "response. A stretch ends at the next model response. Repeatable.",
+        show_default=False,
+    ),
+    idle_every: str = typer.Option(
+        None,
+        "--idle-every",
+        help="Report idle_long at every multiple of this duration within an idle stretch.",
+        show_default=False,
+    ),
     events_stream: StreamMode = typer.Option(
         StreamMode.auto,
         "--events-stream",
@@ -289,7 +302,12 @@ def watch(
     watch_started with the matching sessions, the last is watch_ended with a reason. Without SESSION, a session that
     starts to match the filters joins the watch and one that stops matching leaves it.
     """
-    thresholds = Thresholds(_duration("--busy-after", busy_after), _duration("--waiting-after", waiting_after))
+    thresholds = Thresholds(
+        _duration("--busy-after", busy_after),
+        _duration("--waiting-after", waiting_after),
+        idle_after=tuple(sorted({cast(float, _duration("--idle-after", value)) for value in idle_after or []})),
+        idle_every=_duration("--idle-every", idle_every),
+    )
     ends = Ends(until, _duration("--timeout", timeout), _duration("--stop-after-quiet", stop_after_quiet))
     fixed = bool(sessions)
     try:

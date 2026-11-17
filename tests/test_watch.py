@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import Machine, RealTmux, fake_tmux
+from cc_blackbox import project_slug
+from conftest import Machine, RealTmux, fake_tmux, response, sid, write_records
 from typer.testing import CliRunner
 
 from cc_session_tools.active import Filters, resolve_profile_globs
@@ -352,6 +353,82 @@ def test_waiting_long(machine: Machine) -> None:
     assert event.data == {"session": "work/asking", "after": "2m"}
 
 
+def transcript(machine: Machine, name: str, *responses_at: float) -> None:
+    """Write the transcript of the session ``name`` of the ``work`` profile, with a model response at each time."""
+    project = machine.config_dir("work") / "projects" / project_slug(machine.home / "elsewhere")
+    write_records(project / f"{sid(name)}.jsonl", [response(at) for at in responses_at])
+
+
+def idle_long(events: list[WatchEvent]) -> list[str]:
+    return [e.data["threshold"] for e in events if e.kind == "idle_long"]
+
+
+def test_idle_long_once_per_threshold_until_the_next_model_response(machine: Machine) -> None:
+    pid = machine.session("work", "worker")
+    transcript(machine, "worker", NOW - 60)
+    t = tracker(thresholds=Thresholds(idle_after=(600, 3000)))
+    assert t.poll(NOW + 1) == []
+    assert t.seconds_until_threshold(NOW + 1) == pytest.approx(539)
+
+    [event] = t.poll(NOW + 540)
+    assert (event.kind, event.data) == ("idle_long", {"session": "work/worker", "threshold": "10m"})
+    assert t.poll(NOW + 600) == []
+    assert idle_long(t.poll(NOW + 2940)) == ["50m"]
+    assert t.poll(NOW + 9000) == []
+
+    # A turn without a model response, such as a local command, does not end the stretch.
+    machine.update(pid, status="busy")
+    t.poll(NOW + 9001)
+    machine.update(pid, status="idle")
+    assert idle_long(t.poll(NOW + 9002)) == []
+
+    # The next response does: the thresholds count again from it.
+    machine.update(pid, status="busy")
+    t.poll(NOW + 9010)
+    transcript(machine, "worker", NOW - 60, NOW + 9020)
+    machine.update(pid, status="idle")
+    assert kinds(t.poll(NOW + 9021)) == ["status_changed", "turn_finished"]
+    assert idle_long(t.poll(NOW + 9619)) == []
+    assert idle_long(t.poll(NOW + 9620)) == ["10m"]
+
+
+def test_a_response_without_a_status_change_starts_a_new_stretch(machine: Machine) -> None:
+    machine.session("work", "worker")
+    transcript(machine, "worker", NOW)
+    t = tracker(thresholds=Thresholds(idle_after=(600,)))
+    assert t.poll(NOW + 1) == []
+    # A background subagent answers, or a turn passes between two polls, while the record stays idle.
+    transcript(machine, "worker", NOW, NOW + 300)
+    assert t.poll(NOW + 600) == []
+    assert t.seconds_until_threshold(NOW + 600) == pytest.approx(300)
+    assert idle_long(t.poll(NOW + 900)) == ["10m"]
+
+
+def test_idle_every_repeats_within_a_stretch_and_reports_only_the_longest_threshold_reached(
+    machine: Machine,
+) -> None:
+    machine.session("work", "worker")
+    transcript(machine, "worker", NOW)
+    t = tracker(thresholds=Thresholds(idle_after=(600,), idle_every=1800))
+    assert idle_long(t.poll(NOW + 600)) == ["10m"]
+    assert idle_long(t.poll(NOW + 1800)) == ["30m"]
+    assert t.seconds_until_threshold(NOW + 1800) == pytest.approx(1800)
+    assert idle_long(t.poll(NOW + 3600)) == ["1h"]
+    # A watch that wakes late reports the longest threshold passed, once.
+    assert idle_long(t.poll(NOW + 9100)) == ["2h30m"]
+    assert idle_long(t.poll(NOW + 9200)) == []
+
+
+def test_idle_long_for_a_session_already_idle_at_the_start(machine: Machine) -> None:
+    machine.session("work", "worker")
+    machine.session("work", "busy-one", status="busy")
+    transcript(machine, "worker", NOW - 7200)
+    transcript(machine, "busy-one", NOW - 7200)
+    t = tracker(thresholds=Thresholds(idle_after=(600, 3000)))
+    [event] = t.poll(NOW + 1)
+    assert (event.data["session"], event.data["threshold"]) == ("work/worker", "50m")
+
+
 # --- ends ---
 
 
@@ -473,6 +550,7 @@ def test_filter_expands_groups_and_always_keeps_the_lifecycle() -> None:
         (["tunrs"], None, {}, "unknown event kind or group 'tunrs'"),
         (["busy_long"], None, {}, "it needs --busy-after"),
         (["thresholds"], None, {}, "the group 'thresholds' has no events"),
+        (["idle_long"], None, {}, "it needs --idle-after or --idle-every"),
         (None, ["lifecycle"], {}, "cannot be excluded"),
         (["session_started"], None, {"fixed_set": True}, "never produces 'session_started'"),
         (["turns"], None, {"enabled_thresholds": ["busy_long"]}, "--busy-after: 'busy_long' is filtered out"),
@@ -577,6 +655,19 @@ def test_command_falls_back_to_stdout_when_the_session_takes_no_messages(
     assert "--events-stream=claude-message is not possible" in result.stderr
 
 
+def test_command_takes_repeated_idle_thresholds(machine: Machine) -> None:
+    machine.session("work", "worker")
+    result = invoke(
+        "--idle-after=50m", "--idle-after=10m", "--idle-every=30m", "--timeout=1s", "--events-stream=stdout"
+    )
+    assert result.exit_code == 0, result.output
+    assert (
+        "cc-session-tools watch: thresholds: idle_long after 10m, 50m, every 30m since the last model response"
+        in result.stderr
+    )
+    assert "idle_long" in result.stderr.split("events: ", 1)[1].splitlines()[0]
+
+
 def test_command_tmux_session_current(machine: Machine, no_tmux: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_tmux(no_tmux, ["%1\tcoord\t0\t@1\t", "%2\tcoord\t1\t@2\t", "%3\telse\t0\t@3\t"])
     machine.session("work", "neighbour", tmux="coord:@2.%2")
@@ -598,6 +689,8 @@ def test_command_tmux_session_current(machine: Machine, no_tmux: Path, monkeypat
     ("args", "code", "message"),
     [
         (["--timeout=soon"], 2, "--timeout: cannot read the duration 'soon'"),
+        (["--idle-every=0"], 2, "--idle-every: the duration must be longer than zero"),
+        (["--idle-after=10m", "--events=turns"], 2, "--idle-after or --idle-every: 'idle_long' is filtered out"),
         (["--events=nope"], 2, "unknown event kind or group 'nope'"),
         (["--until=watch_started"], 2, "--until: 'watch_started' is not an event kind this watch reports"),
         (["--until=renamed", "--events=turns"], 2, "--until: 'renamed'"),

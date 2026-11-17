@@ -137,14 +137,19 @@ def _epoch(data: dict[str, Any], key: str) -> float | None:
 def refreshed(session: ActiveSession, data: dict[str, Any]) -> ActiveSession:
     """``session`` with the fields a running session rewrites taken from its new record.
 
-    Everything cc-blackbox derived once, such as the profile and the launch dir, stays.
+    Everything cc-blackbox derived once, such as the profile and the launch dir, stays, except the transcript path
+    when the session id changed: ``/clear`` and an in-process ``/resume`` give the running process another session
+    id, and the old transcript belongs to the session it left. The readers look the new one up by session id.
     """
     cwd = _str(data, "cwd")
     socket = _str(data, "messagingSocketPath")
     updated = _epoch(data, "updatedAt")
+    session_id = _str(data, "sessionId")
+    if session_id != session.session_id:
+        session = replace(session, transcript_path=None, _transcript_projects_dir=None)
     return replace(
         session,
-        session_id=_str(data, "sessionId"),
+        session_id=session_id,
         name=_str(data, "name"),
         name_source=_str(data, "nameSource"),
         cwd=Path(cwd) if cwd and cwd != "?" else None,
@@ -185,7 +190,10 @@ class Tracked:
     threshold_sent: bool = False
     """Whether ``busy_long`` or ``waiting_long`` was reported for the current status stretch."""
     idle_since: float | None = None
-    """The start of the current idle stretch: the last model response, else the session's start."""
+    """The start of the current idle stretch: the newest of the last model response, the start of the session's
+    process, and :attr:`session_switched`."""
+    session_switched: float | None = None
+    """When the watch saw the session id change, by ``/clear`` or an in-process ``/resume``."""
     idle_checked: bool = False
     """Whether :attr:`idle_since` was read from the transcript since the status last changed."""
     idle_reported: float = 0.0
@@ -496,6 +504,10 @@ class SessionTracker:
             changed(RENAMED, **{"from": old_identity})
         if new.cwd != old.cwd:
             changed(CWD_CHANGED, to=_text(new.cwd))
+        if new.session_id != old.session_id:
+            # The record's updatedAt is when Claude Code wrote the new id.
+            tracked.session_switched = _epoch(dict(new.raw), "updatedAt") or now
+            tracked.idle_checked = False
         if new.status != old.status:
             tracked.status_since = _status_since(new, now)
             tracked.threshold_sent = False
@@ -580,15 +592,23 @@ class SessionTracker:
         return events
 
     def _read_idle_since(self, tracked: Tracked) -> None:
-        """Read the start of the idle stretch from the transcript. A newer model response starts a new stretch."""
+        """Read the start of the idle stretch from the transcript. A newer model response starts a new stretch.
+
+        The stretch starts no earlier than the session's process, nor than a change of its session id: a resumed
+        session's transcript holds the responses of its earlier runs, which say nothing about this one.
+        """
         response = self._last_response(tracked.session)
         started = tracked.session.started_at
-        if response is not None:
-            since = response.timestamp()
-        elif started is not None:
-            since = started.timestamp()
-        else:
-            since = tracked.status_since
+        times = [
+            t
+            for t in (
+                response.timestamp() if response is not None else None,
+                started.timestamp() if started is not None else None,
+                tracked.session_switched,
+            )
+            if t is not None
+        ]
+        since = max(times, default=tracked.status_since)
         if since != tracked.idle_since:
             tracked.idle_since = since
             tracked.idle_reported = 0.0

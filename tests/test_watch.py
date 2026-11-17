@@ -457,6 +457,39 @@ def test_idle_long_once_per_threshold_until_the_next_model_response(machine: Mac
     assert idle_long(t.poll(NOW + 9620)) == ["10m"]
 
 
+def test_a_resumed_session_is_idle_since_its_process_started(machine: Machine) -> None:
+    # The transcript's newest response is from the run before the resume.
+    machine.session("work", "worker", startedAt=int((NOW - 60) * 1000))
+    transcript(machine, "worker", NOW - 7200)
+    t = tracker(thresholds=Thresholds(idle_after=(600,)))
+    assert t.poll(NOW + 1) == []
+    assert t.poll(NOW + 539) == []
+    assert idle_long(t.poll(NOW + 540)) == ["10m"]
+
+
+def test_a_new_session_id_drops_the_old_transcript_and_starts_a_new_stretch(machine: Machine) -> None:
+    pid = machine.session("work", "worker")
+    transcript(machine, "worker", NOW - 60)
+    t = tracker(thresholds=Thresholds(idle_after=(600,)))
+    assert t.poll(NOW + 1) == []
+
+    # /clear: the same process writes a new session id into its record; it has no transcript until its first prompt.
+    machine.update(pid, sessionId=sid("cleared"), updatedAt=int((NOW + 300) * 1000))
+    assert t.poll(NOW + 300) == []
+    assert t.tracked[pid].session.transcript_path is None
+    assert t.poll(NOW + 540) == []
+    assert idle_long(t.poll(NOW + 900)) == ["10m"]
+
+    # Its first turn writes the new transcript, and its response starts the next stretch.
+    machine.update(pid, status="busy")
+    t.poll(NOW + 990)
+    transcript(machine, "cleared", NOW + 1000)
+    machine.update(pid, status="idle")
+    t.poll(NOW + 1001)
+    assert t.poll(NOW + 1599) == []
+    assert idle_long(t.poll(NOW + 1600)) == ["10m"]
+
+
 def test_a_response_without_a_status_change_starts_a_new_stretch(machine: Machine) -> None:
     machine.session("work", "worker")
     transcript(machine, "worker", NOW)

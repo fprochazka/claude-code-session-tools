@@ -363,7 +363,7 @@ By default the session runs in `~/.cache/cc-session-tools/live-test`. Claude Cod
 
 ## Releasing
 
-Landing on master is the release. There is no PyPI package, and no tags, GitHub releases or release notes. A change lands by fast-forwarding master and pushing it.
+A release is an annotated tag on master and a GitHub release with notes. There is no PyPI package: users install from a clone, so a change reaches them when they pull master. The tag marks which commit is which version, and the release notes say what changed.
 
 The version lives in five places, and one release bumps all five to the same number:
 
@@ -373,11 +373,37 @@ The version lives in five places, and one release bumps all five to the same num
 - `.claude-plugin/marketplace.json` (`plugins[0].version`)
 - `coding-agent-plugins/claude-code/.claude-plugin/plugin.json` (`version`)
 
-The bump is a standalone `Release x.y.z` commit, the last commit of the change. Bump the minor version for features and the patch version for fixes; every release so far was a minor bump.
+Bump the minor version for features and for breaking changes, and the patch version for fixes. Say what breaks in the release notes.
 
 The skills embed the `--help` output of the subcommands they cover. When a subcommand's options or help text change, regenerate those blocks with `COLUMNS=80`, for example `COLUMNS=80 uv run cc-session-tools inspect --help`, so the wrapping stays stable.
 
-CI runs on every push to master and on pull requests: ruff check and ruff format check, and the tests on Python 3.11, 3.12 and 3.13. Check that the run of the release commit is green.
+CI runs on every push to master and on pull requests: ruff check and ruff format check, and the tests on Python 3.11, 3.12 and 3.13. It does not run on tags.
+
+To release version `X.Y.Z`:
+
+1. Bump the version in the five places. Run `uv lock` to update `uv.lock`.
+2. Commit the five files as `Release X.Y.Z`, the last commit of the change.
+3. Fast-forward master to the commit with `git push origin HEAD:master`, without a pull request. Wait until the CI run of that commit is green: find its id with `gh run list -w ci.yml -L 1`, then run `gh run watch <run id> --exit-status`.
+4. Tag the commit and push only the tag:
+
+   ```shell
+   git tag -a vX.Y.Z -m "claude-code-session-tools X.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+5. Write the release notes to a file and create the GitHub release:
+
+   ```shell
+   gh release create vX.Y.Z --verify-tag --latest --title vX.Y.Z --notes-file <notes.md>
+   ```
+
+6. Check that `gh release list` shows `vX.Y.Z` as `Latest`. A release is not done until it does.
+
+The release title is the tag name, without the project name. The notes have this format:
+
+- One sentence that says what the release does for the user, followed by "Unofficial, not affiliated with or endorsed by Anthropic."
+- A code block with the install commands from [Installation](#installation).
+- `## Added`, `## Changed`, `## Fixed` and `## Breaking` sections, only those that apply. Each bullet names the command or option and says what it does or what to change.
 
 Users pick up a release by pulling their clone and reinstalling the tool, then updating the plugin:
 

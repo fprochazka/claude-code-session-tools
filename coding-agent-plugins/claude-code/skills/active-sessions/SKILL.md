@@ -189,6 +189,7 @@ Options:
 The classification reads Claude Code's screen layout and answers `unknown` whenever it is not certain, so it breaks safely when the UI changes:
 
 - **Type only at `prompt_empty`.** `prompt_has_input` means someone, often the user, has half-typed text there; typing would append to it. A dimmed `Try "…"` placeholder or a dimmed suggestion counts as empty, because typing replaces it, but only with the cursor right after `❯`: typed spaces do not show in a capture, and they give `unknown`. A `[Pasted text #1 +40 lines]` or `[Image #1]` marker is input.
+- **Vim mode is invisible.** A session with vim mode on, in NORMAL mode, reads as `prompt_empty`, but takes typed keys as vim commands. Its screen looks like that of a session without vim mode. If the session's footer shows `-- INSERT --`, it uses vim mode and is in INSERT mode now; if you know a session uses vim mode, send `Escape` then `i` before you type.
 - **`busy`** is the spinner above the prompt box or the greyed `❯` that Claude Code draws while it works, whatever the box holds. Text typed now is queued; wait for the turn to end.
 - **`unknown`** covers everything else: shell mode (`!`), the transcript view, an unfamiliar overlay. Do not type; capture the pane again later or look at `lines`.
 - The state is a snapshot. Check it right before you type, and check `title` before you answer a dialog.

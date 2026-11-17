@@ -27,10 +27,14 @@ EXPECTED = {
     "prompt-empty-placeholder-nostatusline": Classification("prompt_empty"),
     "prompt-empty-shell-running": Classification("prompt_empty"),
     "prompt-empty-suggestion": Classification("prompt_empty"),
+    "prompt-empty-vim-insert": Classification("prompt_empty"),
+    # Wrong, and a known gap: vim NORMAL mode takes the keys as commands. See the test below.
+    "prompt-empty-vim-normal": Classification("prompt_empty"),
     "prompt-has-input": Classification("prompt_has_input"),
     "prompt-has-input-image": Classification("prompt_has_input"),
     "prompt-has-input-paste": Classification("prompt_has_input"),
     "prompt-has-input-placeholder-lookalike": Classification("prompt_has_input"),
+    "prompt-has-input-vim-normal": Classification("prompt_has_input"),
     "prompt-has-input-slash-menu": Classification("prompt_has_input"),
     "prompt-multiline": Classification("prompt_has_input"),
     "unknown-bash-mode": Classification("unknown"),
@@ -43,6 +47,9 @@ CURSORS = {
     "prompt-empty-after-interrupt-cursor": (2, 79),
     "prompt-empty-suggestion": (2, 79),
     "unknown-typed-spaces": (5, 79),
+    "prompt-empty-vim-insert": (2, 79),
+    "prompt-empty-vim-normal": (2, 79),
+    "prompt-has-input-vim-normal": (11, 79),
     # Captured before the cursor was recorded. Every empty prompt captured since, and the live contract test, has the
     # cursor right after the glyph.
     "prompt-empty-after-interrupt": (2, 79),
@@ -75,6 +82,16 @@ def test_an_empty_prompt_without_the_cursor_after_the_glyph_is_unknown(name: str
     assert classify(fixture(name)).state == "unknown"
     assert classify(fixture(name), (x + 3, y)).state == "unknown"
     assert classify(fixture(name), (x, y - 1)).state == "unknown"
+
+
+def test_vim_normal_mode_shows_the_footer_of_a_session_without_vim_mode() -> None:
+    """Why NORMAL mode reads as ``prompt_empty``: its screen differs from INSERT mode only in the footer, which loses
+    ``-- INSERT --`` and then looks like the footer of a session without vim mode."""
+    insert = plain_lines(fixture("prompt-empty-vim-insert"))
+    normal = plain_lines(fixture("prompt-empty-vim-normal"))
+    assert insert[-1].split() == ["--", "INSERT", "--", "⏸", "manual", "mode", "on", "·", "←", "for", "agents"]
+    assert normal[-1].split() == ["⏸", "manual", "mode", "on", "·", "?", "for", "shortcuts"]
+    assert plain_lines(fixture("prompt-empty-after-interrupt-cursor"))[-1] == normal[-1]
 
 
 def test_typed_spaces_are_told_from_an_empty_prompt_only_by_the_cursor() -> None:

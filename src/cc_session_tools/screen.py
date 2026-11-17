@@ -24,6 +24,9 @@ Known gaps:
 - Busy detection without a spinner relies on the grey prompt glyph of the dark theme (256-color 241 in the captures).
   Other greys and dim count as busy too; any other glyph color gives ``unknown``.
 - There are no captures of the light themes.
+- Vim mode's NORMAL mode reads as ``prompt_empty``, although it takes typed keys as commands. Its screen differs from
+  INSERT mode only in the footer, which loses ``-- INSERT --`` and then looks like the footer of a session without vim
+  mode, and tmux 3.4 reports no cursor shape. Whether a session has vim mode on is in its settings, not on its screen.
 - Only a Bash permission prompt was captured. Edit and WebFetch permission prompts should match the same ``Do you want
   to …?`` rule, untested.
 """

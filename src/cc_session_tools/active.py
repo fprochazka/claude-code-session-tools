@@ -173,10 +173,60 @@ class SessionView:
         return f"uds:{socket}" if socket is not None else None
 
 
-def build_views(sessions: Sequence[ActiveSession], *, with_git: bool = True) -> list[SessionView]:
-    """Resolve the tmux pane of every session with one tmux call, and the git location of each distinct cwd once."""
-    needs_tmux = any(pane_id_of(s.tmux) is not None for s in sessions)
-    panes = list_tmux_panes() if needs_tmux else None
+CURRENT_TMUX_SESSION = "current"
+"""The ``--tmux-session`` value that stands for the tmux session this command runs in."""
+
+
+class TmuxSessionNotFound(LookupError):
+    """A ``--tmux-session`` value names no tmux session of the running server."""
+
+
+def resolve_tmux_session(value: str, panes: Mapping[str, TmuxPane] | None) -> str:
+    """The tmux session name that ``--tmux-session`` selects.
+
+    ``current`` is the session of the pane in ``$TMUX_PANE``, the pane this command runs in, where that pane is now.
+    Any other value must be the exact name of a session of the tmux server, so a typo is an error instead of an empty
+    selection.
+
+    Raises:
+        TmuxSessionNotFound: the message says why.
+    """
+    if panes is None:
+        raise TmuxSessionNotFound("--tmux-session: cannot read the tmux server; is tmux installed and running?")
+    if value == CURRENT_TMUX_SESSION:
+        pane = os.environ.get("TMUX_PANE")
+        if not pane:
+            raise TmuxSessionNotFound("--tmux-session current: this command does not run in tmux ($TMUX_PANE is unset)")
+        if pane not in panes:
+            raise TmuxSessionNotFound(f"--tmux-session current: the tmux server has no pane {pane} ($TMUX_PANE)")
+        return panes[pane].session
+    names = sorted({p.session for p in panes.values()})
+    if value not in names:
+        raise TmuxSessionNotFound(
+            f"--tmux-session: no tmux session is named {value!r}. tmux sessions: {', '.join(names) or 'none'}."
+        )
+    return value
+
+
+def live_pane(session: ActiveSession, panes: Mapping[str, TmuxPane] | None) -> TmuxPane | None:
+    """The pane the session runs in, where the tmux server has it now, or ``None``."""
+    pane_id = pane_id_of(session.tmux)
+    return panes.get(pane_id) if pane_id is not None and panes is not None else None
+
+
+def build_views(
+    sessions: Sequence[ActiveSession],
+    *,
+    with_git: bool = True,
+    panes: Mapping[str, TmuxPane] | None = None,
+) -> list[SessionView]:
+    """Resolve the tmux pane of every session with one tmux call, and the git location of each distinct cwd once.
+
+    ``panes`` is a listing of the tmux server the caller already has; without it, tmux is asked when a session runs
+    in tmux.
+    """
+    if panes is None and any(pane_id_of(s.tmux) is not None for s in sessions):
+        panes = list_tmux_panes()
     git_cache: dict[Path, GitLocation | None] = {}
     views = []
     for session in sessions:
@@ -231,8 +281,11 @@ class Filters:
     in_tmux: bool | None = None
     name_glob: str | None = None
     """Matched case-insensitively against the whole name. A session without a name never matches."""
+    tmux_session: str | None = None
+    """The exact name of the tmux session the session's pane must be in now, by the live tmux server."""
 
-    def matches(self, session: ActiveSession) -> bool:
+    def matches(self, session: ActiveSession, tmux_live: TmuxPane | None = None) -> bool:
+        """``tmux_live`` is where the session's pane is now; only :attr:`tmux_session` reads it."""
         if self.statuses and session.status not in self.statuses:
             return False
         if self.profiles and session.profile.name not in self.profiles:
@@ -241,13 +294,18 @@ class Filters:
             return False
         if self.in_tmux is not None and (pane_id_of(session.tmux) is not None) != self.in_tmux:
             return False
+        if self.tmux_session is not None and (tmux_live is None or tmux_live.session != self.tmux_session):
+            return False
         return self.name_glob is None or (
             session.name is not None and fnmatch.fnmatchcase(session.name.lower(), self.name_glob.lower())
         )
 
 
-def apply_filters(sessions: Iterable[ActiveSession], filters: Filters) -> list[ActiveSession]:
-    return [s for s in sessions if filters.matches(s)]
+def apply_filters(
+    sessions: Iterable[ActiveSession], filters: Filters, panes: Mapping[str, TmuxPane] | None = None
+) -> list[ActiveSession]:
+    """``panes`` is the listing of the tmux server, needed only by :attr:`Filters.tmux_session`."""
+    return [s for s in sessions if filters.matches(s, live_pane(s, panes))]
 
 
 def sort_sessions(sessions: Iterable[ActiveSession]) -> list[ActiveSession]:

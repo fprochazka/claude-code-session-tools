@@ -25,7 +25,7 @@ cc-session-tools watch --profile 'rohlik*' --events=turns --busy-after=30m --wai
 ```
 
 - **The default stream, `auto`,** sends each batch of events to this session as a message. With `--events-stream=stdout` nothing tells you that an event arrived; that mode is for scripts and terminals.
-- **Pick the sessions with the filters of `list-active`**: `--profile` and `--name` take globs, plus `--status`, `--here` and `--tmux/--no-tmux`. The filters are evaluated again on every change, so a worker started later, or renamed into the glob, joins the watch.
+- **Pick the sessions with the filters of `list-active`**: `--profile` and `--name` take globs, plus `--status`, `--here`, `--tmux/--no-tmux` and `--tmux-session <name>|current`. The filters are evaluated again on every change, so a worker started later, renamed into the glob, or whose window was moved into the tmux session, joins the watch. `--tmux-session current` is the tmux session this command runs in, resolved once at the start.
 - **Or name the sessions**: `watch w1-order-planner w2-order-planner` follows exactly those, by id, prefix, name or pid, and ends with reason `sessions_ended` when they all have ended.
 - **One watch per purpose.** A second watch with the same selection sends every event twice.
 - **Start it from the main session.** A watch started from a subagent messages the main session anyway; Claude Code has no route to a subagent. Forward the events a subagent needs with SendMessage.
@@ -65,6 +65,11 @@ Options:
                                   those that do not.
   --name <str>                    Only sessions whose name matches this glob,
                                   case-insensitively.
+  --tmux-session <name|current>   Only sessions whose tmux pane is now in this
+                                  tmux session, by the running tmux server, so
+                                  a window moved with move-window counts.
+                                  'current' is the tmux session this command
+                                  runs in. It is resolved once, at the start.
   --include-self                  Also watch the session this command runs
                                   under. Left out by default, because every
                                   event it receives changes its own status.

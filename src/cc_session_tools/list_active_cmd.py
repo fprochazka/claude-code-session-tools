@@ -21,11 +21,15 @@ from rich.text import Text
 from .active import (
     Filters,
     SessionView,
+    TmuxPane,
+    TmuxSessionNotFound,
     active_since,
     activity_of,
     apply_filters,
     build_views,
+    list_tmux_panes,
     resolve_profile_globs,
+    resolve_tmux_session,
     shorten_home,
     sort_sessions,
     to_json,
@@ -46,6 +50,27 @@ def _sessions(profile_globs: list[str] | None) -> list[ActiveSession]:
     except ProfileNotFound as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
+
+
+TMUX_SESSION_HELP = (
+    "Only sessions whose tmux pane is now in this tmux session, by the running tmux server, so a window moved with "
+    "move-window counts. 'current' is the tmux session this command runs in."
+)
+
+
+def tmux_session_filter(value: str | None, in_tmux: bool | None) -> tuple[str | None, dict[str, TmuxPane] | None]:
+    """The tmux session name ``--tmux-session`` selects, and the listing of the tmux server it was resolved from.
+
+    Raises:
+        TmuxSessionNotFound: the value names no tmux session, or tmux cannot tell.
+        ValueError: ``--no-tmux`` is given too.
+    """
+    if value is None:
+        return None, None
+    if in_tmux is False:
+        raise ValueError("--tmux-session and --no-tmux exclude each other")
+    panes = list_tmux_panes()
+    return resolve_tmux_session(value, panes), panes
 
 
 def _status(session: ActiveSession) -> str:
@@ -140,6 +165,9 @@ def list_active(
     name: str = typer.Option(
         None, "--name", help="Only sessions whose name matches this glob, case-insensitively.", show_default=False
     ),
+    tmux_session: str = typer.Option(
+        None, "--tmux-session", metavar="<name|current>", help=TMUX_SESSION_HELP, show_default=False
+    ),
     active_within: str = typer.Option(
         None,
         "--active-within",
@@ -175,18 +203,27 @@ def list_active(
             typer.echo("Error: --active-within: the duration must be longer than zero", err=True)
             raise typer.Exit(code=2)
         since = datetime.now(UTC) - timedelta(seconds=seconds)
+    try:
+        tmux_session_name, panes = tmux_session_filter(tmux_session, tmux)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except TmuxSessionNotFound as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     filters = Filters(
         statuses=frozenset(s.value for s in status or []),
         scope=resolve_scope(os.getcwd()) if here else None,
         in_tmux=tmux,
         name_glob=name,
+        tmux_session=tmux_session_name,
     )
-    sessions = sort_sessions(apply_filters(_sessions(profile), filters))
+    sessions = sort_sessions(apply_filters(_sessions(profile), filters, panes))
     if since is not None:
         # After the registry filters: only this one reads transcripts.
         sessions = active_since(sessions, since)
 
-    views = build_views(sessions)
+    views = build_views(sessions, panes=panes)
     if as_json:
         array = [to_json(view) for view in views]
         sys.stdout.write(json.dumps(array, indent=2, ensure_ascii=False) + "\n")

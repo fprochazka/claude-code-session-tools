@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import Machine, fake_tmux
+from conftest import Machine, RealTmux, fake_tmux
 from typer.testing import CliRunner
 
 from cc_session_tools.active import Filters, resolve_profile_globs
@@ -260,6 +260,50 @@ def test_a_new_session_in_a_new_pane_is_placed_at_once(machine: Machine, no_tmux
     [event] = t.poll(NOW + 1)
     assert event.kind == "session_started"
     assert t.tracked[event_pid(machine, "new")].tmux_state == "present"
+
+
+def test_a_window_moved_into_or_out_of_the_tmux_session_joins_or_leaves(machine: Machine, no_tmux: Path) -> None:
+    fake_tmux(no_tmux, ["%14\talpha\t3\t@14\t"])
+    machine.session("work", "worker", tmux="alpha:@14.%14")
+    t = tracker(Selection(Filters(tmux_session="beta")))
+    assert t.matched() == []
+
+    fake_tmux(no_tmux, ["%14\tbeta\t1\t@14\t"])
+    [event] = t.poll(NOW + 1)
+    assert (event.kind, event.data) == ("session_matched", {"session": "work/worker", "status": "idle"})
+
+    # A tmux server that does not answer keeps the session where it was.
+    fake_tmux(no_tmux, None, exit_code=1)
+    assert t.poll(NOW + 2) == []
+    assert len(t.matched()) == 1
+    fake_tmux(no_tmux, ["%14\tbeta\t1\t@14\t"])
+    assert t.poll(NOW + 3) == []
+
+    fake_tmux(no_tmux, ["%14\talpha\t4\t@14\t"])
+    assert [(e.kind, e.data) for e in t.poll(NOW + 4)] == [
+        ("tmux_moved", {"session": "work/worker", "to": "alpha:4"}),
+        ("session_unmatched", {"session": "work/worker"}),
+    ]
+
+
+def test_a_new_session_in_the_tmux_session_joins_at_once(machine: Machine, no_tmux: Path) -> None:
+    t = tracker(Selection(Filters(tmux_session="beta")))
+    fake_tmux(no_tmux, ["%20\tbeta\t1\t@20\t", "%21\talpha\t1\t@21\t"])
+    machine.session("work", "inside", tmux="beta:@20.%20")
+    machine.session("work", "outside", tmux="alpha:@21.%21")
+    assert [(e.kind, e.data["session"]) for e in t.poll(NOW + 1)] == [("session_started", "work/inside")]
+
+
+def test_move_window_on_a_real_tmux_server_joins_the_watch(machine: Machine, real_tmux: RealTmux) -> None:
+    real_tmux.new_session("alpha")
+    real_tmux.new_session("beta")
+    pane = real_tmux.new_window("alpha")
+    machine.session("work", "worker", tmux=real_tmux.recorded(pane))
+    t = tracker(Selection(Filters(tmux_session="beta")))
+    assert t.matched() == []
+
+    real_tmux.move_window(pane, "beta")
+    assert kinds(t.poll(NOW + 1)) == ["session_matched"]
 
 
 def test_session_ended_by_a_removed_record_or_a_gone_process(machine: Machine) -> None:
@@ -533,6 +577,23 @@ def test_command_falls_back_to_stdout_when_the_session_takes_no_messages(
     assert "--events-stream=claude-message is not possible" in result.stderr
 
 
+def test_command_tmux_session_current(machine: Machine, no_tmux: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_tmux(no_tmux, ["%1\tcoord\t0\t@1\t", "%2\tcoord\t1\t@2\t", "%3\telse\t0\t@3\t"])
+    machine.session("work", "neighbour", tmux="coord:@2.%2")
+    machine.session("work", "stranger", tmux="else:@3.%3")
+    monkeypatch.setenv("TMUX_PANE", "%1")
+
+    result = invoke("--tmux-session=current", "--timeout=1s", "--events-stream=stdout")
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "cc-session-tools watch: selection: tmux-session=coord (tmux-session current resolved at the start); "
+        "1 matching now" in result.stderr
+    )
+    started = json.loads(result.stdout.splitlines()[0])
+    assert started["data"]["sessions"] == [{"session": "work/neighbour", "status": "idle"}]
+
+
 @pytest.mark.parametrize(
     ("args", "code", "message"),
     [
@@ -542,6 +603,8 @@ def test_command_falls_back_to_stdout_when_the_session_takes_no_messages(
         (["--until=renamed", "--events=turns"], 2, "--until: 'renamed'"),
         (["--profile", "x*"], 1, "No Claude Code profile matches 'x*'"),
         (["missing"], 1, "no active session matches 'missing'"),
+        (["--tmux-session=nope"], 1, "no tmux session is named 'nope'"),
+        (["--tmux-session=current", "--no-tmux"], 2, "--tmux-session and --no-tmux exclude each other"),
     ],
 )
 def test_command_errors(machine: Machine, args: list[str], code: int, message: str) -> None:

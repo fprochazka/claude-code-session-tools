@@ -37,6 +37,11 @@ Options:
                                   those that do not.
   --name <str>                    Only sessions whose name matches this glob,
                                   case-insensitively.
+  --tmux-session <name|current>   Only sessions whose tmux pane is now in this
+                                  tmux session, by the running tmux server, so
+                                  a window moved with move-window counts.
+                                  'current' is the tmux session this command
+                                  runs in.
   --active-within <duration>      Only sessions that got a model response
                                   within this long, for example 30m, 2h or
                                   1h30m. A session without a response yet
@@ -51,6 +56,7 @@ Options:
 - **Prefer `--json` and `jq`.** The table is for people and truncates long branches and tmux session names. The JSON has every field and is the stable interface.
 - **`--profile` and `--name` take globs.** `--profile 'rohlik*'` covers every profile whose name starts with `rohlik`; a plain name matches only that profile. A `--profile` glob that matches no profile exits with `1` and lists the known profiles.
 - **Filters combine with AND.**
+- **`--tmux-session <name>`** keeps the sessions whose pane is in that tmux session now, by the tmux server, so a window moved there with `move-window` counts. `--tmux-session current` is the tmux session this command runs in, from `$TMUX_PANE`: the sessions next to you. A name that no tmux session has, or `current` outside tmux, exits with `1` and lists the tmux sessions.
 - **`list-active` only lists.** For one session run `inspect`; `list-active <SESSION>` exits with `2` and prints the `inspect` command.
 - **"Active in the last hour" is `--active-within 1h`**, never a filter on `updated_at`. The record's `updated_at` changes with the status, but a local command such as `/login` moves it without the model, so a session idle for days can have a fresh `updated_at`. It can also lag behind a session that answered later. `--active-within` reads the transcript: the newest model response in it or in any subagent's, else the session's start when it has no response yet.
 - **`--here`** uses the scope of `search`: the main checkout, every worktree, and the legacy `<repo>-worktrees/` sibling dir. It matches the session's current `cwd`, which changes when the session moves into a worktree.
@@ -104,6 +110,9 @@ cc-session-tools inspect old-worker --json | jq '.cost | {total_cost_usd, durati
 
 # Is a session still running, and how to resume it
 cc-session-tools inspect old-worker --json | jq -r '"\(.state)\t\(.resume_command)"'
+
+# Sessions in the tmux session this command runs in
+cc-session-tools list-active --tmux-session current --json | jq -r '.[] | "\(.tmux_pane)\t\(.address)"'
 
 # Where each pane really is now
 cc-session-tools list-active --tmux --json | jq -r '.[] | "\(.tmux_pane)\t\(.tmux_live.session // "?"):\(.tmux_live.window_index // "?")\t\(.name)"'

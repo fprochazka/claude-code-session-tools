@@ -133,6 +133,7 @@ cc-session-tools list-active --profile work --here    # sessions of one profile 
 cc-session-tools list-active --profile 'rohlik*'      # sessions of every profile whose name matches a glob
 cc-session-tools list-active --status busy --tmux     # busy sessions that run in tmux
 cc-session-tools list-active --name 'w?-*'            # names matching a glob, case-insensitively
+cc-session-tools list-active --tmux-session current   # sessions whose pane is in this tmux session now
 cc-session-tools list-active --active-within 1h       # sessions that got a model response in the last hour
 cc-session-tools list-active --json | jq length       # every field of every session, as JSON
 ```
@@ -147,13 +148,13 @@ The table has six columns: **Profile**, **Name** (`pid:<pid>` dimmed for a sessi
 
 **Activity comes from the transcript, not from the registry record.** The record's `updatedAt` changes with the status, but a local command such as `/login` moves it without the model, so a session idle for days can look fresh. It can also lag behind: a session can answer well after its last `updatedAt`. Its transcript's last record has the same problem: a `/login` or a rename notice is a record. The newest `assistant` record is a model response, so `list-active` uses that, from the main transcript or any subagent's, since a background subagent writes only to its own. The table reads the end of each transcript, which adds about 0.05 seconds for 35 sessions.
 
-**Filters** combine with AND. `--profile` takes a glob, matched case-sensitively against the profile names, so a plain name matches only that profile. A glob that matches no profile is an error that lists the known ones. `--here` uses the scope of `search` and matches the session's current cwd. `--active-within` takes a duration like `watch` does (`90s`, `30m`, `2h`, `1h30m`) and keeps the sessions whose last model response, or start when they have no response yet, is within it.
+**Filters** combine with AND. `--profile` takes a glob, matched case-sensitively against the profile names, so a plain name matches only that profile. A glob that matches no profile is an error that lists the known ones. `--here` uses the scope of `search` and matches the session's current cwd. `--tmux-session <name>` keeps the sessions whose pane is in that tmux session now, by the tmux server, so a window moved there with `move-window` counts; `current` is the tmux session of `$TMUX_PANE`, the pane the command runs in. A name no tmux session has, `current` outside tmux, or a tmux server that does not answer is an error that lists the tmux sessions. `--active-within` takes a duration like `watch` does (`90s`, `30m`, `2h`, `1h30m`) and keeps the sessions whose last model response, or start when they have no response yet, is within it.
 
 **`--json`** prints an array of objects. The keys are a stable contract: snake_case, ISO 8601 timestamps, paths as strings, `null` for a missing value. They cover every field of the registry record (`raw` holds the record itself) plus derived ones: `waiting_for`, `tmux_pane`, `tmux_state`, `tmux_live`, `tmux_recorded`, `messaging_address`, `git_branch`, `git_worktree_root`, `git_repo_root` and `transcript_path`, and from the transcript `last_activity_at` (the last model response), `last_record_at` (the newest record of any kind) and `cost`. `updated_at` is the last change of the registry record, not activity. The [active-sessions skill](coding-agent-plugins/claude-code/skills/active-sessions/SKILL.md) documents each key.
 
 **`cost`** is what Claude Code records when a process of the session exits, never the current cost of a running session. For an ended session it is the session's total. For a running session that was resumed, it is the total as of its last exit and leaves out the current run. A running session that never exited has `null`. The object has `total_cost_usd`, `has_unknown_model_cost`, `started_at`, the durations in seconds (`duration_seconds`, `api_duration_seconds`, `api_duration_without_retries_seconds`, `tool_duration_seconds`), `lines_added`, `lines_removed`, and `model_usage` with the tokens and `cost_usd` of each model. Reading it costs a read of the whole transcript of a session that never exited, so `--json` takes about 0.4 seconds for 35 sessions, against 0.2 for the table. The table has no cost column, because a running session's cost would read as its current cost.
 
-Exit codes: `0`, including when no session matches the filters (the notice goes to stderr, and `--json` prints `[]`). `1` when a `--profile` glob matches no profile. `2` for an unknown `--status`, a duration `--active-within` cannot read, or a SESSION argument.
+Exit codes: `0`, including when no session matches the filters (the notice goes to stderr, and `--json` prints `[]`). `1` when a `--profile` glob matches no profile, or `--tmux-session` matches no tmux session. `2` for an unknown `--status`, a duration `--active-within` cannot read, `--tmux-session` with `--no-tmux`, or a SESSION argument.
 
 ### inspect
 
@@ -211,7 +212,7 @@ cc-session-tools watch --here --events-stream=stdout --timeout=10m
 
 `watch` reports every change to the running sessions as one JSON event per line. It takes the filters of `list-active` and runs until an end you ask for, until its named sessions have ended, or until it gets SIGTERM or Ctrl-C. The last event is always `watch_ended` with a `reason`.
 
-**Selection.** Without SESSION arguments the filters are evaluated again on every change. A session that starts later and matches joins with `session_started`. A running session that starts to match, for example after a rename or a status change under `--status`, joins with `session_matched`, and one that stops matching leaves with `session_unmatched`. With SESSION arguments, resolved like a running SESSION of `inspect` after the filters, the watch follows exactly those sessions, and ends with reason `sessions_ended` once all of them have ended.
+**Selection.** Without SESSION arguments the filters are evaluated again on every change. A session that starts later and matches joins with `session_started`. A running session that starts to match, for example after a rename or a status change under `--status`, joins with `session_matched`, and one that stops matching leaves with `session_unmatched`. Under `--tmux-session`, a window moved into that tmux session joins and one moved out leaves, with `tmux_moved` then `session_unmatched`, within the 3 seconds between two tmux calls. `--tmux-session current` is resolved once, at the start. With SESSION arguments, resolved like a running SESSION of `inspect` after the filters, the watch follows exactly those sessions, and ends with reason `sessions_ended` once all of them have ended.
 
 **The own session is left out.** Run under a Claude Code session, `watch` never reports that session: every event it delivers makes the session busy, which would be the next event. `--include-self` watches it anyway. Naming the own session as SESSION without `--include-self` is an error.
 
@@ -272,7 +273,7 @@ Events that arrive within 3 seconds go out as one message, and a batch above 64 
 
 **Cost.** No daemon: the watcher stats every registry record of every profile once a second, reading a record again only when its mtime or size moved, and lists the sessions through cc-blackbox only when a new record appears. tmux is asked once every 3 seconds. A status that lasts less than one poll can be missed.
 
-Exit codes: `0` when the watch ends, whatever the reason. `1` when SESSION matches nothing or several sessions, names the own session, a `--profile` glob matches no profile, or `claude-message` is not possible. `2` for a usage error: an unknown event kind or group, a bad duration, or an `--until` kind the watch does not report.
+Exit codes: `0` when the watch ends, whatever the reason. `1` when SESSION matches nothing or several sessions, names the own session, a `--profile` glob matches no profile, `--tmux-session` matches no tmux session, or `claude-message` is not possible. `2` for a usage error: an unknown event kind or group, a bad duration, an `--until` kind the watch does not report, or `--tmux-session` with `--no-tmux`.
 
 ## Requirements
 

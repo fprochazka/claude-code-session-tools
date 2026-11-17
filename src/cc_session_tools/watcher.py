@@ -190,12 +190,12 @@ class Selection:
     exclude_pid: int | None = None
     """The watcher's own session, which never matches: its status changes with every event it receives."""
 
-    def matches(self, session: ActiveSession) -> bool:
+    def matches(self, session: ActiveSession, tmux_live: TmuxPane | None = None) -> bool:
         if self.pids is not None:
             return session.pid in self.pids
         if session.pid == self.exclude_pid:
             return False
-        return self.filters.matches(session)
+        return self.filters.matches(session, tmux_live)
 
 
 @dataclass(frozen=True)
@@ -261,7 +261,7 @@ class SessionTracker:
         """Replace the selection, before the watch starts reporting."""
         self.selection = selection
         for tracked in self.tracked.values():
-            tracked.matched = selection.matches(tracked.session)
+            tracked.matched = selection.matches(tracked.session, tracked.tmux_live)
 
     # --- reading ---
 
@@ -274,7 +274,10 @@ class SessionTracker:
 
     def _new_tracked(self, session: ActiveSession, now: float) -> Tracked:
         stamp = self._stamps.get(session.record_path, (0, 0))
-        return Tracked(session, stamp, self.selection.matches(session), _status_since(session, now))
+        tracked = Tracked(session, stamp, False, _status_since(session, now))
+        self._place(tracked)
+        tracked.matched = self.selection.matches(session, tracked.tmux_live)
+        return tracked
 
     def identify(self, tracked: Tracked) -> str:
         """The string that names the session in events, which ``inspect <it>`` resolves to exactly this session.
@@ -361,13 +364,11 @@ class SessionTracker:
     def _reload(self, observed: str, now: float) -> list[WatchEvent]:
         events: list[WatchEvent] = []
         sessions = {s.pid: s for s in self._list_sessions()}
-        added: list[Tracked] = []
+        new: list[ActiveSession] = []
         for pid, session in sessions.items():
             tracked = self.tracked.get(pid)
             if tracked is None:
-                tracked = self._new_tracked(session, now)
-                self.tracked[pid] = tracked
-                added.append(tracked)
+                new.append(session)
             else:
                 tracked.stamp = self._stamps.get(session.record_path, tracked.stamp)
                 events += self._apply(tracked, session, observed, now)
@@ -375,12 +376,15 @@ class SessionTracker:
             # cc-blackbox judged the process not running, for example a pid that another process reuses.
             events += self._end(pid, "process_gone", observed)
         known_panes = self._panes or {}
-        if any(pane not in known_panes for pane in (pane_id_of(t.session.tmux) for t in added) if pane is not None):
+        if any(pane not in known_panes for pane in (pane_id_of(s.tmux) for s in new) if pane is not None):
             # A new session usually runs in a new pane: look it up now, rather than call it gone until the next call.
+            # The new sessions are placed after this, so their placement reports nothing.
             events += self._refresh_tmux(now, report=True, observed=observed, force=True)
-        else:
-            for tracked in added:
-                self._place(tracked)
+        added = []
+        for session in new:
+            tracked = self._new_tracked(session, now)
+            self.tracked[session.pid] = tracked
+            added.append(tracked)
         if self.selection.pids is None:
             events += [self._event(SESSION_STARTED, t, observed, status=t.session.status) for t in added if t.matched]
         return events
@@ -428,7 +432,7 @@ class SessionTracker:
             if new.status == "waiting":
                 changed(WAITING, waiting_for=reason)
 
-        tracked.matched = self.selection.matches(new)
+        tracked.matched = self.selection.matches(new, tracked.tmux_live)
         if self.selection.pids is None:
             if tracked.matched and not was_matched:
                 events.append(self._event(SESSION_MATCHED, tracked, observed, status=new.status))
@@ -447,21 +451,33 @@ class SessionTracker:
             tracked.tmux_state = "present" if tracked.tmux_live is not None else "gone"
 
     def _refresh_tmux(self, now: float, *, report: bool, observed: str = "", force: bool = False) -> list[WatchEvent]:
+        """Ask the tmux server where every pane is. A move is ``tmux_moved``; under ``--tmux-session`` it can also
+        make a session join or leave the watch."""
         if not force and self._last_tmux is not None and now - self._last_tmux < self.tmux_interval:
             return []
-        if not any(pane_id_of(t.session.tmux) is not None for t in self.tracked.values()):
+        if not force and not any(pane_id_of(t.session.tmux) is not None for t in self.tracked.values()):
             return []
         self._last_tmux = now
         self._panes = self._list_panes()
         events: list[WatchEvent] = []
         for tracked in self.ordered():
             before_state, before = tracked.tmux_state, _location(tracked.tmux_live)
+            was_matched = tracked.matched
             self._place(tracked)
             after = _location(tracked.tmux_live)
             # Only a move between two answers of the tmux server counts; an unreachable server says nothing.
             known = before_state in ("present", "gone") and tracked.tmux_state in ("present", "gone")
-            if report and known and before != after and tracked.matched:
+            if report and known and before != after and was_matched:
                 events.append(self._event(TMUX_MOVED, tracked, observed, to=after))
+            if tracked.tmux_state == "unknown" and before_state in ("present", "gone"):
+                # The server did not answer this time; that says nothing about which tmux session the pane is in.
+                continue
+            tracked.matched = self.selection.matches(tracked.session, tracked.tmux_live)
+            if report and self.selection.pids is None:
+                if tracked.matched and not was_matched:
+                    events.append(self._event(SESSION_MATCHED, tracked, observed, status=tracked.session.status))
+                elif was_matched and not tracked.matched:
+                    events.append(self._event(SESSION_UNMATCHED, tracked, observed))
         return events
 
     def _thresholds(self, now: float, observed: str) -> list[WatchEvent]:

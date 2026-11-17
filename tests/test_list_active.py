@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import Machine, fake_tmux, response, sid, write_records
+from conftest import Machine, RealTmux, fake_tmux, response, sid, write_records
 from typer.testing import CliRunner
 
 from cc_session_tools.active import list_tmux_panes, pane_id_of
@@ -220,6 +220,61 @@ def test_tmux_filter(machine: Machine, fake_bin: Path) -> None:
     machine.session("work", "bare", tmux=None)
     assert [s["name"] for s in json_of("--tmux")] == ["in-tmux"]
     assert [s["name"] for s in json_of("--no-tmux")] == ["bare"]
+
+
+def test_tmux_session_follows_a_window_moved_to_another_tmux_session(
+    machine: Machine, real_tmux: RealTmux, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home_pane = real_tmux.new_session("alpha")
+    other_pane = real_tmux.new_session("beta")
+    moved_pane = real_tmux.new_window("alpha")
+    machine.session("work", "stays", tmux=real_tmux.recorded(home_pane))
+    machine.session("work", "moved", tmux=real_tmux.recorded(moved_pane))
+    machine.session("work", "other", tmux=real_tmux.recorded(other_pane))
+    machine.session("work", "outside")
+    real_tmux.move_window(moved_pane, "beta")
+
+    assert [s["name"] for s in json_of("--tmux-session", "beta")] == ["moved", "other"]
+    assert [s["name"] for s in json_of("--tmux-session", "alpha")] == ["stays"]
+
+    monkeypatch.setenv("TMUX_PANE", moved_pane)
+    assert [s["name"] for s in json_of("--tmux-session", "current")] == ["moved", "other"]
+    result = invoke("--tmux-session", "current")
+    assert result.exit_code == 0, result.output
+    assert f"{moved_pane} beta:" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("args", "env_pane", "code", "message"),
+    [
+        (["--tmux-session", "gamma"], None, 1, "no tmux session is named 'gamma'. tmux sessions: alpha, beta."),
+        (["--tmux-session", "current"], None, 1, "this command does not run in tmux ($TMUX_PANE is unset)"),
+        (["--tmux-session", "current"], "%99", 1, "the tmux server has no pane %99"),
+        (["--tmux-session", "alpha", "--no-tmux"], None, 2, "--tmux-session and --no-tmux exclude each other"),
+    ],
+)
+def test_tmux_session_errors(
+    machine: Machine,
+    fake_bin: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    env_pane: str | None,
+    code: int,
+    message: str,
+) -> None:
+    fake_tmux(fake_bin, ["%1\talpha\t0\t@1\t", "%2\tbeta\t0\t@2\t"])
+    if env_pane is not None:
+        monkeypatch.setenv("TMUX_PANE", env_pane)
+    result = invoke(*args)
+    assert result.exit_code == code, result.output
+    assert message in result.stderr
+
+
+def test_tmux_session_needs_a_tmux_server(machine: Machine, fake_bin: Path) -> None:
+    fake_tmux(fake_bin, None, exit_code=1)
+    result = invoke("--tmux-session", "alpha")
+    assert result.exit_code == 1
+    assert "cannot read the tmux server" in result.stderr
 
 
 def test_name_glob_is_case_insensitive_and_skips_unnamed(machine: Machine, fake_bin: Path) -> None:

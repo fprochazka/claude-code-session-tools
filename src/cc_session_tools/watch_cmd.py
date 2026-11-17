@@ -36,9 +36,9 @@ from cc_blackbox import (
     current_session_or_none,
 )
 
-from .active import Filters, SessionLookupError, lookup_session, resolve_profile_globs
+from .active import Filters, SessionLookupError, TmuxSessionNotFound, lookup_session, resolve_profile_globs
 from .discovery import resolve_scope
-from .list_active_cmd import Status
+from .list_active_cmd import TMUX_SESSION_HELP, Status, tmux_session_filter
 from .watch_events import (
     GROUPS,
     LIFECYCLE_KINDS,
@@ -166,6 +166,7 @@ def _describe_selection(
     statuses: Sequence[str],
     here: Path | None,
     tmux: bool | None,
+    tmux_session: str | None = None,
 ) -> str:
     if sessions:
         return "sessions=" + ",".join(sessions)
@@ -177,11 +178,13 @@ def _describe_selection(
         parts.append(f"here={here}")
     if tmux is not None:
         parts.append("tmux" if tmux else "no-tmux")
+    if tmux_session is not None:
+        parts.append(f"tmux-session={tmux_session}")
     return " ".join(parts) or "all"
 
 
 def _resolve_fixed(queries: Sequence[str], tracker: SessionTracker, filters: Filters) -> frozenset[int]:
-    candidates = [t.session for t in tracker.ordered() if filters.matches(t.session)]
+    candidates = [t.session for t in tracker.ordered() if filters.matches(t.session, t.tmux_live)]
     pids = set()
     for query in queries:
         try:
@@ -219,6 +222,13 @@ def watch(
     ),
     name: str = typer.Option(
         None, "--name", help="Only sessions whose name matches this glob, case-insensitively.", show_default=False
+    ),
+    tmux_session: str = typer.Option(
+        None,
+        "--tmux-session",
+        metavar="<name|current>",
+        help=TMUX_SESSION_HELP + " It is resolved once, at the start.",
+        show_default=False,
     ),
     include_self: bool = typer.Option(
         False,
@@ -293,6 +303,12 @@ def watch(
         profiles = resolve_profile_globs(profile) if profile else []
     except ProfileNotFound as exc:
         _fail(str(exc), EXIT_ERROR)
+    try:
+        tmux_session_name, _ = tmux_session_filter(tmux_session, tmux)
+    except ValueError as exc:
+        _fail(str(exc))
+    except TmuxSessionNotFound as exc:
+        _fail(str(exc), EXIT_ERROR)
     scope_dir = Path(os.getcwd()) if here else None
     filters = Filters(
         statuses=frozenset(s.value for s in status or []),
@@ -300,6 +316,7 @@ def watch(
         scope=resolve_scope(os.getcwd()) if here else None,
         in_tmux=tmux,
         name_glob=name,
+        tmux_session=tmux_session_name,
     )
     own = current_session_or_none()
     exclude = None if include_self or own is None else own.pid
@@ -312,14 +329,23 @@ def watch(
         tracker.select(Selection(filters, pids, exclude))
 
     selection = _describe_selection(
-        sessions or [], profile or [], [name] if name else [], [s.value for s in status or []], scope_dir, tmux
+        sessions or [],
+        profile or [],
+        [name] if name else [],
+        [s.value for s in status or []],
+        scope_dir,
+        tmux,
+        tmux_session_name,
     )
     changelog = Changelog(Changelog.default_path(own))
     sink, fallback = _sink(events_stream, own, selection, changelog, message_priority)
 
     matched = tracker.matched()
-    profiles_note = f" (profiles: {', '.join(profiles)})" if profile else ""
-    status_line(f"selection: {selection}{profiles_note}; {len(matched)} matching now")
+    notes = [f"profiles: {', '.join(profiles)}"] if profile else []
+    if tmux_session is not None and tmux_session != tmux_session_name:
+        notes.append(f"tmux-session {tmux_session} resolved at the start")
+    notes_text = f" ({'; '.join(notes)})" if notes else ""
+    status_line(f"selection: {selection}{notes_text}; {len(matched)} matching now")
     if own is not None:
         own_name = own.name or f"pid:{own.pid}"
         if exclude is not None:

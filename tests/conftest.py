@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Iterator
@@ -22,6 +24,9 @@ _REAL_SETUP_ENV = (
     "CLAUDE_PID",
     "CLAUDE_CODE_SESSION_ID",
     "CLAUDE_CODE_MESSAGING_SOCKET",
+    # The tmux server and pane the tests may run in.
+    "TMUX",
+    "TMUX_PANE",
 )
 
 
@@ -203,3 +208,45 @@ def fake_tmux(bin_dir: Path, panes: list[str] | None, *, exit_code: int = 0) -> 
     script = bin_dir / "tmux"
     script.write_text(f"#!/bin/sh\ncat '{data}'\nexit {exit_code}\n")
     script.chmod(0o755)
+
+
+class RealTmux:
+    """A private tmux server of its own, which every ``tmux`` call of the test reaches through ``$TMUX_TMPDIR``."""
+
+    def run(self, *args: str) -> str:
+        result = subprocess.run(
+            ["tmux", "-f", os.devnull, *args], capture_output=True, text=True, check=True, timeout=10
+        )
+        return result.stdout.strip()
+
+    def new_session(self, name: str) -> str:
+        """Start a tmux session; return the pane id of its first window."""
+        return self.run("new-session", "-d", "-s", name, "-P", "-F", "#{pane_id}", "sleep 600")
+
+    def new_window(self, session: str) -> str:
+        return self.run("new-window", "-d", "-t", f"{session}:", "-P", "-F", "#{pane_id}", "sleep 600")
+
+    def move_window(self, pane: str, to_session: str) -> None:
+        """Move the window that holds ``pane`` to another tmux session."""
+        self.run("move-window", "-s", pane, "-t", f"{to_session}:")
+
+    def recorded(self, pane: str) -> str:
+        """The pane as Claude Code records it at startup: ``<session>:@<window>.%<pane>``."""
+        return self.run("display-message", "-p", "-t", pane, "#{session_name}:#{window_id}.#{pane_id}")
+
+
+@pytest.fixture
+def real_tmux(fake_bin: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[RealTmux]:
+    """A real tmux server in a temp dir, never the user's. A fake ``tmux`` another fixture installed is removed."""
+    (fake_bin / "tmux").unlink(missing_ok=True)
+    if shutil.which("tmux") is None:
+        pytest.skip("tmux is not installed")
+    # A short dir: the server socket path must fit in a unix socket address.
+    socket_dir = tempfile.mkdtemp(prefix="cst-tmux-", dir="/tmp")
+    monkeypatch.setenv("TMUX_TMPDIR", socket_dir)
+    tmux = RealTmux()
+    try:
+        yield tmux
+    finally:
+        subprocess.run(["tmux", "kill-server"], capture_output=True, check=False, timeout=10)
+        shutil.rmtree(socket_dir, ignore_errors=True)

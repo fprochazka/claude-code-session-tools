@@ -18,11 +18,12 @@ Usage: cc-session-tools list-active [OPTIONS]
 
   List the running Claude Code sessions of every profile.
 
-  One row per session, by profile and then start time. Active is the time
-  since the session's last model response, in its transcript or a subagent's;
-  a session without one shows its start, dimmed. The tmux pane is the pane id
-  with the tmux session and window that pane is in now, read from the tmux
-  server. The inspect command shows one session.
+  One row per session, by profile and then start time. Role is the auth-switch
+  role of the session's newest start, a column only when a session has one.
+  Active is the time since the session's last model response, in its
+  transcript or a subagent's; a session without one shows its start, dimmed.
+  The tmux pane is the pane id with the tmux session and window that pane is
+  in now, read from the tmux server. The inspect command shows one session.
 
 Options:
   -p, --profile <str>             Only sessions of the profiles whose name
@@ -42,6 +43,11 @@ Options:
                                   a window moved with move-window counts.
                                   'current' is the tmux session this command
                                   runs in.
+  --role <str>                    Only sessions whose auth-switch role matches
+                                  this glob, case-sensitively, for example
+                                  'worker-*'. The role is the one of the
+                                  session's newest start. A session without a
+                                  role never matches. Repeatable.
   --active-within <duration>      Only sessions that got a model response
                                   within this long, for example 30m, 2h or
                                   1h30m. A session without a response yet
@@ -56,6 +62,7 @@ Options:
 - **Prefer `--json` and `jq`.** The table is for people and truncates long branches and tmux session names. The JSON has every field and is the stable interface.
 - **`--profile` and `--name` take globs.** `--profile 'rohlik*'` covers every profile whose name starts with `rohlik`; a plain name matches only that profile. A `--profile` glob that matches no profile exits with `1` and lists the known profiles.
 - **Filters combine with AND.**
+- **`--role <glob>`** keeps the sessions whose role matches, case-sensitively; repeatable. A session without a role never matches. The table shows a Role column only when a listed session has a role.
 - **`--tmux-session <name>`** keeps the sessions whose pane is in that tmux session now, by the tmux server, so a window moved there with `move-window` counts. `--tmux-session current` is the tmux session this command runs in, from `$TMUX_PANE`: the sessions next to you. A name that no tmux session has, or `current` outside tmux, exits with `1` and lists the tmux sessions.
 - **`list-active` only lists.** For one session run `inspect`; `list-active <SESSION>` exits with `2` and prints the `inspect` command.
 - **"Active in the last hour" is `--active-within 1h`**, never a filter on `updated_at`. The record's `updated_at` changes with the status, but a local command such as `/login` moves it without the model, so a session idle for days can have a fresh `updated_at`. It can also lag behind a session that answered later. `--active-within` reads the transcript: the newest model response in it or in any subagent's, else the session's start when it has no response yet.
@@ -70,6 +77,7 @@ Options:
 - `profile_source`: how sure the profile is. `log`, `environ`, `claude_json` and `dir` are reliable. `inferred` is a guess between profiles that share one `sessions/` dir.
 - `address`: `<profile>/<name>`, or `<profile>/pid:<pid>` for a session without a name.
 - `pid`, `session_id`, `name`, `name_source` (`user`, `peer`, `derived`, `collision`, `auto`, `hook`).
+- `role`: the claude-code-auth-switch role of the session's newest start, from the start log next to its transcript. `null` for a session started without a role, and for one that has not written its transcript yet.
 - `status`: `busy`, `idle`, `shell` or `waiting`. `waiting_for`: what a `waiting` session waits for, from the record's `waitingFor`, and `null` in every other status. The table shows it as `waiting: <reason>`. `kind` (`interactive`, `bg`, `daemon`, `daemon-worker`), `entrypoint`, `version`.
 - `started_at`: when this process started; a resumed session started again.
 - `updated_at`: the last change of the registry record. It changes with the status, and a local command such as `/login` moves it too. It is not activity: a fresh value does not mean the session worked, and a session can answer well after it.
@@ -110,6 +118,9 @@ cc-session-tools inspect old-worker --json | jq '.cost | {total_cost_usd, durati
 
 # Is a session still running, and how to resume it
 cc-session-tools inspect old-worker --json | jq -r '"\(.state)\t\(.resume_command)"'
+
+# Workers by role, with their pane
+cc-session-tools list-active --role 'worker-*' --json | jq -r '.[] | "\(.role)\t\(.address)\t\(.tmux_pane)"'
 
 # Sessions in the tmux session this command runs in
 cc-session-tools list-active --tmux-session current --json | jq -r '.[] | "\(.tmux_pane)\t\(.address)"'
@@ -162,7 +173,7 @@ Options:
 - **Running first.** SESSION is looked up among the running sessions: session id, name, `<profile>/<name>`, `<profile>/pid:<pid>`, pid, or a unique session id prefix. The `session` strings of `cc-session-tools watch` events are of these forms.
 - **Then ended sessions**, in this order: by session id or id prefix in every transcript; by the session's name or any earlier name or title, compared without case, among transcripts active in the last `--days` days (14 by default); by its pid from the auth-switch start log in the same window. `<profile>/` in front keeps sessions that profile ran last. A renamed session is found under an old name, and shown as running if it still runs.
 - **Several matches** in a step exit with `1` and list the candidates. Narrow with `<profile>/`, a longer id prefix, or the full session id.
-- **`--json` keys:** `state` (`running` or `ended`), every key above, `title`, `title_source`, `profile_starts` (`ts`, `pid`, `source`, `profile` per start or resume), and `resume_command`. For an ended session the live-only fields (`pid`, `status`, tmux, messaging, `record_path`, `raw` …) are `null`, `cwd` is the last cwd its transcript recorded, `launch_cwd` the first, and `git_branch` the last.
+- **`--json` keys:** `state` (`running` or `ended`), every key above, `title`, `title_source`, `profile_starts` (`ts`, `pid`, `source`, `profile`, `role`, `role_prompt`, `role_prompt_mode` per start or resume), and `resume_command`. For an ended session the live-only fields (`pid`, `status`, tmux, messaging, `record_path`, `raw` …) are `null`, `cwd` is the last cwd its transcript recorded, `launch_cwd` the first, and `git_branch` the last.
 - **Resume an ended session** with its `resume_command` — tell the user the command rather than run it; it starts an interactive session.
 - A name lookup among ended sessions reads every transcript of the window; expect about a second.
 

@@ -32,7 +32,16 @@ from typing import Any
 
 from cc_blackbox import ActiveSession, EventSink, list_active_sessions, list_profiles
 
-from .active import Filters, TmuxPane, TmuxState, list_tmux_panes, pane_id_of, read_last_response, waiting_for
+from .active import (
+    Filters,
+    TmuxPane,
+    TmuxState,
+    list_tmux_panes,
+    pane_id_of,
+    read_last_response,
+    read_role,
+    waiting_for,
+)
 from .watch_events import (
     BUSY_LONG,
     CWD_CHANGED,
@@ -57,6 +66,9 @@ from .watch_events import (
 
 POLL_INTERVAL = 1.0
 TMUX_INTERVAL = 3.0
+ROLE_SETTLE = 60.0
+"""For this long after a session's start, a missing role is looked for again at every tmux call: the auth-switch
+start hook logs it a moment after the session's record appears, next to a transcript the session may not have yet."""
 
 TURN_ENDS_FROM = frozenset({"busy", "waiting"})
 """A move to ``idle`` from one of these statuses is ``turn_finished``."""
@@ -178,6 +190,10 @@ class Tracked:
     """Whether :attr:`idle_since` was read from the transcript since the status last changed."""
     idle_reported: float = 0.0
     """The longest ``idle_long`` threshold reported in the current idle stretch, ``0`` for none."""
+    role: str | None = None
+    """The auth-switch role, read only when the selection filters by role."""
+    role_settled: bool = True
+    """``False`` while a missing role is still looked for at every tmux call."""
 
     @property
     def pid(self) -> int:
@@ -197,12 +213,12 @@ class Selection:
     exclude_pid: int | None = None
     """The watcher's own session, which never matches: its status changes with every event it receives."""
 
-    def matches(self, session: ActiveSession, tmux_live: TmuxPane | None = None) -> bool:
+    def matches(self, session: ActiveSession, tmux_live: TmuxPane | None = None, role: str | None = None) -> bool:
         if self.pids is not None:
             return session.pid in self.pids
         if session.pid == self.exclude_pid:
             return False
-        return self.filters.matches(session, tmux_live)
+        return self.filters.matches(session, tmux_live, role)
 
 
 @dataclass(frozen=True)
@@ -266,6 +282,7 @@ class Thresholds:
 ListSessions = Callable[[], list[ActiveSession]]
 ListPanes = Callable[[], dict[str, TmuxPane] | None]
 ReadLastResponse = Callable[[ActiveSession], datetime | None]
+ReadRole = Callable[[ActiveSession], str | None]
 
 
 class SessionTracker:
@@ -281,6 +298,7 @@ class SessionTracker:
         list_panes: ListPanes = list_tmux_panes,
         is_running: Callable[[int], bool] = process_running,
         last_response: ReadLastResponse = read_last_response,
+        role_of_session: ReadRole = read_role,
         tmux_interval: float = TMUX_INTERVAL,
     ) -> None:
         self.selection = selection
@@ -290,17 +308,34 @@ class SessionTracker:
         self._list_panes = list_panes
         self._is_running = is_running
         self._last_response = last_response
+        self._read_role_of = role_of_session
         self.tmux_interval = tmux_interval
         self.tracked: dict[int, Tracked] = {}
         self._stamps: dict[Path, Stamp] = {}
         self._panes: dict[str, TmuxPane] | None = None
         self._last_tmux: float | None = None
+        self._last_roles: float | None = None
 
     def select(self, selection: Selection) -> None:
         """Replace the selection, before the watch starts reporting."""
         self.selection = selection
         for tracked in self.tracked.values():
-            tracked.matched = selection.matches(tracked.session, tracked.tmux_live)
+            if self._needs_roles and tracked.role is None:
+                self._read_role(tracked, time.time())
+            tracked.matched = self._match(tracked)
+
+    @property
+    def _needs_roles(self) -> bool:
+        return bool(self.selection.filters.role_globs)
+
+    def _match(self, tracked: Tracked) -> bool:
+        return self.selection.matches(tracked.session, tracked.tmux_live, tracked.role)
+
+    def _read_role(self, tracked: Tracked, now: float) -> None:
+        tracked.role = self._read_role_of(tracked.session)
+        started = tracked.session.started_at
+        young = started is not None and now - started.timestamp() < ROLE_SETTLE
+        tracked.role_settled = tracked.role is not None or not young
 
     # --- reading ---
 
@@ -315,7 +350,9 @@ class SessionTracker:
         stamp = self._stamps.get(session.record_path, (0, 0))
         tracked = Tracked(session, stamp, False, _status_since(session, now))
         self._place(tracked)
-        tracked.matched = self.selection.matches(session, tracked.tmux_live)
+        if self._needs_roles:
+            self._read_role(tracked, now)
+        tracked.matched = self._match(tracked)
         return tracked
 
     def identify(self, tracked: Tracked) -> str:
@@ -389,6 +426,7 @@ class SessionTracker:
         if reload:
             events += self._reload(observed, now)
         events += self._refresh_tmux(now, report=True, observed=observed)
+        events += self._refresh_roles(now, observed)
         events += self._thresholds(now, observed)
         return events
 
@@ -472,7 +510,10 @@ class SessionTracker:
             if new.status == "waiting":
                 changed(WAITING, waiting_for=reason)
 
-        tracked.matched = self.selection.matches(new, tracked.tmux_live)
+        if self._needs_roles and tracked.role is None:
+            # A record change is cheap to wait for, and the transcript the role sits next to may have appeared.
+            self._read_role(tracked, now)
+        tracked.matched = self._match(tracked)
         if self.selection.pids is None:
             if tracked.matched and not was_matched:
                 events.append(self._event(SESSION_MATCHED, tracked, observed, status=new.status))
@@ -512,12 +553,30 @@ class SessionTracker:
             if tracked.tmux_state == "unknown" and before_state in ("present", "gone"):
                 # The server did not answer this time; that says nothing about which tmux session the pane is in.
                 continue
-            tracked.matched = self.selection.matches(tracked.session, tracked.tmux_live)
+            tracked.matched = self._match(tracked)
             if report and self.selection.pids is None:
                 if tracked.matched and not was_matched:
                     events.append(self._event(SESSION_MATCHED, tracked, observed, status=tracked.session.status))
                 elif was_matched and not tracked.matched:
                     events.append(self._event(SESSION_UNMATCHED, tracked, observed))
+        return events
+
+    def _refresh_roles(self, now: float, observed: str) -> list[WatchEvent]:
+        """Look again for the role of the young sessions that have none yet; a session whose role now matches joins."""
+        if not self._needs_roles:
+            return []
+        if self._last_roles is not None and now - self._last_roles < self.tmux_interval:
+            return []
+        self._last_roles = now
+        events: list[WatchEvent] = []
+        for tracked in self.ordered():
+            if tracked.role_settled:
+                continue
+            self._read_role(tracked, now)
+            was_matched = tracked.matched
+            tracked.matched = self._match(tracked)
+            if self.selection.pids is None and tracked.matched and not was_matched:
+                events.append(self._event(SESSION_MATCHED, tracked, observed, status=tracked.session.status))
         return events
 
     def _read_idle_since(self, tracked: Tracked) -> None:

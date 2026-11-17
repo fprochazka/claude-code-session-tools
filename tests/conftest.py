@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from cc_blackbox import project_slug
 
 # Variables that point cc-blackbox at the real Claude Code setup, or at the session the tests run under. Tests often run
 # inside a Claude Code session, so every test starts without them and with an empty home dir, and reads only the
@@ -115,6 +116,10 @@ class Machine:
         record = json.loads(path.read_text())
         record.update(fields)
         self._write(path, record)
+
+    def project_dir(self, profile: str) -> Path:
+        """The project dir of the sessions' default ``elsewhere`` cwd, which holds their transcripts."""
+        return self.config_dir(profile) / "projects" / project_slug(self.home / "elsewhere")
 
     def remove_record(self, pid: int) -> None:
         self.records[pid].unlink()
@@ -250,3 +255,16 @@ def real_tmux(fake_bin: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[RealT
     finally:
         subprocess.run(["tmux", "kill-server"], capture_output=True, check=False, timeout=10)
         shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+def log_start(project_dir: Path, session_id: str, ts_ms: int, **fields: Any) -> Path:
+    """Append one start to the session's auth-switch start log, as claude-code-auth-switch's SessionStart hook does.
+
+    ``fields`` add to or override the line, for example ``role``, ``role_prompt`` and ``role_prompt_mode``.
+    """
+    log = project_dir / session_id / "auth-switch-profile-starts.jsonl"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    line = {"v": 1, "ts": ts_ms, "session_id": session_id, "source": "startup", **fields}
+    with open(log, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({k: v for k, v in line.items() if v is not None}) + "\n")
+    return log

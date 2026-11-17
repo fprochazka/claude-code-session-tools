@@ -36,6 +36,7 @@ from cc_blackbox import (
     find_session,
     find_session_transcript,
     list_profiles,
+    project_dirs_for,
     read_session_transcript,
 )
 
@@ -286,9 +287,12 @@ class Filters:
     """Matched case-insensitively against the whole name. A session without a name never matches."""
     tmux_session: str | None = None
     """The exact name of the tmux session the session's pane must be in now, by the live tmux server."""
+    role_globs: tuple[str, ...] = ()
+    """The auth-switch role must match one of these, case-sensitively. A session without a role never matches."""
 
-    def matches(self, session: ActiveSession, tmux_live: TmuxPane | None = None) -> bool:
-        """``tmux_live`` is where the session's pane is now; only :attr:`tmux_session` reads it."""
+    def matches(self, session: ActiveSession, tmux_live: TmuxPane | None = None, role: str | None = None) -> bool:
+        """``tmux_live`` is where the session's pane is now, and ``role`` its auth-switch role; only
+        :attr:`tmux_session` and :attr:`role_globs` read them."""
         if self.statuses and session.status not in self.statuses:
             return False
         if self.profiles and session.profile.name not in self.profiles:
@@ -299,6 +303,8 @@ class Filters:
             return False
         if self.tmux_session is not None and (tmux_live is None or tmux_live.session != self.tmux_session):
             return False
+        if self.role_globs and (role is None or not any(fnmatch.fnmatchcase(role, g) for g in self.role_globs)):
+            return False
         return self.name_glob is None or (
             session.name is not None and fnmatch.fnmatchcase(session.name.lower(), self.name_glob.lower())
         )
@@ -307,8 +313,13 @@ class Filters:
 def apply_filters(
     sessions: Iterable[ActiveSession], filters: Filters, panes: Mapping[str, TmuxPane] | None = None
 ) -> list[ActiveSession]:
-    """``panes`` is the listing of the tmux server, needed only by :attr:`Filters.tmux_session`."""
-    return [s for s in sessions if filters.matches(s, live_pane(s, panes))]
+    """``panes`` is the listing of the tmux server, needed only by :attr:`Filters.tmux_session`. The role is read
+    only for :attr:`Filters.role_globs`."""
+    return [
+        s
+        for s in sessions
+        if filters.matches(s, live_pane(s, panes), role_of(s.transcript) if filters.role_globs else None)
+    ]
 
 
 def sort_sessions(sessions: Iterable[ActiveSession]) -> list[ActiveSession]:
@@ -369,6 +380,42 @@ def activity_of(session: ActiveSession) -> Activity:
     transcript = session.transcript
     last = transcript.last_model_activity_at if transcript is not None else None
     return Activity(last, False) if last is not None else Activity(session.started_at, True)
+
+
+def role_of(transcript: SessionTranscript | None) -> str | None:
+    """The auth-switch role of the session's newest start, from the start log next to its transcript.
+
+    ``None`` when the session has no transcript or no start log, or its newest run was started without a role. Reads
+    the start log, a few lines, on every call.
+    """
+    if transcript is None:
+        return None
+    starts = transcript.profile_starts()
+    return max(starts, key=lambda s: s.started_at_ms).role if starts else None
+
+
+def read_role(session: ActiveSession) -> str | None:
+    """:func:`role_of` the session, read from the files now rather than from the snapshot of the listing.
+
+    A session that had no transcript when it was listed may have one now. It is looked up in the project dirs of the
+    session's launch dir and current dir, which costs a few stats.
+    """
+    path = session.transcript_path
+    if path is None and session.session_id is not None:
+        cwds = dict.fromkeys(d for d in (session.launch_cwd, session.cwd) if d is not None)
+        try:
+            candidates = [
+                d / f"{session.session_id}.jsonl" for cwd in cwds for d in project_dirs_for(cwd, [session.profile])
+            ]
+        except ClaudeBlackboxError:
+            candidates = []
+        path = next((c for c in candidates if c.is_file()), None)
+    if path is None:
+        return None
+    try:
+        return role_of(read_session_transcript(path))
+    except (ClaudeBlackboxError, OSError):
+        return None
 
 
 def read_last_response(session: ActiveSession) -> datetime | None:
@@ -487,6 +534,7 @@ def to_json(view: SessionView) -> dict[str, Any]:
         "session_id": s.session_id,
         "name": s.name,
         "name_source": s.name_source,
+        "role": role_of(s.transcript),
         "status": s.status,
         "waiting_for": waiting_for(s),
         "kind": s.kind,

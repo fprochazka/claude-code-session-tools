@@ -38,7 +38,7 @@ from cc_blackbox import (
 
 from .active import Filters, SessionLookupError, TmuxSessionNotFound, lookup_session, resolve_profile_globs
 from .discovery import resolve_scope
-from .list_active_cmd import TMUX_SESSION_HELP, Status, tmux_session_filter
+from .list_active_cmd import ROLE_HELP, TMUX_SESSION_HELP, Status, tmux_session_filter
 from .watch_events import (
     GROUPS,
     LIFECYCLE_KINDS,
@@ -167,6 +167,7 @@ def _describe_selection(
     here: Path | None,
     tmux: bool | None,
     tmux_session: str | None = None,
+    roles: Sequence[str] = (),
 ) -> str:
     if sessions:
         return "sessions=" + ",".join(sessions)
@@ -180,6 +181,8 @@ def _describe_selection(
         parts.append("tmux" if tmux else "no-tmux")
     if tmux_session is not None:
         parts.append(f"tmux-session={tmux_session}")
+    if roles:
+        parts.append(f"role={','.join(roles)}")
     return " ".join(parts) or "all"
 
 
@@ -230,6 +233,7 @@ def watch(
         help=TMUX_SESSION_HELP + " It is resolved once, at the start.",
         show_default=False,
     ),
+    role: list[str] = typer.Option(None, "--role", help=ROLE_HELP, show_default=False),
     include_self: bool = typer.Option(
         False,
         "--include-self",
@@ -335,6 +339,7 @@ def watch(
         in_tmux=tmux,
         name_glob=name,
         tmux_session=tmux_session_name,
+        role_globs=tuple(role or ()),
     )
     own = current_session_or_none()
     exclude = None if include_self or own is None else own.pid
@@ -354,6 +359,7 @@ def watch(
         scope_dir,
         tmux,
         tmux_session_name,
+        role or [],
     )
     changelog = Changelog(Changelog.default_path(own))
     sink, fallback = _sink(events_stream, own, selection, changelog, message_priority)

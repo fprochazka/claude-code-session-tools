@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import Machine, RealTmux, fake_tmux, response, sid, write_records
+from conftest import Machine, RealTmux, fake_tmux, log_start, response, sid, write_records
 from typer.testing import CliRunner
 
 from cc_session_tools.active import list_tmux_panes, pane_id_of
@@ -277,6 +277,57 @@ def test_tmux_session_needs_a_tmux_server(machine: Machine, fake_bin: Path) -> N
     assert "cannot read the tmux server" in result.stderr
 
 
+def with_role(machine: Machine, name: str, *roles: str | None, **fields: Any) -> int:
+    """A running ``work`` session with a transcript and one auth-switch start per role, oldest first."""
+    pid = machine.session("work", name, **fields)
+    transcript_of(machine, "work", name, [response(time.time() - 60)])
+    for index, role in enumerate(roles):
+        log_start(machine.project_dir("work"), sid(name), STARTED + index * 1000, pid=pid, profile="work", role=role)
+    return pid
+
+
+STARTED = 1794100000000
+
+
+def test_role_comes_from_the_newest_start(machine: Machine, fake_bin: Path) -> None:
+    fake_tmux(fake_bin, [])
+    with_role(machine, "dispatcher", None, "dispatcher")
+    with_role(machine, "worker-1", "worker")
+    with_role(machine, "lost-role", "worker", None)
+    machine.session("work", "plain")
+
+    roles = {s["name"]: s["role"] for s in json_of()}
+    assert roles == {"dispatcher": "dispatcher", "worker-1": "worker", "lost-role": None, "plain": None}
+
+    result = invoke()
+    assert result.exit_code == 0, result.output
+    lines = result.stdout.splitlines()
+    assert lines[0].split()[:5] == ["Profile", "Name", "Role", "Status", "Active"]
+    rows = {line.split()[1]: line.split() for line in lines[1:]}
+    assert rows["worker-1"][2] == "worker"
+    assert rows["plain"][2] == "idle"
+
+
+def test_the_role_column_is_left_out_when_no_session_has_a_role(machine: Machine, fake_bin: Path) -> None:
+    fake_tmux(fake_bin, [])
+    with_role(machine, "old-style", None)
+    result = invoke()
+    assert result.stdout.splitlines()[0].split()[:4] == ["Profile", "Name", "Status", "Active"]
+
+
+def test_role_filter_takes_globs_and_never_matches_a_session_without_a_role(machine: Machine, fake_bin: Path) -> None:
+    fake_tmux(fake_bin, [])
+    with_role(machine, "dispatcher", "dispatcher")
+    with_role(machine, "w1", "worker-orders")
+    with_role(machine, "w2", "worker-stock")
+    machine.session("work", "plain")
+
+    assert [s["name"] for s in json_of("--role", "worker-*")] == ["w1", "w2"]
+    assert [s["name"] for s in json_of("--role", "dispatcher", "--role", "worker-s*")] == ["dispatcher", "w2"]
+    assert json_of("--role", "WORKER-*") == []
+    assert json_of("--role", "*", "--name", "plain") == []
+
+
 def test_name_glob_is_case_insensitive_and_skips_unnamed(machine: Machine, fake_bin: Path) -> None:
     fake_tmux(fake_bin, [])
     machine.session("work", "W1-Order-Planner")
@@ -337,6 +388,7 @@ JSON_KEYS = [
     "session_id",
     "name",
     "name_source",
+    "role",
     "status",
     "waiting_for",
     "kind",

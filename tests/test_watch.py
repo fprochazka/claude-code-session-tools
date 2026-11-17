@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import Machine, RealTmux, fake_tmux, response, sid, write_records
+from conftest import Machine, RealTmux, fake_tmux, log_start, response, sid, write_records
 from typer.testing import CliRunner
 
 from cc_session_tools.active import Filters, resolve_profile_globs
@@ -321,6 +321,48 @@ def test_session_ended_by_a_removed_record_or_a_gone_process(machine: Machine) -
         ("session_ended", "work/killed", "process_gone"),
     ]
     assert t.poll(NOW + 2) == []
+
+
+# --- roles ---
+
+
+def give_role(machine: Machine, name: str, role: str, pid: int) -> None:
+    """Write what the session and the auth-switch start hook write: a transcript, and the start log next to it."""
+    transcript(machine, name, NOW - 30)
+    log_start(machine.project_dir("work"), sid(name), int(NOW * 1000), pid=pid, profile="work", role=role)
+
+
+def test_a_role_filter_matches_the_role_of_the_newest_start(machine: Machine) -> None:
+    give_role(machine, "w1", "worker", machine.session("work", "w1"))
+    give_role(machine, "boss", "dispatcher", machine.session("work", "boss"))
+    machine.session("work", "plain")
+    t = tracker(Selection(Filters(role_globs=("work*",))))
+    assert [t.identify(m) for m in t.matched()] == ["work/w1"]
+
+
+def test_a_young_session_whose_role_is_logged_late_joins(machine: Machine) -> None:
+    # Its record is there, but neither its transcript nor its start log is, yet.
+    pid = machine.session("work", "fresh", startedAt=int((NOW - 5) * 1000))
+    t = tracker(Selection(Filters(role_globs=("worker",))))
+    assert t.matched() == []
+    assert t.poll(NOW + 1) == []
+
+    give_role(machine, "fresh", "worker", pid)
+    [event] = t.poll(NOW + 2)
+    assert (event.kind, event.data) == ("session_matched", {"session": "work/fresh", "status": "idle"})
+    assert t.poll(NOW + 3) == []
+
+
+def test_an_older_session_whose_role_appears_joins_at_its_next_record_change(machine: Machine) -> None:
+    pid = machine.session("work", "slow", startedAt=int((NOW - 600) * 1000))
+    t = tracker(Selection(Filters(role_globs=("worker",))))
+    give_role(machine, "slow", "worker", pid)
+    # Past the settle time, the role is not looked for on every poll.
+    assert t.poll(NOW + 1) == []
+
+    machine.update(pid, status="busy")
+    [event] = t.poll(NOW + 2)
+    assert (event.kind, event.data) == ("session_matched", {"session": "work/slow", "status": "busy"})
 
 
 # --- thresholds ---
@@ -666,6 +708,16 @@ def test_command_takes_repeated_idle_thresholds(machine: Machine) -> None:
         in result.stderr
     )
     assert "idle_long" in result.stderr.split("events: ", 1)[1].splitlines()[0]
+
+
+def test_command_role_filter(machine: Machine) -> None:
+    give_role(machine, "w1", "worker-orders", machine.session("work", "w1"))
+    machine.session("work", "plain")
+    result = invoke("--role", "worker-*", "--role", "reviewer", "--timeout=1s", "--events-stream=stdout")
+    assert result.exit_code == 0, result.output
+    assert "cc-session-tools watch: selection: role=worker-*,reviewer; 1 matching now" in result.stderr
+    started = json.loads(result.stdout.splitlines()[0])
+    assert started["data"]["sessions"] == [{"session": "work/w1", "status": "idle"}]
 
 
 def test_command_tmux_session_current(machine: Machine, no_tmux: Path, monkeypatch: pytest.MonkeyPatch) -> None:

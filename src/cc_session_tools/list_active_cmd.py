@@ -30,6 +30,7 @@ from .active import (
     list_tmux_panes,
     resolve_profile_globs,
     resolve_tmux_session,
+    role_of,
     shorten_home,
     sort_sessions,
     to_json,
@@ -51,6 +52,11 @@ def _sessions(profile_globs: list[str] | None) -> list[ActiveSession]:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
+
+ROLE_HELP = (
+    "Only sessions whose auth-switch role matches this glob, case-sensitively, for example 'worker-*'. The role is "
+    "the one of the session's newest start. A session without a role never matches. Repeatable."
+)
 
 TMUX_SESSION_HELP = (
     "Only sessions whose tmux pane is now in this tmux session, by the running tmux server, so a window moved with "
@@ -116,24 +122,26 @@ def _pane(view: SessionView) -> Text:
 
 
 def _print_table(views: list[SessionView]) -> None:
+    roles = [role_of(view.session.transcript) for view in views]
+    # Without any role on the machine, the column would only be empty.
+    with_role = any(role is not None for role in roles)
     rows = []
-    for view in views:
+    for view, role in zip(views, roles, strict=True):
         s = view.session
-        rows.append(
-            (
-                Text(s.profile.name),
-                Text(s.name) if s.name else Text(f"pid:{s.pid}", style="dim"),
-                Text(_status(s)),
-                _active(s),
-                _where(view),
-                _pane(view),
-            )
-        )
+        pinned = [
+            Text(s.profile.name),
+            Text(s.name) if s.name else Text(f"pid:{s.pid}", style="dim"),
+            *([Text(role or "")] if with_role else []),
+            Text(_status(s)),
+            _active(s),
+        ]
+        rows.append((*pinned, _where(view), _pane(view)))
     # Borderless like the search table, but not expanded: the columns are short and stay next to each other. When a
-    # row is wider than the console, rich shrinks every column; the first four are pinned to their content, so only
+    # row is wider than the console, rich shrinks every column; the leading ones are pinned to their content, so only
     # the branch and the tmux session lose their tail. The pane id leads its cell and survives.
     table = Table(show_lines=False, box=None, pad_edge=False)
-    for index, header in enumerate(("Profile", "Name", "Status", "Active")):
+    headers = ("Profile", "Name", *(("Role",) if with_role else ()), "Status", "Active")
+    for index, header in enumerate(headers):
         width = max([len(header)] + [row[index].cell_len for row in rows])
         table.add_column(header, no_wrap=True, min_width=width)
     table.add_column("Branch or cwd", no_wrap=True, overflow="ellipsis")
@@ -168,6 +176,7 @@ def list_active(
     tmux_session: str = typer.Option(
         None, "--tmux-session", metavar="<name|current>", help=TMUX_SESSION_HELP, show_default=False
     ),
+    role: list[str] = typer.Option(None, "--role", help=ROLE_HELP, show_default=False),
     active_within: str = typer.Option(
         None,
         "--active-within",
@@ -180,7 +189,8 @@ def list_active(
 ) -> None:
     """List the running Claude Code sessions of every profile.
 
-    One row per session, by profile and then start time. Active is the time since the session's last model response, in
+    One row per session, by profile and then start time. Role is the auth-switch role of the session's newest start,
+    a column only when a session has one. Active is the time since the session's last model response, in
     its transcript or a subagent's; a session without one shows its start, dimmed. The tmux pane is the pane id with the
     tmux session and window that pane is in now, read from the tmux server. The inspect command shows one session.
     """
@@ -217,6 +227,7 @@ def list_active(
         in_tmux=tmux,
         name_glob=name,
         tmux_session=tmux_session_name,
+        role_globs=tuple(role or ()),
     )
     sessions = sort_sessions(apply_filters(_sessions(profile), filters, panes))
     if since is not None:

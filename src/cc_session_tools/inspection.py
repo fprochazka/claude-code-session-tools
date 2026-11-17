@@ -44,6 +44,7 @@ from .active import (
     capture_pane,
     lookup_session,
     pane_runs,
+    role_of,
     to_json,
     transcript_json,
 )
@@ -229,7 +230,15 @@ def _path(value: Path | None) -> str | None:
 
 def _starts(starts: Sequence[ProfileStart]) -> list[dict[str, Any]]:
     return [
-        {"ts": _iso(s.started_at), "pid": s.pid, "source": s.source, "profile": s.profile}
+        {
+            "ts": _iso(s.started_at),
+            "pid": s.pid,
+            "source": s.source,
+            "profile": s.profile,
+            "role": s.role,
+            "role_prompt": _path(s.role_prompt),
+            "role_prompt_mode": s.role_prompt_mode,
+        }
         for s in sorted(starts, key=lambda s: s.started_at_ms)
     ]
 
@@ -279,6 +288,7 @@ INSPECT_KEYS = (
     "session_id",
     "name",
     "name_source",
+    "role",
     "title",
     "title_source",
     "status",
@@ -391,6 +401,7 @@ def to_inspect_json(found: Found, *, screen: bool = False) -> dict[str, Any]:
             "address": f"{profile.name}/{name}" if profile is not None and name else None,
             "session_id": session_id,
             "name": name,
+            "role": role_of(transcript),
             "entrypoint": transcript.entrypoint,
             "version": transcript.version,
             "started_at": _iso(transcript.started_at),

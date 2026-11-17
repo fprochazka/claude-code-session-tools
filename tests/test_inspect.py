@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import Machine, cost_state, fake_tmux, response, sid, stamp, write_records
+from conftest import Machine, cost_state, fake_tmux, log_start, response, sid, stamp, write_records
 from typer.testing import CliRunner
 
 from cc_session_tools.cli import app
@@ -29,6 +29,7 @@ LIST_ACTIVE_KEYS = [
     "session_id",
     "name",
     "name_source",
+    "role",
     "status",
     "waiting_for",
     "kind",
@@ -86,6 +87,7 @@ def ended(
     names: list[str],
     cwds: list[str] | None = None,
     pid: int | None = None,
+    role: str | None = None,
     age_days: float = 1,
     tail: list[dict[str, Any]] | None = None,
 ) -> Path:
@@ -127,6 +129,8 @@ def ended(
             "config_dir": str(machine.config_dir(profile)),
             "cwd": cwds[0],
         }
+        if role is not None:
+            start.update(role=role, role_prompt=f"/roles/{role}.md", role_prompt_mode="append")
         log.write_text(json.dumps(start) + "\n")
     os.utime(path, (started, started))
     return path
@@ -143,6 +147,29 @@ def test_the_json_keys_are_list_active_plus_the_ended_session_fields() -> None:
     }
 
 
+def test_an_ended_session_shows_the_role_of_its_last_start(machine: Machine) -> None:
+    ended(machine, "work", "roled", names=["roled"], pid=4242, role="dispatcher")
+    data = json_of("roled")
+    assert data["role"] == "dispatcher"
+    [start] = data["profile_starts"]
+    assert (start["role"], start["role_prompt"], start["role_prompt_mode"]) == (
+        "dispatcher",
+        "/roles/dispatcher.md",
+        "append",
+    )
+    result = invoke("roled")
+    assert result.exit_code == 0, result.output
+    assert "pid 4242  startup  work  role dispatcher (prompt append)" in result.stdout
+    assert json_of(str(sid("roled")))["role"] == "dispatcher"
+
+
+def test_a_session_without_a_role_has_null(machine: Machine) -> None:
+    ended(machine, "work", "plain", names=["plain"], pid=4343)
+    data = json_of("plain")
+    assert data["role"] is None
+    assert data["profile_starts"][0]["role"] is None
+
+
 # --- running sessions ---
 
 
@@ -157,6 +184,16 @@ def test_a_running_session_by_id_prefix_name_address_and_pid(machine: Machine) -
     assert list(data) == list(INSPECT_KEYS)
     assert data["alive"] is True
     assert data["resume_command"] == f"claude-work --resume {session_id}"
+
+
+def test_a_running_session_shows_the_role_of_its_newest_start(machine: Machine) -> None:
+    pid = machine.session("work", "worker")
+    write_records(machine.project_dir("work") / f"{sid('worker')}.jsonl", [response(time.time() - 60)])
+    log_start(machine.project_dir("work"), sid("worker"), 1794100000000, pid=pid, role="worker")
+    log_start(machine.project_dir("work"), sid("worker"), 1794100001000, pid=pid, source="clear", role="reviewer")
+    data = json_of("worker")
+    assert data["role"] == "reviewer"
+    assert [s["role"] for s in data["profile_starts"]] == ["worker", "reviewer"]
 
 
 def test_a_running_session_in_text(machine: Machine) -> None:

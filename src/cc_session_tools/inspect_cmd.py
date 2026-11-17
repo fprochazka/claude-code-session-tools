@@ -30,7 +30,12 @@ def _value(value: object) -> str:
 
 
 def _start(start: dict[str, object]) -> str:
-    return f"{start['ts']}  pid {start['pid'] or '-'}  {start['source'] or '-'}  {start['profile'] or '-'}"
+    line = f"{start['ts']}  pid {start['pid'] or '-'}  {start['source'] or '-'}  {start['profile'] or '-'}"
+    if start["role"] is not None:
+        line += f"  role {start['role']}"
+        if start["role_prompt_mode"] is not None:
+            line += f" (prompt {start['role_prompt_mode']})"
+    return line
 
 
 def _usd(value: object) -> str:

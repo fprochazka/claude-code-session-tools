@@ -205,7 +205,7 @@ cc-session-tools watch                                         # every running s
 cc-session-tools watch --profile 'rohlik*' --events=turns      # only turn_finished and waiting, in profiles matching a glob
 cc-session-tools watch --name 'w*-order-planner' --until=turn_finished   # stop at the first finished turn of a worker
 cc-session-tools watch w1-order-planner w2-order-planner       # these two sessions, until both have ended
-cc-session-tools watch --busy-after=30m --waiting-after=5m --idle-after=2h
+cc-session-tools watch --busy-after=30m --waiting-after=5m --stop-after-quiet=2h
 cc-session-tools watch --here --events-stream=stdout --timeout=10m
 ```
 
@@ -222,7 +222,7 @@ cc-session-tools watch --here --events-stream=stdout --timeout=10m
 | Kind | Group | `data` |
 |------|-------|--------|
 | `watch_started` | `lifecycle` | `selection`, and `sessions`: `{session, status}` for every matching session, plus `waiting_for` when it waits |
-| `watch_ended` | `lifecycle` | `reason`: `until` (with `event` and `seq`), `timeout`, `idle` (with `idle_after`), `sessions_ended`, `session_gone`, or `signal SIGTERM`/`signal SIGINT` |
+| `watch_ended` | `lifecycle` | `reason`: `until` (with `event` and `seq`), `timeout`, `quiet` (with `stop_after_quiet`), `sessions_ended`, `session_gone`, or `signal SIGTERM`/`signal SIGINT` |
 | `session_started`, `session_matched` | `membership` | `session`, `status`: a new session that matches, or a running one that starts to |
 | `session_ended` | `membership` | `session`, `reason`: `record_removed` (a clean exit) or `process_gone` |
 | `session_unmatched` | `membership` | `session`: it no longer matches the filters |
@@ -242,7 +242,7 @@ One status transition can yield two events: `busy` to `idle` is `status_changed`
 
 `--events` and `--exclude-events` take kinds and groups, comma-separated and repeatable. `lifecycle` is always on. An unknown kind or group, or one this watch never produces, is an error at start: `busy_long` needs `--busy-after`, `waiting_long` needs `--waiting-after`, and a watch of named sessions never produces `session_started`, `session_matched` or `session_unmatched`.
 
-**Ends and thresholds.** `--until=<kind>` stops after the first reported event of that kind. `--timeout` stops that long after the start, `--idle-after` when nothing was reported for that long; `busy_long` and `waiting_long` do not count as activity. `--busy-after` reports `busy_long` once per busy stretch of a session, `--waiting-after` reports `waiting_long` once per waiting stretch. A stretch starts at the record's `statusUpdatedAt`, so a session that was already busy for an hour when the watch started gets its `busy_long` at once. Durations are `90s`, `30m`, `2h`, `1h30m` or plain seconds.
+**Ends and thresholds.** `--until=<kind>` stops after the first reported event of that kind. `--timeout` stops that long after the start, `--stop-after-quiet` when nothing was reported for that long; `busy_long` and `waiting_long` do not count as activity. `--busy-after` reports `busy_long` once per busy stretch of a session, `--waiting-after` reports `waiting_long` once per waiting stretch. A stretch starts at the record's `statusUpdatedAt`, so a session that was already busy for an hour when the watch started gets its `busy_long` at once. Durations are `90s`, `30m`, `2h`, `1h30m` or plain seconds.
 
 **Startup header.** The header, the `ended: <reason>` line and errors go to stderr, each line prefixed `cc-session-tools watch: ` and never starting with `{`, so in merged output every line that starts with `{` is an event:
 

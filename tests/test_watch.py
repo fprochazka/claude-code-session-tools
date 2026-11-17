@@ -365,13 +365,13 @@ def test_timeout(machine: Machine) -> None:
     assert clock.now == pytest.approx(NOW + 5, abs=0.01)
 
 
-def test_idle_after_counts_from_the_last_reported_event(machine: Machine) -> None:
+def test_stop_after_quiet_counts_from_the_last_reported_event(machine: Machine) -> None:
     pid = machine.session("work", "worker")
     clock = Clock()
     clock.on_wait = lambda n: machine.update(pid, name="renamed") if n == 3 else None
-    sink, _ = run_watch(tracker(), Ends(idle_after=10), clock)
+    sink, _ = run_watch(tracker(), Ends(stop_after_quiet=10), clock)
     assert sink.kinds() == ["watch_started", "renamed", "watch_ended"]
-    assert sink.events[-1].data == {"reason": "idle", "idle_after": "10s"}
+    assert sink.events[-1].data == {"reason": "quiet", "stop_after_quiet": "10s"}
     assert clock.now == pytest.approx(NOW + 13, abs=0.01)
 
 

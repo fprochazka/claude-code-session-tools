@@ -21,7 +21,7 @@ Start it with the Bash tool and `run_in_background: true`, and leave `--events-s
 ```bash
 cc-session-tools watch --name 'w*-order-planner' --events=turns,membership
 cc-session-tools watch w1-order-planner --until=turn_finished
-cc-session-tools watch --profile 'rohlik*' --events=turns --busy-after=30m --waiting-after=5m --idle-after=2h
+cc-session-tools watch --profile 'rohlik*' --events=turns --busy-after=30m --waiting-after=5m --stop-after-quiet=2h
 ```
 
 - **The default stream, `auto`,** sends each batch of events to this session as a message. With `--events-stream=stdout` nothing tells you that an event arrived; that mode is for scripts and terminals.
@@ -77,7 +77,7 @@ Options:
                                   kind, for example turn_finished.
   --timeout <str>                 Stop this long after the start, for example
                                   90s, 30m or 1h30m.
-  --idle-after <str>              Stop when nothing was reported for this
+  --stop-after-quiet <str>        Stop when nothing was reported for this
                                   long.
   --busy-after <str>              Report busy_long once per busy stretch of a
                                   session that stays busy this long.
@@ -120,9 +120,9 @@ One transition can yield two events: `busy` to `idle` is `status_changed` plus `
 ## Ends
 
 - `--until=turn_finished`: stop after the first event of that kind, from any watched session.
-- `--timeout=30m`: stop that long after the start. `--idle-after=2h`: stop when nothing was reported for that long; `busy_long` and `waiting_long` do not count.
+- `--timeout=30m`: stop that long after the start. `--stop-after-quiet=2h`: stop when nothing was reported for that long; `busy_long` and `waiting_long` do not count.
 - Named sessions: the watch ends when all of them have ended.
-- `watch_ended` reasons: `until`, `timeout`, `idle`, `sessions_ended`, `session_gone` (this session can no longer receive messages), or a signal. A background task that ends without `watch_ended` ended for an unknown reason; if you still need the watch, start the same command again and tell the user in one line.
+- `watch_ended` reasons: `until`, `timeout`, `quiet`, `sessions_ended`, `session_gone` (this session can no longer receive messages), or a signal. A background task that ends without `watch_ended` ended for an unknown reason; if you still need the watch, start the same command again and tell the user in one line.
 
 Stop a watch by stopping its background task.
 

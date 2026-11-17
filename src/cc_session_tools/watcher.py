@@ -493,7 +493,7 @@ def _text(path: Path | None) -> str | None:
 class Ends:
     until: str | None = None
     timeout: float | None = None
-    idle_after: float | None = None
+    stop_after_quiet: float | None = None
 
     def describe(self, fixed_set: bool) -> str:
         parts = []
@@ -501,8 +501,8 @@ class Ends:
             parts.append(f"until the first {self.until}")
         if self.timeout is not None:
             parts.append(f"timeout {format_duration(self.timeout)}")
-        if self.idle_after is not None:
-            parts.append(f"idle after {format_duration(self.idle_after)}")
+        if self.stop_after_quiet is not None:
+            parts.append(f"after {format_duration(self.stop_after_quiet)} quiet")
         if fixed_set:
             parts.append("when every named session has ended")
         return ", ".join(parts)
@@ -618,14 +618,15 @@ class Watcher:
             if deadline is not None and now >= deadline:
                 self._finish("timeout")
                 return
-            if self.ends.idle_after is not None and now - last_activity >= self.ends.idle_after:
-                self._finish("idle", idle_after=format_duration(self.ends.idle_after))
+            quiet = self.ends.stop_after_quiet
+            if quiet is not None and now - last_activity >= quiet:
+                self._finish("quiet", stop_after_quiet=format_duration(quiet))
                 return
             wait = self.poll_interval
             if deadline is not None:
                 wait = min(wait, deadline - now)
-            if self.ends.idle_after is not None:
-                wait = min(wait, last_activity + self.ends.idle_after - now)
+            if quiet is not None:
+                wait = min(wait, last_activity + quiet - now)
             for due in (self.tracker.seconds_until_threshold(now), self.sink.seconds_until_flush()):
                 if due is not None:
                     wait = min(wait, due)

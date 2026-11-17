@@ -248,8 +248,8 @@ def watch(
     timeout: str = typer.Option(
         None, "--timeout", help="Stop this long after the start, for example 90s, 30m or 1h30m.", show_default=False
     ),
-    idle_after: str = typer.Option(
-        None, "--idle-after", help="Stop when nothing was reported for this long.", show_default=False
+    stop_after_quiet: str = typer.Option(
+        None, "--stop-after-quiet", help="Stop when nothing was reported for this long.", show_default=False
     ),
     busy_after: str = typer.Option(
         None,
@@ -280,7 +280,7 @@ def watch(
     starts to match the filters joins the watch and one that stops matching leaves it.
     """
     thresholds = Thresholds(_duration("--busy-after", busy_after), _duration("--waiting-after", waiting_after))
-    ends = Ends(until, _duration("--timeout", timeout), _duration("--idle-after", idle_after))
+    ends = Ends(until, _duration("--timeout", timeout), _duration("--stop-after-quiet", stop_after_quiet))
     fixed = bool(sessions)
     try:
         reported = resolve_filter(events, exclude_events, enabled_thresholds=thresholds.enabled(), fixed_set=fixed)

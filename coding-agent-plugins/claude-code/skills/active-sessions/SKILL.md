@@ -27,7 +27,7 @@ Usage: cc-session-tools list-active [OPTIONS]
 
 Options:
   -p, --profile <str>             Only sessions of the profiles whose name
-                                  matches this glob, for example 'rohlik*'.
+                                  matches this glob, for example 'work*'.
                                   Repeatable.
   --status <busy|shell|idle|waiting>
                                   Only sessions with this status. Repeatable.
@@ -60,7 +60,7 @@ Options:
 ## How to use it
 
 - **Prefer `--json` and `jq`.** The table is for people and truncates long branches and tmux session names. The JSON has every field and is the stable interface.
-- **`--profile` and `--name` take globs.** `--profile 'rohlik*'` covers every profile whose name starts with `rohlik`; a plain name matches only that profile. A `--profile` glob that matches no profile exits with `1` and lists the known profiles.
+- **`--profile` and `--name` take globs.** `--profile 'work*'` covers every profile whose name starts with `work`; a plain name matches only that profile. A `--profile` glob that matches no profile exits with `1` and lists the known profiles.
 - **Filters combine with AND.**
 - **`--role <glob>`** keeps the sessions whose role matches, case-sensitively; repeatable. A session without a role never matches. The table shows a Role column only when a listed session has a role.
 - **`--tmux-session <name>`** keeps the sessions whose pane is in that tmux session now, by the tmux server, so a window moved there with `move-window` counts. `--tmux-session current` is the tmux session this command runs in, from `$TMUX_PANE`: the sessions next to you. A name that no tmux session has, or `current` outside tmux, exits with `1` and lists the tmux sessions.
@@ -105,7 +105,7 @@ cc-session-tools list-active --status busy --json | jq -r '.[] | "\(.address)\t\
 cc-session-tools inspect w1-order-planner --json | jq -r '.tmux_pane'
 
 # Sessions of one profile working in this repo, with their branch and pane
-cc-session-tools list-active --here --profile rohlik-team --json | jq -r '.[] | "\(.name)\t\(.git_branch)\t\(.tmux_pane)"'
+cc-session-tools list-active --here --profile work-team --json | jq -r '.[] | "\(.name)\t\(.git_branch)\t\(.tmux_pane)"'
 
 # Messaging address of a session
 cc-session-tools inspect cc-auth-switch --json | jq -r '.messaging_address'

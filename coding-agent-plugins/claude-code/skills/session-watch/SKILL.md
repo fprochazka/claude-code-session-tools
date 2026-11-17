@@ -21,7 +21,7 @@ Start it with the Bash tool and `run_in_background: true`, and leave `--events-s
 ```bash
 cc-session-tools watch --name 'w*-order-planner' --events=turns,membership
 cc-session-tools watch w1-order-planner --until=turn_finished
-cc-session-tools watch --profile 'rohlik*' --events=turns --busy-after=30m --waiting-after=5m --stop-after-quiet=2h
+cc-session-tools watch --profile 'work*' --events=turns --busy-after=30m --waiting-after=5m --stop-after-quiet=2h
 cc-session-tools watch --tmux-session current --events=thresholds --idle-after=10m --idle-every=50m
 ```
 
@@ -55,7 +55,7 @@ Arguments:
 
 Options:
   -p, --profile <str>             Only sessions of the profiles whose name
-                                  matches this glob, for example 'rohlik*'.
+                                  matches this glob, for example 'work*'.
                                   Repeatable.
   --status <busy|shell|idle|waiting>
                                   Only sessions with this status. Repeatable.
@@ -123,7 +123,7 @@ Read it first in the background task's output. Each line starts with `cc-session
 
 ## Events and groups
 
-Events are small on purpose: `{"kind", "seq", "observed_at", "data"}`, where a session event's `data` holds `session` and only what changed. `session` is a string such as `rohlik-team/w1-order-planner`, or `rohlik-team/pid:3811117` when the session has no name or shares it with another running session of its profile. **For anything else — cwd, branch, tmux pane, messaging address, pid — run `cc-session-tools inspect <session> --json`** (see the `active-sessions` skill); it resolves the string also after the session ended. The `session` string changes with a rename; `renamed` carries the old one in `from`.
+Events are small on purpose: `{"kind", "seq", "observed_at", "data"}`, where a session event's `data` holds `session` and only what changed. `session` is a string such as `work-team/w1-order-planner`, or `work-team/pid:3811117` when the session has no name or shares it with another running session of its profile. **For anything else — cwd, branch, tmux pane, messaging address, pid — run `cc-session-tools inspect <session> --json`** (see the `active-sessions` skill); it resolves the string also after the session ended. The `session` string changes with a rename; `renamed` carries the old one in `from`.
 
 - `lifecycle`, always on: `watch_started` (`selection`, `sessions`: `{session, status}` per matching session, plus `waiting_for` when it waits), `watch_ended` (`reason`).
 - `membership`: `session_started` and `session_matched` (`session`, `status`), `session_ended` (`session`, `reason`: `record_removed` or `process_gone`), `session_unmatched` (`session`).
@@ -147,8 +147,8 @@ Stop a watch by stopping its background task.
 
 ```text
 <session-watcher filter="name=w*-order-planner" seq="5-6">
-{"kind":"status_changed","seq":5,"data":{"session":"rohlik-team/w1-order-planner","from":"busy","to":"idle"}}
-{"kind":"turn_finished","seq":6,"data":{"session":"rohlik-team/w1-order-planner","from":"busy"}}
+{"kind":"status_changed","seq":5,"data":{"session":"work-team/w1-order-planner","from":"busy","to":"idle"}}
+{"kind":"turn_finished","seq":6,"data":{"session":"work-team/w1-order-planner","from":"busy"}}
 </session-watcher>
 ```
 

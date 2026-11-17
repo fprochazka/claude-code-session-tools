@@ -130,7 +130,7 @@ Exit code `1` when the target does not resolve or the file cannot be read.
 ```bash
 cc-session-tools list-active                          # every running session, one row each
 cc-session-tools list-active --profile work --here    # sessions of one profile in this repo and its worktrees
-cc-session-tools list-active --profile 'rohlik*'      # sessions of every profile whose name matches a glob
+cc-session-tools list-active --profile 'work*'      # sessions of every profile whose name matches a glob
 cc-session-tools list-active --status busy --tmux     # busy sessions that run in tmux
 cc-session-tools list-active --name 'w?-*'            # names matching a glob, case-insensitively
 cc-session-tools list-active --tmux-session current   # sessions whose pane is in this tmux session now
@@ -163,7 +163,7 @@ Exit codes: `0`, including when no session matches the filters (the notice goes 
 
 ```bash
 cc-session-tools inspect w1-order-planner             # every field of one running session
-cc-session-tools inspect rohlik-team/w1-order-planner # the same, by address
+cc-session-tools inspect work-team/w1-order-planner # the same, by address
 cc-session-tools inspect 27906ead --json              # an ended session by a session id prefix, as JSON
 cc-session-tools inspect old-name                     # a session renamed since, ended or running
 cc-session-tools inspect 1199796 --days 30            # an ended session by its pid, from the auth-switch start log
@@ -206,7 +206,7 @@ Exit codes: `0` when one session is shown. `1` when SESSION matches nothing or m
 
 ```bash
 cc-session-tools watch                                         # every running session except the one this runs under
-cc-session-tools watch --profile 'rohlik*' --events=turns      # only turn_finished and waiting, in profiles matching a glob
+cc-session-tools watch --profile 'work*' --events=turns      # only turn_finished and waiting, in profiles matching a glob
 cc-session-tools watch --name 'w*-order-planner' --until=turn_finished   # stop at the first finished turn of a worker
 cc-session-tools watch w1-order-planner w2-order-planner       # these two sessions, until both have ended
 cc-session-tools watch --busy-after=30m --waiting-after=5m --stop-after-quiet=2h
@@ -257,7 +257,7 @@ Durations are `90s`, `30m`, `2h`, `1h30m` or plain seconds.
 **Startup header.** The header, the `ended: <reason>` line and errors go to stderr, each line prefixed `cc-session-tools watch: ` and never starting with `{`, so in merged output every line that starts with `{` is an event:
 
 ```text
-cc-session-tools watch: selection: profile=rohlik* (profiles: rohlik-team, rohlik-team2); 4 matching now
+cc-session-tools watch: selection: profile=work* (profiles: work-team, work-team2); 4 matching now
 cc-session-tools watch: own session: coordinator (pid 4242) is left out; --include-self watches it
 cc-session-tools watch: stream: stdout (one JSON event per line)
 cc-session-tools watch: changelog: /tmp/claude-1000/…/scratchpad/cc-session-tools/watch-20261116T170501-4343.events.jsonl

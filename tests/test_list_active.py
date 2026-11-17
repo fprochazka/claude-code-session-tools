@@ -163,9 +163,9 @@ def test_no_sessions_prints_a_notice_on_stderr(machine: Machine) -> None:
 
 def test_middle_ellipsis_keeps_both_ends() -> None:
     assert _middle_ellipsis("short", 10) == "short"
-    shortened = _middle_ellipsis("rohlik/commercial-orders/fp/SCEX-6433-make-order-level", 20)
+    shortened = _middle_ellipsis("acme/orders/fp/ABC-1234-make-order-level", 20)
     assert len(shortened) == 20
-    assert shortened.startswith("rohlik/co") and shortened.endswith("der-level")
+    assert shortened.startswith("acme/orde") and shortened.endswith("der-level")
 
 
 # --- filters ---
@@ -195,9 +195,9 @@ def test_profile_filter_takes_globs(machine: Machine, fake_bin: Path) -> None:
 
 
 def test_a_profile_glob_that_matches_nothing_names_the_known_profiles(machine: Machine) -> None:
-    result = invoke("--profile", "rohlik*")
+    result = invoke("--profile", "acme*")
     assert result.exit_code == 1
-    assert "No Claude Code profile matches 'rohlik*'" in result.stderr
+    assert "No Claude Code profile matches 'acme*'" in result.stderr
     assert "default, work, lab" in result.stderr
 
 
@@ -530,7 +530,7 @@ def test_list_tmux_panes_parses_one_call(fake_bin: Path) -> None:
 @pytest.mark.parametrize(
     ("recorded", "pane"),
     [
-        ("rohlik/commercial-orders/fp/SCEX-6433-worker1:@14.%14", "%14"),
+        ("acme/orders/fp/ABC-1234-worker1:@14.%14", "%14"),
         ("s:@1.%1", "%1"),
         (None, None),
         ("", None),

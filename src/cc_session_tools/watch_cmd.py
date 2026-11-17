@@ -210,7 +210,7 @@ def watch(
         None,
         "--profile",
         "-p",
-        help="Only sessions of the profiles whose name matches this glob, for example 'rohlik*'. Repeatable.",
+        help="Only sessions of the profiles whose name matches this glob, for example 'work*'. Repeatable.",
         show_default=False,
     ),
     status: list[Status] = typer.Option(None, "--status", help="Only sessions with this status. Repeatable."),

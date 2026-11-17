@@ -345,6 +345,17 @@ uv run ruff format --check .
 
 **To test against an unreleased cc-blackbox**, point `[tool.uv.sources]` at its worktree with `cc-blackbox = { path = "<cc-blackbox worktree>", editable = true }` and widen the pin. Before landing, release cc-blackbox, restore the PyPI pin and run `uv lock --refresh-package cc-blackbox`. CI installs with `uv sync --locked`, so a path source cannot land on master.
 
+### Commit hooks
+
+The tools show what runs on your machine: profile names, session names, branches, ticket keys, paths and claude.ai remote-session links. All of that ends up in terminals, captured panes and test fixtures, and from there it can slip into a commit. `scripts/hooks` holds a pre-commit and a commit-msg hook that refuse a commit when a staged line or the commit message matches a private identifier. The identifiers live in a file outside the repository, because listing them here would publish the very strings the hooks exist to keep out. Set it up once per clone:
+
+```bash
+git config core.hooksPath scripts/hooks
+git config hooks.forbiddenPatternsFile ~/.config/git/forbidden-patterns.txt  # any path outside the repo
+```
+
+The file holds one extended regex per line, matched case-insensitively; blank lines and `#` comments are ignored. Until `hooks.forbiddenPatternsFile` points at a file with at least one pattern, both hooks refuse every commit and print how to fix it. The hooks check only the lines a commit adds, so a captured pane or other fixture needs its private names replaced with made-up ones before you commit it.
+
 ### The live contract test
 
 `tests/test_live_screen.py` checks the `inspect --screen` classifier against a real Claude Code session. It is excluded from the default run and from CI. Run it after a Claude Code update:

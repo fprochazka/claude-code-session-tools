@@ -42,9 +42,11 @@ from .active import (
     SessionLookupError,
     build_views,
     capture_pane,
+    list_tmux_panes,
     lookup_session,
-    pane_runs,
+    pane_state,
     role_of,
+    runs_in_pane,
     to_json,
     transcript_json,
 )
@@ -338,13 +340,29 @@ def _collapse_blank(lines: list[str]) -> list[str]:
     return [line for index, line in enumerate(lines) if line or index == 0 or lines[index - 1]]
 
 
+def _unusable_pane(pane: str, pid: int) -> str | None:
+    """Why the pane cannot be captured for the session ``pid`` now, or ``None`` when it can."""
+    state = pane_state(pane)
+    if state is None:
+        panes = list_tmux_panes()
+        if panes is None:
+            return "tmux_unavailable"
+        return "pane_gone" if pane not in panes else "capture_failed"
+    if not runs_in_pane(state.pid, pid):
+        return "pane_not_owned"
+    if state.in_mode:
+        return "pane_in_mode"
+    return None
+
+
 def screen_json(data: dict[str, Any]) -> dict[str, Any]:
     """The ``screen`` object of ``inspect --screen``: what the session's tmux pane shows now, classified.
 
     ``reason`` says why nothing was captured, with ``state`` ``unknown`` and ``lines`` ``null``: ``ended``,
     ``not_in_tmux``, ``tmux_unavailable``, ``pane_gone``, ``pane_not_owned`` (the pane id now belongs to another
-    process, as after a tmux server restart) or ``capture_failed``. When the pane was captured, ``reason`` is
-    ``null`` and an unrecognised screen is ``unknown`` too.
+    process, as after a tmux server restart), ``pane_in_mode`` (copy mode or another tmux mode would take the keys) or
+    ``capture_failed``. When the pane was captured, ``reason`` is ``null`` and an unrecognised screen is ``unknown``
+    too.
     """
     pane = data["tmux_pane"]
     result: dict[str, Any] = {
@@ -361,12 +379,14 @@ def screen_json(data: dict[str, Any]) -> dict[str, Any]:
         result["reason"] = "not_in_tmux"
     elif data["tmux_state"] != "present":
         result["reason"] = "pane_gone" if data["tmux_state"] == "gone" else "tmux_unavailable"
-    elif not pane_runs(pane, data["pid"]):
-        result["reason"] = "pane_not_owned"
+    elif (reason := _unusable_pane(pane, data["pid"])) is not None:
+        result["reason"] = reason
     else:
         captured = capture_pane(pane)
-        if captured is None:
-            result["reason"] = "capture_failed"
+        # A pane can enter copy mode, or close, while it is captured; then the capture does not count.
+        reason = _unusable_pane(pane, data["pid"])
+        if captured is None or reason is not None:
+            result["reason"] = reason or "capture_failed"
         else:
             classification = classify(captured)
             result["state"] = classification.state

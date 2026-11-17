@@ -343,19 +343,33 @@ def test_nothing_matches(machine: Machine) -> None:
 SCREEN_FIXTURES = Path(__file__).parent / "fixtures" / "screen"
 
 
-def screen_tmux(bin_dir: Path, *, pane_pid: int, capture: str | None, panes: list[str]) -> None:
-    """Install a ``tmux`` that lists ``panes``, says the pane runs ``pane_pid``, and captures ``capture``."""
-    (bin_dir / "tmux-panes.txt").write_text("".join(f"{line}\n" for line in panes))
+def screen_tmux(
+    bin_dir: Path, *, pane_pid: int, capture: str | None, panes: list[str], mode: str = "0", vanish: bool = False
+) -> None:
+    """Install a ``tmux`` that lists ``panes``, says the pane runs ``pane_pid``, and captures ``capture``.
+
+    ``mode`` is the pane's ``pane_in_mode``, or ``after-capture`` for a pane that enters copy mode while it is captured.
+    ``vanish`` closes the pane when ``display-message`` asks about it, as if it closed after the listing.
+    """
+    panes_file = bin_dir / "tmux-panes.txt"
+    panes_file.write_text("".join(f"{line}\n" for line in panes))
     capture_file = bin_dir / "tmux-capture.txt"
     capture_file.write_text(capture or "")
+    captured = bin_dir / "tmux-captured"
     capture_exit = 1 if capture is None else 0
+    if vanish:
+        display = f": > '{panes_file}'; exit 1"
+    elif mode == "after-capture":
+        display = f"if [ -e '{captured}' ]; then echo '{pane_pid} 1'; else echo '{pane_pid} 0'; fi"
+    else:
+        display = f"echo '{pane_pid} {mode}'"
     script = bin_dir / "tmux"
     script.write_text(
         "#!/bin/sh\n"
         'case "$1" in\n'
-        f"  list-panes) cat '{bin_dir / 'tmux-panes.txt'}' ;;\n"
-        f"  display-message) echo {pane_pid} ;;\n"
-        f"  capture-pane) cat '{capture_file}'; exit {capture_exit} ;;\n"
+        f"  list-panes) cat '{panes_file}' ;;\n"
+        f"  display-message) {display} ;;\n"
+        f"  capture-pane) touch '{captured}'; cat '{capture_file}'; exit {capture_exit} ;;\n"
         "esac\n"
     )
     script.chmod(0o755)
@@ -427,6 +441,30 @@ def test_screen_says_why_nothing_was_captured(
         None,
         None,
     )
+
+
+# In copy mode tmux captures the screen under it, an empty prompt, while the keys sent to the pane go to copy mode.
+@pytest.mark.parametrize("mode", ["1", "after-capture"])
+def test_screen_of_a_pane_in_copy_mode_is_unknown(machine: Machine, fake_bin: Path, mode: str) -> None:
+    pid = machine.session("work", "target", tmux="main:@14.%14")
+    capture = (SCREEN_FIXTURES / "prompt-empty-placeholder.ansi").read_text(encoding="utf-8")
+    screen_tmux(fake_bin, pane_pid=pid, capture=capture, panes=[PANE], mode=mode)
+    screen = json_of("target", "--screen")["screen"]
+    assert (screen["state"], screen["reason"], screen["lines"], screen["captured_at"]) == (
+        "unknown",
+        "pane_in_mode",
+        None,
+        None,
+    )
+
+
+def test_screen_of_a_pane_that_closed_after_the_listing_is_gone(machine: Machine, fake_bin: Path) -> None:
+    pid = machine.session("work", "target", tmux="main:@14.%14")
+    screen_tmux(fake_bin, pane_pid=pid, capture="", panes=[PANE], vanish=True)
+    data = json_of("target", "--screen")
+    assert data["tmux_state"] == "present"
+    screen = data["screen"]
+    assert (screen["state"], screen["reason"], screen["lines"]) == ("unknown", "pane_gone", None)
 
 
 def test_screen_of_an_unavailable_tmux(machine: Machine, fake_bin: Path) -> None:

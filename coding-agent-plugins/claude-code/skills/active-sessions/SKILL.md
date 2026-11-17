@@ -183,7 +183,7 @@ Options:
 
 - `state`: `prompt_empty`, `prompt_has_input`, `dialog`, `permission_prompt`, `busy` or `unknown`.
 - `title`: the title line of a `dialog` or `permission_prompt`, such as `Accessing workspace:` (workspace trust), `New MCP server found in this project: <name>`, `Allow external CLAUDE.md file imports?` or `Bash command`. `null` for the other states.
-- `reason`: why nothing was captured, else `null`: `ended`, `not_in_tmux`, `tmux_unavailable`, `pane_gone`, `pane_not_owned` (the pane id now belongs to another process, as after a tmux server restart) or `capture_failed`. With a reason, `state` is `unknown` and `lines` is `null`.
+- `reason`: why nothing was captured, else `null`: `ended`, `not_in_tmux`, `tmux_unavailable`, `pane_gone`, `pane_not_owned` (the pane id now belongs to another process, as after a tmux server restart), `pane_in_mode` (the pane is in copy mode or another tmux mode, which would take the keys instead of Claude Code) or `capture_failed`. With a reason, `state` is `unknown` and `lines` is `null`.
 - `pane`, `captured_at`, and `lines`: the last 20 lines of the pane as plain text, with runs of empty lines collapsed to one.
 
 The classification reads Claude Code's screen layout and answers `unknown` whenever it is not certain, so it breaks safely when the UI changes:

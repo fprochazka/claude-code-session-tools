@@ -193,7 +193,7 @@ A session that has no name and was not started through an auth-switch wrapper ca
 
 - `state`: `prompt_empty` (nothing typed, or only the dimmed `Try "…"` placeholder), `prompt_has_input`, `dialog` (such as workspace trust, MCP server approval or external `CLAUDE.md` imports), `permission_prompt`, `busy` (the spinner, or the greyed `❯` Claude Code draws while it works), or `unknown`.
 - `title`: the title line of a `dialog` or `permission_prompt`, else `null`.
-- `reason`: why nothing was captured, else `null`: `ended`, `not_in_tmux`, `tmux_unavailable`, `pane_gone`, `pane_not_owned` (the pane id now belongs to another process, as after a tmux server restart) or `capture_failed`. Then `state` is `unknown` and `lines` is `null`.
+- `reason`: why nothing was captured, else `null`: `ended`, `not_in_tmux`, `tmux_unavailable`, `pane_gone`, `pane_not_owned` (the pane id now belongs to another process, as after a tmux server restart), `pane_in_mode` (the pane is in copy mode or another tmux mode, which would take the keys instead of Claude Code) or `capture_failed`. Then `state` is `unknown` and `lines` is `null`.
 - `pane`, `captured_at`, and `lines`: the last 20 lines of the pane as plain text, with runs of empty lines collapsed to one.
 
 The text output adds a `screen` row and prints the lines under the table.

@@ -141,20 +141,35 @@ def _parent_pid(pid: int) -> int | None:
     return int(value) if result.returncode == 0 and value.isdecimal() else None
 
 
-def pane_runs(pane_id: str, pid: int) -> bool:
-    """Whether the pane's process is ``pid`` or one of its ancestors.
+@dataclass(frozen=True)
+class PaneState:
+    """What tmux says about a pane besides its screen."""
+
+    pid: int
+    """The process the pane runs."""
+    in_mode: bool
+    """The pane is in a mode such as copy mode, which takes the keys sent to the pane, not the program in it."""
+
+
+def pane_state(pane_id: str) -> PaneState | None:
+    """The pane's process and mode, or ``None`` when tmux has no such pane or does not answer."""
+    output = _tmux("display-message", "-p", "-t", pane_id, "#{pane_pid} #{pane_in_mode}")
+    fields = output.split() if output is not None else []
+    if len(fields) != 2 or not fields[0].isdecimal():
+        return None
+    return PaneState(pid=int(fields[0]), in_mode=fields[1] == "1")
+
+
+def runs_in_pane(pane_pid: int, pid: int) -> bool:
+    """Whether ``pid`` is the pane's process ``pane_pid`` or one of its descendants.
 
     tmux numbers panes anew after its server restarts, so a recorded pane id can name another program's pane.
     """
-    output = _tmux("display-message", "-p", "-t", pane_id, "#{pane_pid}")
-    pane_pid = output.strip() if output is not None else ""
-    if not pane_pid.isdecimal():
-        return False
     current: int | None = pid
     for _ in range(64):
         if current is None or current <= 1:
             return False
-        if current == int(pane_pid):
+        if current == pane_pid:
             return True
         current = _parent_pid(current)
     return False

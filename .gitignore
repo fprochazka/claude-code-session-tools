@@ -52,3 +52,6 @@ Thumbs.db
 # Claude
 .claude/plans/
 .claude/settings.local.json
+
+# Git worktrees
+.worktrees/

@@ -497,6 +497,17 @@ def test_a_new_session_id_drops_the_old_transcript_and_starts_a_new_stretch(mach
     assert idle_long(t.poll(NOW + 1600)) == ["10m"]
 
 
+def test_a_clear_before_the_watch_starts_counts_from_its_logged_start(machine: Machine) -> None:
+    # The process started two hours ago and was cleared a minute ago; the new session id has no transcript yet.
+    pid = machine.session("work", "worker", sessionId=sid("cleared"), startedAt=int((NOW - 7200) * 1000))
+    transcript(machine, "worker", NOW - 3600)
+    log_start(machine.project_dir("work"), sid("cleared"), int((NOW - 60) * 1000), pid=pid, source="clear")
+    t = tracker(thresholds=Thresholds(idle_after=(600,)))
+    assert t.poll(NOW + 1) == []
+    assert t.poll(NOW + 539) == []
+    assert idle_long(t.poll(NOW + 540)) == ["10m"]
+
+
 def test_a_response_without_a_status_change_starts_a_new_stretch(machine: Machine) -> None:
     machine.session("work", "worker")
     transcript(machine, "worker", NOW)

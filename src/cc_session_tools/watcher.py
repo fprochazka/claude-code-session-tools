@@ -191,7 +191,7 @@ class Tracked:
     """Whether ``busy_long`` or ``waiting_long`` was reported for the current status stretch."""
     idle_since: float | None = None
     """The start of the current idle stretch: the newest of the last model response, the start of the session's
-    process, and :attr:`session_switched`."""
+    process, the start its process logged for the current session id, and :attr:`session_switched`."""
     session_switched: float | None = None
     """When the watch saw the session id change, by ``/clear`` or an in-process ``/resume``."""
     idle_checked: bool = False
@@ -595,15 +595,19 @@ class SessionTracker:
         """Read the start of the idle stretch from the transcript. A newer model response starts a new stretch.
 
         The stretch starts no earlier than the session's process, nor than a change of its session id: a resumed
-        session's transcript holds the responses of its earlier runs, which say nothing about this one.
+        session's transcript holds the responses of its earlier runs, which say nothing about this one. A change of
+        the session id before the watch started shows in the auth-switch start log, where the process logs a start
+        for each ``/clear`` or ``/resume``.
         """
         response = self._last_response(tracked.session)
         started = tracked.session.started_at
+        logged = tracked.session.process_start()
         times = [
             t
             for t in (
                 response.timestamp() if response is not None else None,
                 started.timestamp() if started is not None else None,
+                logged.started_at.timestamp() if logged is not None else None,
                 tracked.session_switched,
             )
             if t is not None

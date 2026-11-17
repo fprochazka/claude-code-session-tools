@@ -10,9 +10,14 @@ and it breaks when the UI changes. Every rule therefore checks for what it has s
 anything else: a wrong ``prompt_empty`` makes a coordinator type into a dialog or over someone's half-typed text, while
 ``unknown`` only makes it wait.
 
-The input must be captured with ``-e``. The dimmed placeholder (``Try "…"``) and typed text read the same without
-attributes, and the prompt glyph turns grey while the session works, also when no spinner line is visible. A capture
-without escape sequences never yields a prompt state.
+The input must be captured with ``-e``. The dimmed placeholder (``Try "…"``) and suggestion read the same as typed text
+without attributes, and the prompt glyph turns grey while the session works, also when no spinner line is visible. A
+capture without escape sequences never yields a prompt state.
+
+An empty prompt also needs the cursor. A capture drops trailing spaces, so typed spaces look like an empty prompt, but
+they move the cursor. ``prompt_empty`` therefore requires nothing in the box but dimmed text on the glyph line, and the
+cursor right after the glyph. Typed text, a ``[Pasted text #1 +40 lines]`` marker and an ``[Image #1]`` marker are
+drawn without dim, and read as ``prompt_has_input``. Anything else in the box is ``unknown``.
 
 Known gaps:
 
@@ -21,7 +26,6 @@ Known gaps:
 - There are no captures of the light themes.
 - Only a Bash permission prompt was captured. Edit and WebFetch permission prompts should match the same ``Do you want
   to …?`` rule, untested.
-- A dimmed prompt suggestion is assumed to be empty, like the placeholder, untested.
 """
 
 from __future__ import annotations
@@ -46,6 +50,8 @@ _NBSP = " "
 _RULE = "─"
 _DIALOG_BORDERS = ("─", "▔")
 _MIN_RULE = 10
+_EMPTY_CURSOR_COLUMN = 2
+"""Where the cursor sits in an empty prompt: right after the glyph and its space."""
 _MAX_INPUT_LINES = 80
 """A prompt box taller than this is not one the classifier recognises."""
 _MAX_FOOTER_LINES = 6
@@ -175,7 +181,9 @@ def _prompt_box(texts: list[str]) -> tuple[int, int] | None:
     return None
 
 
-def _classify_prompt(cells: list[list[Cell]], texts: list[str], glyph: int, bottom: int) -> Classification:
+def _classify_prompt(
+    cells: list[list[Cell]], texts: list[str], glyph: int, bottom: int, cursor: tuple[int, int] | None
+) -> Classification:
     above = [line for line in texts[: glyph - 1] if line.strip()][-_SPINNER_LOOKBACK:]
     if any(_SPINNER.match(line) for line in above):
         return Classification("busy")
@@ -184,13 +192,16 @@ def _classify_prompt(cells: list[list[Cell]], texts: list[str], glyph: int, bott
         return Classification("busy")
     if glyph_cell.fg is not None:
         return Classification("unknown")
-    content = [cell for cell in cells[glyph][2:] if not cell.char.isspace()]
-    for line in cells[glyph + 1 : bottom]:
-        content.extend(cell for cell in line if not cell.char.isspace())
-    if all(cell.dim for cell in content):
-        return Classification("prompt_empty")
-    if not any(cell.dim for cell in content):
+    first = [cell for cell in cells[glyph][2:] if not cell.char.isspace()]
+    rest = [cell for line in cells[glyph + 1 : bottom] for cell in line if not cell.char.isspace()]
+    content = first + rest
+    if content and not any(cell.dim for cell in content):
         return Classification("prompt_has_input")
+    # Typed spaces leave no mark in a capture, and the cursor is the only sign of them. Typing replaces the dimmed
+    # placeholder and suggestion, which fit on the glyph line; dimmed text anywhere else was never seen.
+    empty = not rest and all(cell.dim for cell in first)
+    if empty and cursor == (_EMPTY_CURSOR_COLUMN, glyph):
+        return Classification("prompt_empty")
     return Classification("unknown")
 
 
@@ -214,10 +225,11 @@ def _classify_dialog(texts: list[str]) -> Classification:
     return Classification("dialog", title)
 
 
-def classify(captured: str) -> Classification:
-    """Classify a pane from its ``tmux capture-pane -p -e`` text.
+def classify(captured: str, cursor: tuple[int, int] | None = None) -> Classification:
+    """Classify a pane from its ``tmux capture-pane -p -e`` text and its cursor, ``(#{cursor_x}, #{cursor_y})``.
 
-    - ``prompt_empty``: the prompt box is at the bottom, idle, and holds nothing or only the dimmed placeholder.
+    - ``prompt_empty``: the prompt box is at the bottom, idle, holds nothing or only a dimmed placeholder or suggestion
+      on the line of the glyph, and the cursor is right after the glyph. Without the cursor it is ``unknown``.
     - ``prompt_has_input``: the same, with typed text in it.
     - ``busy``: the prompt box shows the spinner above it or the greyed glyph, whatever the box holds.
     - ``dialog``: a bordered box with a ``❯`` selection and an ``Esc to cancel`` footer, such as a startup dialog.
@@ -234,4 +246,4 @@ def classify(captured: str) -> Classification:
     if dialog.state != "unknown" or "\x1b[" not in captured:
         # A dialog drawn under a prompt box takes the keys, so the box says nothing about what typing does.
         return Classification("unknown")
-    return _classify_prompt(cells, texts, *box)
+    return _classify_prompt(cells, texts, *box, cursor)

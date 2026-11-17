@@ -21,17 +21,37 @@ EXPECTED = {
     "dialog-trust": Classification("dialog", "Accessing workspace:"),
     "permission-bash": Classification("permission_prompt", "Bash command"),
     "prompt-empty-after-interrupt": Classification("prompt_empty"),
+    "prompt-empty-after-interrupt-cursor": Classification("prompt_empty"),
     "prompt-empty-after-turn": Classification("prompt_empty"),
     "prompt-empty-placeholder": Classification("prompt_empty"),
     "prompt-empty-placeholder-nostatusline": Classification("prompt_empty"),
     "prompt-empty-shell-running": Classification("prompt_empty"),
+    "prompt-empty-suggestion": Classification("prompt_empty"),
     "prompt-has-input": Classification("prompt_has_input"),
+    "prompt-has-input-image": Classification("prompt_has_input"),
+    "prompt-has-input-paste": Classification("prompt_has_input"),
     "prompt-has-input-placeholder-lookalike": Classification("prompt_has_input"),
     "prompt-has-input-slash-menu": Classification("prompt_has_input"),
     "prompt-multiline": Classification("prompt_has_input"),
     "unknown-bash-mode": Classification("unknown"),
     "unknown-transcript-view": Classification("unknown"),
+    "unknown-typed-spaces": Classification("unknown"),
 }
+
+# The cursor, (#{cursor_x}, #{cursor_y}), recorded with the capture.
+CURSORS = {
+    "prompt-empty-after-interrupt-cursor": (2, 79),
+    "prompt-empty-suggestion": (2, 79),
+    "unknown-typed-spaces": (5, 79),
+    # Captured before the cursor was recorded. Every empty prompt captured since, and the live contract test, has the
+    # cursor right after the glyph.
+    "prompt-empty-after-interrupt": (2, 79),
+    "prompt-empty-after-turn": (2, 78),
+    "prompt-empty-placeholder": (2, 78),
+    "prompt-empty-placeholder-nostatusline": (2, 79),
+    "prompt-empty-shell-running": (2, 78),
+}
+EMPTY = [name for name, c in EXPECTED.items() if c.state == "prompt_empty"]
 
 RULE = "─" * 40
 
@@ -46,7 +66,19 @@ def test_every_fixture_has_an_expectation() -> None:
 
 @pytest.mark.parametrize("name", sorted(EXPECTED))
 def test_a_captured_screen_is_classified(name: str) -> None:
-    assert classify(fixture(name)) == EXPECTED[name]
+    assert classify(fixture(name), CURSORS.get(name)) == EXPECTED[name]
+
+
+@pytest.mark.parametrize("name", EMPTY)
+def test_an_empty_prompt_without_the_cursor_after_the_glyph_is_unknown(name: str) -> None:
+    x, y = CURSORS[name]
+    assert classify(fixture(name)).state == "unknown"
+    assert classify(fixture(name), (x + 3, y)).state == "unknown"
+    assert classify(fixture(name), (x, y - 1)).state == "unknown"
+
+
+def test_typed_spaces_are_told_from_an_empty_prompt_only_by_the_cursor() -> None:
+    assert classify(fixture("unknown-typed-spaces"), (2, 79)).state == "prompt_empty"
 
 
 def test_the_placeholder_and_the_same_text_typed_differ_only_in_the_dim_attribute() -> None:
@@ -58,7 +90,7 @@ def test_the_placeholder_and_the_same_text_typed_differ_only_in_the_dim_attribut
 
 @pytest.mark.parametrize("name", [name for name, c in EXPECTED.items() if c.title is None])
 def test_a_prompt_box_captured_without_escape_sequences_is_unknown(name: str) -> None:
-    assert classify("\n".join(plain_lines(fixture(name)))).state == "unknown"
+    assert classify("\n".join(plain_lines(fixture(name))), CURSORS.get(name)).state == "unknown"
 
 
 @pytest.mark.parametrize("name", ["dialog-trust", "dialog-mcp", "dialog-imports", "permission-bash"])
@@ -84,7 +116,12 @@ def test_a_spinner_above_the_box_is_busy_whatever_the_glyph() -> None:
 
 
 def test_a_finished_turn_line_above_the_box_is_not_a_spinner() -> None:
-    assert classify(box("\x1b[39m❯ ", above="✻ Cooked for 10s · done 12:24")).state == "prompt_empty"
+    assert classify(box("\x1b[39m❯ ", above="✻ Cooked for 10s · done 12:24"), (2, 2)).state == "prompt_empty"
+
+
+def test_dimmed_text_under_the_glyph_line_is_unknown() -> None:
+    assert classify(box("\x1b[39m❯ \x1b[2mTry this\x1b[0m"), (2, 2)).state == "prompt_empty"
+    assert classify(box("\x1b[39m❯ \x1b[2mTry this\n  and that\x1b[0m"), (2, 2)).state == "unknown"
 
 
 def test_a_prompt_echoed_in_the_history_is_not_the_prompt_box() -> None:

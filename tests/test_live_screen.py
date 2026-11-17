@@ -64,11 +64,19 @@ class Pane:
         self.target = target
         self.seen: list[str] = []
 
-    def capture(self) -> str:
-        result = subprocess.run(["tmux", "capture-pane", "-p", "-e", "-t", self.target], capture_output=True, text=True)
+    def _tmux(self, command: str, *args: str) -> str:
+        result = subprocess.run(["tmux", command, "-t", self.target, *args], capture_output=True, text=True)
         if result.returncode != 0:
             pytest.fail(f"the Claude Code session exited; states seen: {self.seen}")
         return result.stdout
+
+    def capture(self) -> tuple[str, tuple[int, int] | None]:
+        """The screen and the cursor, which counts only when it did not move during the capture."""
+        before = self._tmux("display-message", "-p", "#{cursor_x} #{cursor_y}").split()
+        captured = self._tmux("capture-pane", "-p", "-e")
+        after = self._tmux("display-message", "-p", "#{cursor_x} #{cursor_y}").split()
+        cursor = (int(after[0]), int(after[1])) if before == after and len(after) == 2 else None
+        return captured, cursor
 
     def keys(self, *keys: str, literal: bool = False) -> None:
         subprocess.run(["tmux", "send-keys", "-t", self.target, *(["-l"] if literal else []), *keys], check=True)
@@ -77,7 +85,7 @@ class Pane:
     def wait_for_line(self, line: str) -> None:
         deadline = time.monotonic() + TIMEOUT
         while time.monotonic() < deadline:
-            if any(text.strip() == line for text in plain_lines(self.capture())):
+            if any(text.strip() == line for text in plain_lines(self.capture()[0])):
                 return
             time.sleep(POLL)
         pytest.fail(f"the pane never showed the line {line!r}")
@@ -85,10 +93,10 @@ class Pane:
     def _poll(self, done: Callable[[Classification], bool], what: str) -> Classification:
         """Poll until ``done`` holds for the pane's classification, recording every state seen on the way."""
         deadline = time.monotonic() + TIMEOUT
-        captured = ""
+        captured, cursor = "", None
         while time.monotonic() < deadline:
-            captured = self.capture()
-            found = classify(captured)
+            captured, cursor = self.capture()
+            found = classify(captured, cursor)
             if not self.seen or self.seen[-1] != found.state:
                 self.seen.append(found.state)
             if done(found):
@@ -96,7 +104,7 @@ class Pane:
                 return found
             time.sleep(POLL)
         screen = "\n".join(plain_lines(captured)[-40:])
-        pytest.fail(f"the pane never showed {what}; last seen {classify(captured)}:\n{screen}")
+        pytest.fail(f"the pane never showed {what}; last seen {classify(captured, cursor)} at {cursor}:\n{screen}")
 
     def wait_for(self, expected: Classification) -> Classification:
         return self._poll(lambda found: found == expected, str(expected))
@@ -183,6 +191,11 @@ def test_the_classifier_reads_a_real_session(pane: Pane) -> None:
     pane.keys("half typed", literal=True)
     pane.wait_for(Classification("prompt_has_input"))
     pane.keys("-N", "20", "BSpace")
+    pane.wait_for(Classification("prompt_empty"))
+    pane.keys("   ", literal=True)  # a capture drops the spaces; only the cursor shows them
+    time.sleep(SETTLE)
+    assert classify(*pane.capture()) == Classification("unknown")
+    pane.keys("-N", "3", "BSpace")
     pane.wait_for(Classification("prompt_empty"))
 
     pane.seen.clear()

@@ -149,15 +149,19 @@ class PaneState:
     """The process the pane runs."""
     in_mode: bool
     """The pane is in a mode such as copy mode, which takes the keys sent to the pane, not the program in it."""
+    cursor: tuple[int, int] | None
+    """The cursor's column and line in the pane, counted from 0 at the top left."""
 
 
 def pane_state(pane_id: str) -> PaneState | None:
-    """The pane's process and mode, or ``None`` when tmux has no such pane or does not answer."""
-    output = _tmux("display-message", "-p", "-t", pane_id, "#{pane_pid} #{pane_in_mode}")
+    """The pane's process, mode and cursor, or ``None`` when tmux has no such pane or does not answer."""
+    output = _tmux("display-message", "-p", "-t", pane_id, "#{pane_pid} #{pane_in_mode} #{cursor_x} #{cursor_y}")
     fields = output.split() if output is not None else []
-    if len(fields) != 2 or not fields[0].isdecimal():
+    if len(fields) != 4 or not fields[0].isdecimal():
         return None
-    return PaneState(pid=int(fields[0]), in_mode=fields[1] == "1")
+    x, y = fields[2], fields[3]
+    cursor = (int(x), int(y)) if x.isdecimal() and y.isdecimal() else None
+    return PaneState(pid=int(fields[0]), in_mode=fields[1] == "1", cursor=cursor)
 
 
 def runs_in_pane(pane_pid: int, pid: int) -> bool:

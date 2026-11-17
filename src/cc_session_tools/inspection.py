@@ -39,6 +39,7 @@ from cc_blackbox import (
 )
 
 from .active import (
+    PaneState,
     SessionLookupError,
     build_views,
     capture_pane,
@@ -340,19 +341,19 @@ def _collapse_blank(lines: list[str]) -> list[str]:
     return [line for index, line in enumerate(lines) if line or index == 0 or lines[index - 1]]
 
 
-def _unusable_pane(pane: str, pid: int) -> str | None:
-    """Why the pane cannot be captured for the session ``pid`` now, or ``None`` when it can."""
+def _check_pane(pane: str, pid: int) -> tuple[str | None, PaneState | None]:
+    """Why the pane cannot be captured for the session ``pid`` now, or ``None`` and the pane's state when it can."""
     state = pane_state(pane)
     if state is None:
         panes = list_tmux_panes()
         if panes is None:
-            return "tmux_unavailable"
-        return "pane_gone" if pane not in panes else "capture_failed"
+            return "tmux_unavailable", None
+        return ("pane_gone" if pane not in panes else "capture_failed"), None
     if not runs_in_pane(state.pid, pid):
-        return "pane_not_owned"
+        return "pane_not_owned", None
     if state.in_mode:
-        return "pane_in_mode"
-    return None
+        return "pane_in_mode", None
+    return None, state
 
 
 def screen_json(data: dict[str, Any]) -> dict[str, Any]:
@@ -379,16 +380,19 @@ def screen_json(data: dict[str, Any]) -> dict[str, Any]:
         result["reason"] = "not_in_tmux"
     elif data["tmux_state"] != "present":
         result["reason"] = "pane_gone" if data["tmux_state"] == "gone" else "tmux_unavailable"
-    elif (reason := _unusable_pane(pane, data["pid"])) is not None:
-        result["reason"] = reason
+    elif (checked := _check_pane(pane, data["pid"]))[0] is not None:
+        result["reason"] = checked[0]
     else:
         captured = capture_pane(pane)
         # A pane can enter copy mode, or close, while it is captured; then the capture does not count.
-        reason = _unusable_pane(pane, data["pid"])
-        if captured is None or reason is not None:
+        reason, after = _check_pane(pane, data["pid"])
+        if captured is None or after is None:
             result["reason"] = reason or "capture_failed"
         else:
-            classification = classify(captured)
+            # A cursor that moved during the capture may not belong to the captured screen.
+            before = checked[1]
+            cursor = after.cursor if before is not None and before.cursor == after.cursor else None
+            classification = classify(captured, cursor)
             result["state"] = classification.state
             result["title"] = classification.title
             result["captured_at"] = _iso(datetime.now(UTC))

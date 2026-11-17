@@ -344,9 +344,21 @@ SCREEN_FIXTURES = Path(__file__).parent / "fixtures" / "screen"
 
 
 def screen_tmux(
-    bin_dir: Path, *, pane_pid: int, capture: str | None, panes: list[str], mode: str = "0", vanish: bool = False
+    bin_dir: Path,
+    *,
+    pane_pid: int,
+    capture: str | None,
+    panes: list[str],
+    mode: str = "0",
+    vanish: bool = False,
+    cursor: str = "0 0",
+    cursor_after: str | None = None,
 ) -> None:
     """Install a ``tmux`` that lists ``panes``, says the pane runs ``pane_pid``, and captures ``capture``.
+
+    ``cursor`` is the pane's ``#{cursor_x} #{cursor_y}``.
+
+    ``cursor_after`` is the cursor once the pane was captured, for a cursor that moves during the capture.
 
     ``mode`` is the pane's ``pane_in_mode``, or ``after-capture`` for a pane that enters copy mode while it is captured.
     ``vanish`` closes the pane when ``display-message`` asks about it, as if it closed after the listing.
@@ -357,12 +369,12 @@ def screen_tmux(
     capture_file.write_text(capture or "")
     captured = bin_dir / "tmux-captured"
     capture_exit = 1 if capture is None else 0
+    before = f"{pane_pid} {'0' if mode == 'after-capture' else mode} {cursor}"
+    after = f"{pane_pid} {'1' if mode == 'after-capture' else mode} {cursor_after or cursor}"
     if vanish:
         display = f": > '{panes_file}'; exit 1"
-    elif mode == "after-capture":
-        display = f"if [ -e '{captured}' ]; then echo '{pane_pid} 1'; else echo '{pane_pid} 0'; fi"
     else:
-        display = f"echo '{pane_pid} {mode}'"
+        display = f"if [ -e '{captured}' ]; then echo '{after}'; else echo '{before}'; fi"
     script = bin_dir / "tmux"
     script.write_text(
         "#!/bin/sh\n"
@@ -406,6 +418,20 @@ def test_screen_in_text_prints_the_state_and_the_last_lines(machine: Machine, fa
     assert any(line.split() == ["screen", "prompt_has_input"] for line in result.stdout.splitlines())
     assert re.search(r"^Last \d+ lines of %14:$", result.stdout, re.MULTILINE)
     assert "❯ half typed text" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("cursor", "cursor_after", "state"),
+    [("2 79", None, "prompt_empty"), ("5 79", None, "unknown"), ("2 79", "3 79", "unknown")],
+)
+def test_screen_takes_an_empty_prompt_only_with_the_cursor_after_the_glyph(
+    machine: Machine, fake_bin: Path, cursor: str, cursor_after: str | None, state: str
+) -> None:
+    pid = machine.session("work", "target", tmux="main:@14.%14")
+    capture = (SCREEN_FIXTURES / "prompt-empty-suggestion.ansi").read_text(encoding="utf-8")
+    screen_tmux(fake_bin, pane_pid=pid, capture=capture, panes=[PANE], cursor=cursor, cursor_after=cursor_after)
+    screen = json_of("target", "--screen")["screen"]
+    assert (screen["state"], screen["reason"]) == (state, None)
 
 
 def test_without_screen_there_is_no_screen_key(machine: Machine, fake_bin: Path) -> None:

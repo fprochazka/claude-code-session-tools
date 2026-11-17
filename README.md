@@ -316,27 +316,69 @@ coding-agent-plugins/claude-code/        # the plugin
 └── skills/{session-tools,active-sessions,session-watch}/SKILL.md
 ```
 
-## Development
+## Developing
+
+You need Python 3.11+ and uv. Set up the environment, then run the checks CI runs:
 
 ```bash
 uv sync --dev
 uv run pytest
 uv run ruff check .
-uv run ruff format .
+uv run ruff format --check .
 ```
 
-Run the CLI from the clone without installing it with `uv run cc-session-tools …`.
+`uv run ruff format .` fixes the formatting. Run the CLI from the clone without installing it with `uv run cc-session-tools …`.
 
-## Releasing the plugin
+**Work in a git worktree, never in the main checkout.** The installed `cc-session-tools` is an editable install of the main checkout, so every Claude Code session on the machine runs its code the moment it changes. Never edit, check out or pull there; create a worktree under `.worktrees/`, which git ignores, and test it with `uv run`. The editable install picks up code changes by itself, but not dependency changes: those need a reinstall, see [Releasing](#releasing).
 
-The plugin version lives in two files and must stay in lockstep. Bump both when you change the plugin:
+**The tests never read your real Claude Code setup.** An autouse fixture removes `CLAUDE_CONFIG_DIR`, `CLAUDE_PROJECTS_DIR` and the variables of the session the tests run under, and points `HOME` at a temporary dir, because the tests often run inside a Claude Code session. The `list-active`, `inspect` and `watch` tests need Linux; the `--rg` CLI tests skip without ripgrep.
 
+**To test against an unreleased cc-blackbox**, point `[tool.uv.sources]` at its worktree with `cc-blackbox = { path = "<cc-blackbox worktree>", editable = true }` and widen the pin. Before landing, release cc-blackbox, restore the PyPI pin and run `uv lock --refresh-package cc-blackbox`. CI installs with `uv sync --locked`, so a path source cannot land on master.
+
+### The live contract test
+
+`tests/test_live_screen.py` checks the `inspect --screen` classifier against a real Claude Code session. It is excluded from the default run and from CI. Run it after a Claude Code update:
+
+```bash
+uv run pytest -m live -s
+```
+
+It starts the session in a temporary tmux session and drives it through its startup dialogs, typed input, a busy turn and a permission prompt. It runs against a real, logged-in profile and spends a few model calls. These variables change it:
+
+- `CC_SESSION_TOOLS_LIVE_CLAUDE`: the command that starts Claude Code, `claude` by default. An auth-switch wrapper such as `claude-personal` picks the profile.
+- `CC_SESSION_TOOLS_LIVE_MODEL`: the model, `haiku` by default.
+- `CC_SESSION_TOOLS_LIVE_FRESH_DIR=1`: run in a new temporary directory and require the workspace trust, MCP server and external imports dialogs.
+
+By default the session runs in `~/.cache/cc-session-tools/live-test`. Claude Code stores the trust answer for that directory as a project entry in the profile's config, so the test adds at most one entry, ever. It also remembers the MCP and imports answers there, so after the first run the dialogs do not show; the test answers the ones that do, always the same way. With `CC_SESSION_TOOLS_LIVE_FRESH_DIR=1`, every run adds one more project entry to the profile's config. The unit tests cover the dialogs through captured fixtures either way.
+
+## Releasing
+
+Landing on master is the release. There is no PyPI package, and no tags, GitHub releases or release notes. A change lands by fast-forwarding master and pushing it.
+
+The version lives in five places, and one release bumps all five to the same number:
+
+- `pyproject.toml` (`version`)
+- `src/cc_session_tools/__init__.py` (`__version__`, what `--version` prints)
+- `uv.lock` (the project's own entry; `uv lock` updates it)
 - `.claude-plugin/marketplace.json` (`plugins[0].version`)
 - `coding-agent-plugins/claude-code/.claude-plugin/plugin.json` (`version`)
 
-This version is independent of the Python package version in `pyproject.toml`.
+The bump is a standalone `Release x.y.z` commit, the last commit of the change. Bump the minor version for features and the patch version for fixes; every release so far was a minor bump.
 
-The skills embed the `--help` output of the subcommands they cover. Regenerate those blocks with `COLUMNS=80` so the wrapping stays stable.
+The skills embed the `--help` output of the subcommands they cover. When a subcommand's options or help text change, regenerate those blocks with `COLUMNS=80`, for example `COLUMNS=80 uv run cc-session-tools inspect --help`, so the wrapping stays stable.
+
+CI runs on every push to master and on pull requests: ruff check and ruff format check, and the tests on Python 3.11, 3.12 and 3.13. Check that the run of the release commit is green.
+
+Users pick up a release by pulling their clone and reinstalling the tool, then updating the plugin:
+
+```bash
+git pull
+uv tool install --editable . --reinstall
+claude plugin marketplace update fprochazka-claude-code-session-tools
+claude plugin update session-tools@fprochazka-claude-code-session-tools
+```
+
+After a release that raises the cc-blackbox pin, reinstall with `uv tool install --editable . --force` instead: a plain `--reinstall` has kept the old cc-blackbox once. A running Claude Code session sees a new skill only after a restart.
 
 ## License
 

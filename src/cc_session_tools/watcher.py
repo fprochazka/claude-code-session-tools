@@ -38,8 +38,8 @@ from .active import (
     TmuxState,
     list_tmux_panes,
     pane_id_of,
+    process_role,
     read_last_response,
-    read_role,
     waiting_for,
 )
 from .watch_events import (
@@ -306,7 +306,7 @@ class SessionTracker:
         list_panes: ListPanes = list_tmux_panes,
         is_running: Callable[[int], bool] = process_running,
         last_response: ReadLastResponse = read_last_response,
-        role_of_session: ReadRole = read_role,
+        role_of_session: ReadRole = process_role,
         tmux_interval: float = TMUX_INTERVAL,
     ) -> None:
         self.selection = selection

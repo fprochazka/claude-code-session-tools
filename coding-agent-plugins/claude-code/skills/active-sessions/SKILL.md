@@ -19,7 +19,7 @@ Usage: cc-session-tools list-active [OPTIONS]
   List the running Claude Code sessions of every profile.
 
   One row per session, by profile and then start time. Role is the auth-switch
-  role of the session's newest start, a column only when a session has one.
+  role its process was started with, a column only when a session has one.
   Active is the time since the session's last model response, in its
   transcript or a subagent's; a session without one shows its start, dimmed.
   The tmux pane is the pane id with the tmux session and window that pane is
@@ -45,9 +45,9 @@ Options:
                                   runs in.
   --role <str>                    Only sessions whose auth-switch role matches
                                   this glob, case-sensitively, for example
-                                  'worker-*'. The role is the one of the
-                                  session's newest start. A session without a
-                                  role never matches. Repeatable.
+                                  'worker-*'. The role is the one its running
+                                  process was started with. A session without
+                                  a role never matches. Repeatable.
   --active-within <duration>      Only sessions that got a model response
                                   within this long, for example 30m, 2h or
                                   1h30m. A session without a response yet
@@ -77,7 +77,7 @@ Options:
 - `profile_source`: how sure the profile is. `log`, `environ`, `claude_json` and `dir` are reliable. `inferred` is a guess between profiles that share one `sessions/` dir.
 - `address`: `<profile>/<name>`, or `<profile>/pid:<pid>` for a session without a name.
 - `pid`, `session_id`, `name`, `name_source` (`user`, `peer`, `derived`, `collision`, `auto`, `hook`).
-- `role`: the claude-code-auth-switch role of the session's newest start, from the start log next to its transcript. `null` for a session started without a role, and for one that has not written its transcript yet.
+- `role`: the claude-code-auth-switch role that the session's running process was started with, from the start log next to its transcript. It is there before the first prompt, and stays after `/clear`. `null` for a session started without a role.
 - `status`: `busy`, `idle`, `shell` or `waiting`. `waiting_for`: what a `waiting` session waits for, from the record's `waitingFor`, and `null` in every other status. The table shows it as `waiting: <reason>`. `kind` (`interactive`, `bg`, `daemon`, `daemon-worker`), `entrypoint`, `version`.
 - `started_at`: when this process started; a resumed session started again.
 - `updated_at`: the last change of the registry record. It changes with the status, and a local command such as `/login` moves it too. It is not activity: a fresh value does not mean the session worked, and a session can answer well after it.

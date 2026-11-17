@@ -275,19 +275,22 @@ def test_tmux_session_needs_a_tmux_server(machine: Machine, fake_bin: Path) -> N
     assert "cannot read the tmux server" in result.stderr
 
 
-def with_role(machine: Machine, name: str, *roles: str | None, **fields: Any) -> int:
-    """A running ``work`` session with a transcript and one auth-switch start per role, oldest first."""
+def with_role(machine: Machine, name: str, *roles: str | None, transcript: bool = True, **fields: Any) -> int:
+    """A running ``work`` session and one auth-switch start of its process per role, oldest first, the first one a
+    moment after the process started. ``transcript`` writes its transcript; a session waiting for its first prompt has
+    none yet."""
     pid = machine.session("work", name, **fields)
-    transcript_of(machine, "work", name, [response(time.time() - 60)])
+    if transcript:
+        transcript_of(machine, "work", name, [response(time.time() - 60)])
+    started = json.loads(machine.records[pid].read_text())["startedAt"]
     for index, role in enumerate(roles):
-        log_start(machine.project_dir("work"), sid(name), STARTED + index * 1000, pid=pid, profile="work", role=role)
+        log_start(
+            machine.project_dir("work"), sid(name), started + 300 + index * 1000, pid=pid, profile="work", role=role
+        )
     return pid
 
 
-STARTED = 1794100000000
-
-
-def test_role_comes_from_the_newest_start(machine: Machine, fake_bin: Path) -> None:
+def test_role_comes_from_the_newest_start_of_the_process(machine: Machine, fake_bin: Path) -> None:
     fake_tmux(fake_bin, [])
     with_role(machine, "dispatcher", None, "dispatcher")
     with_role(machine, "worker-1", "worker")
@@ -304,6 +307,21 @@ def test_role_comes_from_the_newest_start(machine: Machine, fake_bin: Path) -> N
     rows = {line.split()[1]: line.split() for line in lines[1:]}
     assert rows["worker-1"][2] == "worker"
     assert rows["plain"][2] == "idle"
+
+
+def test_role_is_the_one_of_the_running_process_not_of_another(machine: Machine, fake_bin: Path) -> None:
+    fake_tmux(fake_bin, [])
+    with_role(machine, "shared", "worker")
+    # A later start of the same session by another process, with another role, which this listing does not show.
+    log_start(machine.project_dir("work"), sid("shared"), int(time.time() * 1000), pid=1, profile="work", role="boss")
+    assert [s["role"] for s in json_of()] == ["worker"]
+
+
+def test_a_session_waiting_for_its_first_prompt_has_its_role(machine: Machine, fake_bin: Path) -> None:
+    fake_tmux(fake_bin, [])
+    with_role(machine, "fresh", "worker", transcript=False)
+    [data] = json_of("--role", "worker")
+    assert (data["name"], data["role"], data["transcript_path"]) == ("fresh", "worker", None)
 
 
 def test_the_role_column_is_left_out_when_no_session_has_a_role(machine: Machine, fake_bin: Path) -> None:

@@ -73,9 +73,9 @@ Options:
                                   runs in. It is resolved once, at the start.
   --role <str>                    Only sessions whose auth-switch role matches
                                   this glob, case-sensitively, for example
-                                  'worker-*'. The role is the one of the
-                                  session's newest start. A session without a
-                                  role never matches. Repeatable.
+                                  'worker-*'. The role is the one its running
+                                  process was started with. A session without
+                                  a role never matches. Repeatable.
   --include-self                  Also watch the session this command runs
                                   under. Left out by default, because every
                                   event it receives changes its own status.

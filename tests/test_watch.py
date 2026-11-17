@@ -355,12 +355,19 @@ def give_role(machine: Machine, name: str, role: str, pid: int) -> None:
     log_start(machine.project_dir("work"), sid(name), int(NOW * 1000), pid=pid, profile="work", role=role)
 
 
-def test_a_role_filter_matches_the_role_of_the_newest_start(machine: Machine) -> None:
+def test_a_role_filter_matches_the_role_of_the_process(machine: Machine) -> None:
     give_role(machine, "w1", "worker", machine.session("work", "w1"))
     give_role(machine, "boss", "dispatcher", machine.session("work", "boss"))
     machine.session("work", "plain")
     t = tracker(Selection(Filters(role_globs=("work*",))))
     assert [t.identify(m) for m in t.matched()] == ["work/w1"]
+
+
+def test_a_session_waiting_for_its_first_prompt_matches_by_its_start_log(machine: Machine) -> None:
+    pid = machine.session("work", "fresh", startedAt=int((NOW - 600) * 1000))
+    log_start(machine.project_dir("work"), sid("fresh"), int((NOW - 599) * 1000), pid=pid, role="worker")
+    t = tracker(Selection(Filters(role_globs=("worker",))))
+    assert [t.identify(m) for m in t.matched()] == ["work/fresh"]
 
 
 def test_a_young_session_whose_role_is_logged_late_joins(machine: Machine) -> None:

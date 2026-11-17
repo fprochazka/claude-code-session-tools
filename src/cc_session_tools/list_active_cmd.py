@@ -29,9 +29,9 @@ from .active import (
     apply_filters,
     build_views,
     list_tmux_panes,
+    process_role,
     resolve_profile_globs,
     resolve_tmux_session,
-    role_of,
     shorten_home,
     sort_sessions,
     to_json,
@@ -56,7 +56,7 @@ def _sessions(profile_globs: list[str] | None) -> list[ActiveSession]:
 
 ROLE_HELP = (
     "Only sessions whose auth-switch role matches this glob, case-sensitively, for example 'worker-*'. The role is "
-    "the one of the session's newest start. A session without a role never matches. Repeatable."
+    "the one its running process was started with. A session without a role never matches. Repeatable."
 )
 
 TMUX_SESSION_HELP = (
@@ -125,7 +125,7 @@ def _pane(view: SessionView) -> Text:
 
 
 def _print_table(views: list[SessionView]) -> None:
-    roles = [role_of(view.session.transcript) for view in views]
+    roles = [process_role(view.session) for view in views]
     # Without any role on the machine, the column would only be empty.
     with_role = any(role is not None for role in roles)
     rows = []
@@ -192,7 +192,7 @@ def list_active(
 ) -> None:
     """List the running Claude Code sessions of every profile.
 
-    One row per session, by profile and then start time. Role is the auth-switch role of the session's newest start,
+    One row per session, by profile and then start time. Role is the auth-switch role its process was started with,
     a column only when a session has one. Active is the time since the session's last model response, in
     its transcript or a subagent's; a session without one shows its start, dimmed. The tmux pane is the pane id with the
     tmux session and window that pane is in now, read from the tmux server. The inspect command shows one session.

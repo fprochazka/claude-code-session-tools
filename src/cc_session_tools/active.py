@@ -36,7 +36,6 @@ from cc_blackbox import (
     find_session,
     find_session_transcript,
     list_profiles,
-    project_dirs_for,
     read_session_transcript,
 )
 
@@ -349,9 +348,7 @@ def apply_filters(
     """``panes`` is the listing of the tmux server, needed only by :attr:`Filters.tmux_session_id`. The role is read
     only for :attr:`Filters.role_globs`."""
     return [
-        s
-        for s in sessions
-        if filters.matches(s, live_pane(s, panes), role_of(s.transcript) if filters.role_globs else None)
+        s for s in sessions if filters.matches(s, live_pane(s, panes), process_role(s) if filters.role_globs else None)
     ]
 
 
@@ -418,8 +415,8 @@ def activity_of(session: ActiveSession) -> Activity:
 def role_of(transcript: SessionTranscript | None) -> str | None:
     """The auth-switch role of the session's newest start, from the start log next to its transcript.
 
-    ``None`` when the session has no transcript or no start log, or its newest run was started without a role. Reads
-    the start log, a few lines, on every call.
+    For a session that has ended. ``None`` when the session has no transcript or no start log, or its newest run was
+    started without a role. Reads the start log, a few lines, on every call.
     """
     if transcript is None:
         return None
@@ -427,28 +424,17 @@ def role_of(transcript: SessionTranscript | None) -> str | None:
     return max(starts, key=lambda s: s.started_at_ms).role if starts else None
 
 
-def read_role(session: ActiveSession) -> str | None:
-    """:func:`role_of` the session, read from the files now rather than from the snapshot of the listing.
+def process_role(session: ActiveSession) -> str | None:
+    """The auth-switch role that the running session's process was started with, from the start log.
 
-    A session that had no transcript when it was listed may have one now. It is looked up in the project dirs of the
-    session's launch dir and current dir, which costs a few stats.
+    Not the newest start of the session: two processes can run the same session, each with its own role. A session
+    waiting for its first prompt has the log, though not its transcript yet. ``/clear`` and an in-process ``/resume``
+    keep the process, and the start hook logs its role under the new session id. ``None`` when the process logged no
+    start or was started without a role. Reads the start log, a few lines, on every call, and looks it up by the
+    current session id, so it stays right for a session that :func:`~cc_session_tools.watcher.refreshed` updated.
     """
-    path = session.transcript_path
-    if path is None and session.session_id is not None:
-        cwds = dict.fromkeys(d for d in (session.launch_cwd, session.cwd) if d is not None)
-        try:
-            candidates = [
-                d / f"{session.session_id}.jsonl" for cwd in cwds for d in project_dirs_for(cwd, [session.profile])
-            ]
-        except ClaudeBlackboxError:
-            candidates = []
-        path = next((c for c in candidates if c.is_file()), None)
-    if path is None:
-        return None
-    try:
-        return role_of(read_session_transcript(path))
-    except (ClaudeBlackboxError, OSError):
-        return None
+    start = session.process_start()
+    return start.role if start is not None else None
 
 
 def read_last_response(session: ActiveSession) -> datetime | None:
@@ -567,7 +553,7 @@ def to_json(view: SessionView) -> dict[str, Any]:
         "session_id": s.session_id,
         "name": s.name,
         "name_source": s.name_source,
-        "role": role_of(s.transcript),
+        "role": process_role(s),
         "status": s.status,
         "waiting_for": waiting_for(s),
         "kind": s.kind,

@@ -186,7 +186,7 @@ def test_a_running_session_by_id_prefix_name_address_and_pid(machine: Machine) -
     assert data["resume_command"] == f"claude-work --resume {session_id}"
 
 
-def test_a_running_session_shows_the_role_of_its_newest_start(machine: Machine) -> None:
+def test_a_running_session_shows_the_role_of_the_newest_start_of_its_process(machine: Machine) -> None:
     pid = machine.session("work", "worker")
     write_records(machine.project_dir("work") / f"{sid('worker')}.jsonl", [response(time.time() - 60)])
     log_start(machine.project_dir("work"), sid("worker"), 1794100000000, pid=pid, role="worker")

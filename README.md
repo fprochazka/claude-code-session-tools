@@ -12,7 +12,7 @@ Claude Code keeps every session as a JSONL transcript, and they pile up. When yo
 
 ## Installation
 
-You need Python 3.11+ and [uv](https://docs.astral.sh/uv/).
+You need Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 There is no PyPI release, so install from a clone as an editable uv tool. The `cc-session-tools` command lands on your PATH, and edits in the clone take effect with no reinstall.
 
@@ -286,7 +286,7 @@ Exit codes: `0` when the watch ends, whatever the reason. `1` when SESSION match
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.12+
 - [ripgrep](https://github.com/BurntSushi/ripgrep) — optional. It makes `search --rg` faster; without it a built-in scan runs.
 - git — only for worktree-aware scoping and the branch in `list-active`. Outside a repo every subcommand falls back to the exact current directory.
 - tmux — optional. Without it `list-active` and `watch` report every tmux pane as unknown, and `inspect --screen` captures nothing.
@@ -328,7 +328,7 @@ coding-agent-plugins/claude-code/        # the plugin
 
 ## Developing
 
-You need Python 3.11+ and uv. Set up the environment, then run the checks CI runs:
+You need Python 3.12+ and uv. Set up the environment, then run the checks CI runs:
 
 ```bash
 uv sync --dev
@@ -388,7 +388,7 @@ Bump the minor version for features and for breaking changes, and the patch vers
 
 The skills embed the `--help` output of the subcommands they cover. When a subcommand's options or help text change, regenerate those blocks with `COLUMNS=80`, for example `COLUMNS=80 uv run cc-session-tools inspect --help`, so the wrapping stays stable.
 
-CI runs on every push to master and on pull requests: ruff check and ruff format check, and the tests on Python 3.11, 3.12 and 3.13. It does not run on tags.
+CI runs on every push to master and on pull requests: ruff check and ruff format check, and the tests on Python 3.12, 3.13, 3.14 and 3.15. It does not run on tags.
 
 To release version `X.Y.Z`:
 

@@ -7,16 +7,17 @@ license = "MIT"
 authors = [
     { name = "Filip Procházka", email = "mr@fprochazka.cz" }
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 keywords = ["claude-code", "claude", "session", "transcript", "search", "distill", "cli"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development",
 ]
 dependencies = [
@@ -50,7 +51,7 @@ markers = [
 
 [tool.ruff]
 line-length = 120
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "C4", "SIM"]

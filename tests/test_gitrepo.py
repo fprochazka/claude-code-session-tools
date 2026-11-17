@@ -127,3 +127,17 @@ def test_git_in_a_test_leaves_the_repo_of_an_inherited_git_dir_alone(
 
     assert _snapshot(tmp_path / "dummy" / ".git") == inherited_git_dir
     assert (repo / ".git" / "refs" / "heads" / "fp" / "x").is_file()
+
+
+def test_git_location_answers_for_its_dir_whatever_repo_git_dir_names(
+    tmp_path: Path, inherited_git_dir: dict[str, bytes]
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git("init", "-q", "-b", "main", cwd=repo)
+    git("commit", "-q", "--allow-empty", "-m", "init", cwd=repo)
+
+    assert git_location(repo) == GitLocation(worktree_root=repo.resolve(), repo_root=repo.resolve(), branch="main")
+    assert main_repo_root(repo) == repo.resolve()
+    assert git_location(tmp_path) is None
+    assert _snapshot(tmp_path / "dummy" / ".git") == inherited_git_dir

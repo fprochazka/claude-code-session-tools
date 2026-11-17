@@ -11,6 +11,30 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+# Variables that tell git which repo to use whatever its cwd, as ``git rev-parse --local-env-vars`` lists them, less the
+# config ones. Inherited from a git hook or ``git rebase --exec``, they would make every call below answer for that repo
+# instead of the dir it asks about.
+_REPO_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+)
+
+
+def _git(args: list[str], cwd: str | Path) -> subprocess.CompletedProcess[str]:
+    """Run git about the repo of ``cwd``, whatever repo the environment names."""
+    env = {name: value for name, value in os.environ.items() if name not in _REPO_ENV}
+    return subprocess.run(["git", *args], cwd=os.fspath(cwd), capture_output=True, text=True, check=False, env=env)
+
 
 @dataclass(frozen=True)
 class Worktree:
@@ -56,13 +80,7 @@ def _parse_worktree_list(porcelain_text: str) -> list[Worktree]:
 def _run_worktree_list(cwd: str | Path) -> str | None:
     """Shell out to ``git worktree list --porcelain``; ``None`` if not a git repo."""
     try:
-        result = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"],
-            cwd=os.fspath(cwd),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = _git(["worktree", "list", "--porcelain"], cwd)
     except (OSError, ValueError):
         return None
     if result.returncode != 0:
@@ -100,13 +118,7 @@ class GitLocation:
 
 def _rev_parse(cwd: str | Path, *args: str) -> list[str] | None:
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", *args],
-            cwd=os.fspath(cwd),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = _git(["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", *args], cwd)
     except (OSError, ValueError):
         return None
     if result.returncode != 0:

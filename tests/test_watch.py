@@ -720,6 +720,19 @@ def test_command_role_filter(machine: Machine) -> None:
     assert started["data"]["sessions"] == [{"session": "work/w1", "status": "idle"}]
 
 
+def test_command_role_filter_with_sessions(machine: Machine) -> None:
+    give_role(machine, "w1", "worker-orders", machine.session("work", "w1"))
+    machine.session("work", "plain")
+    result = invoke("w1", "--role", "worker-*", "--timeout=1s", "--events-stream=stdout")
+    assert result.exit_code == 0, result.output
+    started = json.loads(result.stdout.splitlines()[0])
+    assert started["data"]["sessions"] == [{"session": "work/w1", "status": "idle"}]
+
+    result = invoke("plain", "--role", "worker-*", "--timeout=1s", "--events-stream=stdout")
+    assert result.exit_code == 1
+    assert "no active session matches 'plain'" in result.stderr
+
+
 def test_command_tmux_session_current(machine: Machine, no_tmux: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_tmux(no_tmux, ["%1\tcoord\t0\t@1\t", "%2\tcoord\t1\t@2\t", "%3\telse\t0\t@3\t"])
     machine.session("work", "neighbour", tmux="coord:@2.%2")

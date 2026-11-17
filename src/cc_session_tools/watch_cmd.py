@@ -187,7 +187,7 @@ def _describe_selection(
 
 
 def _resolve_fixed(queries: Sequence[str], tracker: SessionTracker, filters: Filters) -> frozenset[int]:
-    candidates = [t.session for t in tracker.ordered() if filters.matches(t.session, t.tmux_live)]
+    candidates = [t.session for t in tracker.ordered() if filters.matches(t.session, t.tmux_live, t.role)]
     pids = set()
     for query in queries:
         try:

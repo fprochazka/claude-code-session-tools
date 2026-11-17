@@ -1,7 +1,7 @@
 ---
 name: active-sessions
-description: CLI for listing the Claude Code sessions that run on this machine right now, across every Claude Code profile — their profile, name, status, branch, live tmux pane and messaging address — and for inspecting one session, running or ended. Use when you need to find another running session, check which sessions are busy, find the tmux pane or profile a session runs in, get a session's messaging address before sending it a message, peek at what another session shows, or find out what became of a session that ended and how to resume it. Triggered by requests involving running sessions, other agents, "which sessions are busy", "where is session X", "what is the pane of", "is X still running", "which sessions worked in the last hour", "what did session X cost", or tmux panes of Claude sessions.
-trigger-keywords: running sessions, active sessions, live sessions, other sessions, tmux pane, session status, busy sessions, messaging address, ended session, resume session, recently active sessions, session cost, list-active, inspect
+description: CLI for listing the Claude Code sessions that run on this machine right now, across every Claude Code profile — their profile, name, status, branch, live tmux pane and messaging address — and for inspecting one session, running or ended. Use when you need to find another running session, check which sessions are busy, find the tmux pane or profile a session runs in, get a session's messaging address before sending it a message, peek at what another session shows, check whether its prompt is empty or it shows a startup dialog or permission prompt before typing into its pane, or find out what became of a session that ended and how to resume it. Triggered by requests involving running sessions, other agents, "which sessions are busy", "where is session X", "what is the pane of", "is X still running", "which sessions worked in the last hour", "what did session X cost", "is it safe to type into", or tmux panes of Claude sessions.
+trigger-keywords: running sessions, active sessions, live sessions, other sessions, tmux pane, session status, busy sessions, messaging address, ended session, resume session, recently active sessions, session cost, pane screen, empty prompt, startup dialog, permission prompt, list-active, inspect
 allowed-tools: Bash(cc-session-tools --help), Bash(cc-session-tools list-active:*), Bash(cc-session-tools inspect:*)
 ---
 
@@ -107,6 +107,9 @@ cc-session-tools inspect old-worker --json | jq -r '"\(.state)\t\(.resume_comman
 
 # Where each pane really is now
 cc-session-tools list-active --tmux --json | jq -r '.[] | "\(.tmux_pane)\t\(.tmux_live.session // "?"):\(.tmux_live.window_index // "?")\t\(.name)"'
+
+# What a session's pane shows, and whether its prompt is empty
+cc-session-tools inspect w1-order-planner --screen --json | jq '.screen | {state, title, reason}'
 ```
 
 ## inspect
@@ -124,6 +127,10 @@ Usage: cc-session-tools inspect [OPTIONS] {SESSION}
   when the session last exited; for a running session it leaves out the
   current run.
 
+  --screen reads the pane the way it looks now. The classification matches
+  Claude Code's screen layout and answers unknown whenever it is not certain,
+  so treat anything but prompt_empty as unsafe to type into.
+
 Arguments:
   SESSION  A running session by session id, id prefix, name, <profile>/<name>,
            <profile>/pid:<pid> or pid; else an ended session by session id or
@@ -135,6 +142,10 @@ Options:
                       or pid: transcripts active in the last this many days. A
                       session id or id prefix is looked up in every
                       transcript.  [default: 14; x>=1]
+  --screen            Also capture the session's tmux pane and say what it
+                      shows: prompt_empty, prompt_has_input, dialog,
+                      permission_prompt, busy or unknown, with its last lines.
+                      Typing into the pane is safe only at prompt_empty.
   --json              Print every field as one JSON object.
   --help              Show this message and exit.
 ```
@@ -146,12 +157,28 @@ Options:
 - **Resume an ended session** with its `resume_command` — tell the user the command rather than run it; it starts an interactive session.
 - A name lookup among ended sessions reads every transcript of the window; expect about a second.
 
+### --screen
+
+`--screen` captures the session's tmux pane and adds a `screen` object as the last key of `--json`, and a `screen` row plus the last lines in text:
+
+- `state`: `prompt_empty`, `prompt_has_input`, `dialog`, `permission_prompt`, `busy` or `unknown`.
+- `title`: the title line of a `dialog` or `permission_prompt`, such as `Accessing workspace:` (workspace trust), `New MCP server found in this project: <name>`, `Allow external CLAUDE.md file imports?` or `Bash command`. `null` for the other states.
+- `reason`: why nothing was captured, else `null`: `ended`, `not_in_tmux`, `tmux_unavailable`, `pane_gone`, `pane_not_owned` (the pane id now belongs to another process, as after a tmux server restart) or `capture_failed`. With a reason, `state` is `unknown` and `lines` is `null`.
+- `pane`, `captured_at`, and `lines`: the last 20 lines of the pane as plain text, with runs of empty lines collapsed to one.
+
+The classification reads Claude Code's screen layout and answers `unknown` whenever it is not certain, so it breaks safely when the UI changes:
+
+- **Type only at `prompt_empty`.** `prompt_has_input` means someone, often the user, has half-typed text there; typing would append to it. A dimmed `Try "…"` placeholder or a dimmed suggestion counts as empty.
+- **`busy`** is the spinner above the prompt box or the greyed `❯` that Claude Code draws while it works, whatever the box holds. Text typed now is queued; wait for the turn to end.
+- **`unknown`** covers everything else: shell mode (`!`), the transcript view, an unfamiliar overlay. Do not type; capture the pane again later or look at `lines`.
+- The state is a snapshot. Check it right before you type, and check `title` before you answer a dialog.
+
 ## Acting on a pane
 
 Every tmux command accepts the pane id as a target, wherever the window has moved:
 
 - `tmux capture-pane -p -t %14 | tail -40` shows what the session shows now, without touching it. Use it to peek.
 - `tmux switch-client -t %14` moves the user's tmux client to the session. Run it only when the user asks to go there.
-- `tmux send-keys -t %14 …` types into the session. Never do this without the user's explicit request; to talk to another session, send it a message at its `messaging_address` instead.
+- `tmux send-keys -t %14 …` types into the session. Never do this without the user's explicit request; to talk to another session, send it a message at its `messaging_address` instead. When you do type, run `cc-session-tools inspect <session> --screen --json` first and type only when `.screen.state` is `prompt_empty`.
 
 When `tmux_state` is `gone`, the tmux server has no pane with that id, so the session no longer runs in the pane it started in. When it is `unknown`, this process cannot reach the tmux server the session runs in.

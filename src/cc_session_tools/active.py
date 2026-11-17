@@ -110,6 +110,52 @@ def list_tmux_panes() -> dict[str, TmuxPane] | None:
     return panes
 
 
+def _tmux(*args: str) -> str | None:
+    try:
+        result = subprocess.run(["tmux", *args], capture_output=True, text=True, check=False, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def capture_pane(pane_id: str) -> str | None:
+    """What the pane shows now, with its colors and attributes as escape sequences, or ``None`` when tmux fails."""
+    return _tmux("capture-pane", "-p", "-e", "-t", pane_id)
+
+
+def _parent_pid(pid: int) -> int | None:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        return int(stat[stat.rfind(")") + 2 :].split(" ")[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        result = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    value = result.stdout.strip()
+    return int(value) if result.returncode == 0 and value.isdecimal() else None
+
+
+def pane_runs(pane_id: str, pid: int) -> bool:
+    """Whether the pane's process is ``pid`` or one of its ancestors.
+
+    tmux numbers panes anew after its server restarts, so a recorded pane id can name another program's pane.
+    """
+    output = _tmux("display-message", "-p", "-t", pane_id, "#{pane_pid}")
+    pane_pid = output.strip() if output is not None else ""
+    if not pane_pid.isdecimal():
+        return False
+    current: int | None = pid
+    for _ in range(64):
+        if current is None or current <= 1:
+            return False
+        if current == int(pane_pid):
+            return True
+        current = _parent_pid(current)
+    return False
+
+
 @dataclass(frozen=True)
 class SessionView:
     """One running session with the parts that are resolved live."""

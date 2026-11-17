@@ -26,7 +26,9 @@ _REAL_SETUP_ENV = (
 
 
 @pytest.fixture(autouse=True)
-def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def isolated_home(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    if request.node.get_closest_marker("live") is not None:
+        return Path.home()  # the live contract test runs against the real Claude Code setup
     for name in _REAL_SETUP_ENV:
         monkeypatch.delenv(name, raising=False)
     home = tmp_path / "home"

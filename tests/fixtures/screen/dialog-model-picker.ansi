@@ -1,0 +1,82 @@
+
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude Code[0m [38;5;241mv2.1.325[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;241mHaiku 5.5 · Example Plan[39m
+[38;5;174m ▝▝   ▝▝ [39m  [38;5;241m/tmp/ccst-screen-mNpo7t/proj · [38;5;65m]8;id=1e2cu16;https://claude.ai/code/session_01AkD4mcWWHLcqdJf3bnaRoY?from=cli\/rc[39m]8;;\
+
+
+[38;5;241m[48;5;255m❯ [38;5;16mRun exactly this bash command in the foreground: chmod 600 ccst-moved.txt[39m
+
+[38;5;241m[49m●[39m Running [1m1[0m shell command…
+[38;5;241m  ⎿  Interrupted · What should Claude do instead?[39m
+[38;5;241m  ⎿  $ chmod 600 ccst-moved.txt[39m
+
+[38;5;241m✻[39m [38;5;241mCrunched for 2s · done 12:27[39m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+[38;5;105m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+[39m   [1m[38;5;21mSelect model[0m
+   [38;5;241mSwitch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.[39m
+
+     [38;5;241m1.  [39mDefault (recommended)  [38;5;241mOpus 5.5 · Best for everyday, complex tasks[39m
+     [38;5;241m2.  [39mOpus 5.5               [38;5;241mFor complex work and everyday tasks[39m
+     [38;5;241m3.  [38;5;174mFable 5.2[39m              [38;5;241mFor your toughest challenges[39m
+     [38;5;241m4.  [39mSonnet 5.5             [38;5;241mMost efficient for simpler tasks[39m
+   [38;5;105m❯[39m [38;5;241m5.  [38;5;65mHaiku 5.5[39m [38;5;65m✔[39m            [38;5;241mFastest for quick answers[39m
+     [38;5;241m▸   [39mMore models            [38;5;241m [39m
+
+   [38;5;174m◐[38;5;241m Medium effort (default) ←/→ to adjust[39m
+
+   [38;5;241mUse [1m/fast[0m[38;5;241m to turn on Fast mode (Opus 5.5).[39m
+
+   [38;5;241mEnter to set as default · s to use this session only · Esc to cancel[39m

@@ -42,6 +42,12 @@ packages = ["src/cc_session_tools"]
 [tool.uv]
 package = true
 
+[tool.pytest.ini_options]
+addopts = "-m 'not live'"
+markers = [
+    "live: starts a real Claude Code session in a temporary tmux session and spends model usage; run with `pytest -m live -s`",
+]
+
 [tool.ruff]
 line-length = 120
 target-version = "py311"

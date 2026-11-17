@@ -71,6 +71,15 @@ def _cost_lines(cost: dict[str, Any] | None, *, running: bool) -> list[str]:
     return lines
 
 
+def _screen(screen: dict[str, Any]) -> str:
+    summary = str(screen["state"])
+    if screen["title"]:
+        summary += f": {screen['title']}"
+    if screen["reason"]:
+        summary += f" ({screen['reason'].replace('_', ' ')})"
+    return summary
+
+
 def _print_details(data: dict[str, object]) -> None:
     table = Table(show_header=False, box=None, pad_edge=False)
     table.add_column("Field", style="cyan", no_wrap=True)
@@ -83,12 +92,22 @@ def _print_details(data: dict[str, object]) -> None:
             for index, line in enumerate(lines):
                 table.add_row(Text(key if index == 0 else ""), Text(line))
             continue
+        if key == "screen" and isinstance(value, dict):
+            table.add_row(Text(key), Text(_screen(value)))
+            continue
         if key == "profile_starts" and isinstance(value, list) and value:
             for index, start in enumerate(value):
                 table.add_row(Text(key if index == 0 else ""), Text(_start(start)))
             continue
         table.add_row(Text(key), Text(_value(value)))
-    build_console().print(table)
+    console = build_console()
+    console.print(table)
+    screen = data.get("screen")
+    if isinstance(screen, dict) and screen["lines"] is not None:
+        console.print()
+        console.print(Text(f"Last {len(screen['lines'])} lines of {screen['pane']}:", style="cyan"))
+        for line in screen["lines"]:
+            console.print(Text(line), no_wrap=True, overflow="crop", soft_wrap=False)
 
 
 def inspect(
@@ -107,6 +126,12 @@ def inspect(
         help="How far back to look for an ended session by name, title or pid: transcripts active in the last this "
         "many days. A session id or id prefix is looked up in every transcript.",
     ),
+    screen: bool = typer.Option(
+        False,
+        "--screen",
+        help="Also capture the session's tmux pane and say what it shows: prompt_empty, prompt_has_input, dialog, "
+        "permission_prompt, busy or unknown, with its last lines. Typing into the pane is safe only at prompt_empty.",
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print every field as one JSON object."),
 ) -> None:
     """Show every field of one Claude Code session, running or ended.
@@ -116,13 +141,16 @@ def inspect(
     title and cwd, when it started and last got a model response, every start, and the command that resumes it. Both
     show the cost Claude Code recorded when the session last exited; for a running session it leaves out the current
     run.
+
+    --screen reads the pane the way it looks now. The classification matches Claude Code's screen layout and answers
+    unknown whenever it is not certain, so treat anything but prompt_empty as unsafe to type into.
     """
     try:
         found = find(session, days=days)
     except SessionLookupError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-    data = to_inspect_json(found)
+    data = to_inspect_json(found, screen=screen)
     if as_json:
         sys.stdout.write(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     else:

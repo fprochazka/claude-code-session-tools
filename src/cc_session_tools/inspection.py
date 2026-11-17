@@ -38,7 +38,16 @@ from cc_blackbox import (
     read_session_transcript,
 )
 
-from .active import SessionLookupError, build_views, lookup_session, to_json, transcript_json
+from .active import (
+    SessionLookupError,
+    build_views,
+    capture_pane,
+    lookup_session,
+    pane_runs,
+    to_json,
+    transcript_json,
+)
+from .screen import classify, plain_lines
 from .search import search_session_ids
 
 DEFAULT_DAYS = 14
@@ -310,9 +319,56 @@ INSPECT_KEYS = (
 the auth-switch starts and the resume command."""
 
 
-def to_inspect_json(found: Found) -> dict[str, Any]:
+SCREEN_LINES = 20
+"""How many lines at the bottom of the pane ``inspect --screen`` prints, after runs of empty lines collapse to one."""
+
+
+def _collapse_blank(lines: list[str]) -> list[str]:
+    """The lines with every run of empty lines reduced to one: a tall pane is mostly empty above the prompt box."""
+    return [line for index, line in enumerate(lines) if line or index == 0 or lines[index - 1]]
+
+
+def screen_json(data: dict[str, Any]) -> dict[str, Any]:
+    """The ``screen`` object of ``inspect --screen``: what the session's tmux pane shows now, classified.
+
+    ``reason`` says why nothing was captured, with ``state`` ``unknown`` and ``lines`` ``null``: ``ended``,
+    ``not_in_tmux``, ``tmux_unavailable``, ``pane_gone``, ``pane_not_owned`` (the pane id now belongs to another
+    process, as after a tmux server restart) or ``capture_failed``. When the pane was captured, ``reason`` is
+    ``null`` and an unrecognised screen is ``unknown`` too.
+    """
+    pane = data["tmux_pane"]
+    result: dict[str, Any] = {
+        "state": "unknown",
+        "title": None,
+        "reason": None,
+        "pane": pane,
+        "captured_at": None,
+        "lines": None,
+    }
+    if data["state"] != "running":
+        result["reason"] = "ended"
+    elif pane is None:
+        result["reason"] = "not_in_tmux"
+    elif data["tmux_state"] != "present":
+        result["reason"] = "pane_gone" if data["tmux_state"] == "gone" else "tmux_unavailable"
+    elif not pane_runs(pane, data["pid"]):
+        result["reason"] = "pane_not_owned"
+    else:
+        captured = capture_pane(pane)
+        if captured is None:
+            result["reason"] = "capture_failed"
+        else:
+            classification = classify(captured)
+            result["state"] = classification.state
+            result["title"] = classification.title
+            result["captured_at"] = _iso(datetime.now(UTC))
+            result["lines"] = _collapse_blank(plain_lines(captured))[-SCREEN_LINES:]
+    return result
+
+
+def to_inspect_json(found: Found, *, screen: bool = False) -> dict[str, Any]:
     """The object ``inspect --json`` prints: ``state``, every key of ``list-active --json``, then what the transcript
-    adds. The keys are the same for a running and an ended session."""
+    adds. The keys are the same for a running and an ended session. ``screen`` adds the ``screen`` key last."""
     transcript = found.transcript
     if found.live is not None:
         view = build_views([found.live])[0]
@@ -350,4 +406,7 @@ def to_inspect_json(found: Found) -> dict[str, Any]:
     data["title_source"] = transcript.title_source if transcript is not None else None
     data["profile_starts"] = _starts(transcript.profile_starts()) if transcript is not None else []
     data["resume_command"] = resume_command(profile, session_id)
-    return {key: data.get(key) for key in INSPECT_KEYS}
+    result = {key: data.get(key) for key in INSPECT_KEYS}
+    if screen:
+        result["screen"] = screen_json(result)
+    return result

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -298,3 +299,113 @@ def test_nothing_matches(machine: Machine) -> None:
     assert result.exit_code == 1
     assert "no session matches 'nothing'" in result.stderr
     assert result.stdout == ""
+
+
+# --- --screen ---
+
+SCREEN_FIXTURES = Path(__file__).parent / "fixtures" / "screen"
+
+
+def screen_tmux(bin_dir: Path, *, pane_pid: int, capture: str | None, panes: list[str]) -> None:
+    """Install a ``tmux`` that lists ``panes``, says the pane runs ``pane_pid``, and captures ``capture``."""
+    (bin_dir / "tmux-panes.txt").write_text("".join(f"{line}\n" for line in panes))
+    capture_file = bin_dir / "tmux-capture.txt"
+    capture_file.write_text(capture or "")
+    capture_exit = 1 if capture is None else 0
+    script = bin_dir / "tmux"
+    script.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        f"  list-panes) cat '{bin_dir / 'tmux-panes.txt'}' ;;\n"
+        f"  display-message) echo {pane_pid} ;;\n"
+        f"  capture-pane) cat '{capture_file}'; exit {capture_exit} ;;\n"
+        "esac\n"
+    )
+    script.chmod(0o755)
+
+
+PANE = "%14\tmain\t3\t@14\tw1"
+
+
+def test_screen_classifies_the_pane_and_keeps_the_other_keys(machine: Machine, fake_bin: Path) -> None:
+    pid = machine.session("work", "target", tmux="main:@14.%14")
+    capture = (SCREEN_FIXTURES / "dialog-trust.ansi").read_text(encoding="utf-8")
+    screen_tmux(fake_bin, pane_pid=pid, capture=capture, panes=[PANE])
+    data = json_of("target", "--screen")
+    assert list(data) == [*INSPECT_KEYS, "screen"]
+    screen = data["screen"]
+    assert (screen["state"], screen["title"], screen["reason"], screen["pane"]) == (
+        "dialog",
+        "Accessing workspace:",
+        None,
+        "%14",
+    )
+    assert screen["captured_at"] is not None
+    assert screen["lines"][-1] == " Enter to confirm · Esc to cancel"
+    assert len(screen["lines"]) <= 20
+    assert "" not in [a or b for a, b in zip(screen["lines"], screen["lines"][1:], strict=False)]
+
+
+def test_screen_in_text_prints_the_state_and_the_last_lines(machine: Machine, fake_bin: Path) -> None:
+    pid = machine.session("work", "target", tmux="main:@14.%14")
+    capture = (SCREEN_FIXTURES / "prompt-has-input.ansi").read_text(encoding="utf-8")
+    screen_tmux(fake_bin, pane_pid=pid, capture=capture, panes=[PANE])
+    result = invoke("target", "--screen")
+    assert result.exit_code == 0, result.output
+    assert any(line.split() == ["screen", "prompt_has_input"] for line in result.stdout.splitlines())
+    assert re.search(r"^Last \d+ lines of %14:$", result.stdout, re.MULTILINE)
+    assert "❯ half typed text" in result.stdout
+
+
+def test_without_screen_there_is_no_screen_key(machine: Machine, fake_bin: Path) -> None:
+    pid = machine.session("work", "target", tmux="main:@14.%14")
+    screen_tmux(fake_bin, pane_pid=pid, capture="", panes=[PANE])
+    assert "screen" not in json_of("target")
+
+
+@pytest.mark.parametrize(
+    ("tmux", "pane_pid", "capture", "panes", "reason"),
+    [
+        (None, None, "", [PANE], "not_in_tmux"),
+        ("main:@15.%15", None, "", [PANE], "pane_gone"),
+        ("main:@14.%14", 1, "", [PANE], "pane_not_owned"),
+        ("main:@14.%14", None, None, [PANE], "capture_failed"),
+    ],
+)
+def test_screen_says_why_nothing_was_captured(
+    machine: Machine,
+    fake_bin: Path,
+    tmux: str | None,
+    pane_pid: int | None,
+    capture: str | None,
+    panes: list[str],
+    reason: str,
+) -> None:
+    pid = machine.session("work", "target", tmux=tmux)
+    screen_tmux(fake_bin, pane_pid=pane_pid or pid, capture=capture, panes=panes)
+    screen = json_of("target", "--screen")["screen"]
+    assert (screen["state"], screen["reason"], screen["lines"], screen["captured_at"]) == (
+        "unknown",
+        reason,
+        None,
+        None,
+    )
+
+
+def test_screen_of_an_unavailable_tmux(machine: Machine, fake_bin: Path) -> None:
+    machine.session("work", "target", tmux="main:@14.%14")
+    fake_tmux(fake_bin, [], exit_code=1)
+    assert json_of("target", "--screen")["screen"]["reason"] == "tmux_unavailable"
+
+
+def test_screen_of_an_ended_session(machine: Machine) -> None:
+    ended(machine, "work", "gone", names=["gone-name"])
+    screen = json_of(sid("gone"), "--screen")["screen"]
+    assert screen == {
+        "state": "unknown",
+        "title": None,
+        "reason": "ended",
+        "pane": None,
+        "captured_at": None,
+        "lines": None,
+    }

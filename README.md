@@ -163,6 +163,7 @@ cc-session-tools inspect rohlik-team/w1-order-planner # the same, by address
 cc-session-tools inspect 27906ead --json              # an ended session by a session id prefix, as JSON
 cc-session-tools inspect old-name                     # a session renamed since, ended or running
 cc-session-tools inspect 1199796 --days 30            # an ended session by its pid, from the auth-switch start log
+cc-session-tools inspect w1-order-planner --screen    # also what its tmux pane shows: empty prompt, dialog, busy …
 ```
 
 `inspect` shows the full current picture of one session, running or ended. A running session shows every field `list-active --json` has, with `state` `running`. An ended session shows what its transcript and the [claude-code-auth-switch](https://github.com/fprochazka/claude-code-auth-switch) start log recorded, with `state` `ended`: the profile that ran it last and how that was decided (`profile_source`), its last name and title, its launch cwd and last cwd, the git branch of its last record, `started_at`, `last_activity_at` (its last model response), `last_record_at`, its `cost`, every start in `profile_starts` (`ts`, `pid`, `source`, `profile`), `transcript_path`, and `resume_command`: `claude-<profile> --resume <id>` when an auth-switch profile ran it, else `claude --resume <id>`.
@@ -183,6 +184,17 @@ The text output prints the cost as one line of totals and one line per model, an
 **`--json`** prints one object whose keys are a stable contract, the same for a running and an ended session: `state`, every key of `list-active --json`, `title`, `title_source`, `profile_starts` and `resume_command`. Fields only a running session has, such as `pid`, `status`, the tmux and messaging fields, `record_path` and `raw`, are `null` for an ended one.
 
 A session that has no name and was not started through an auth-switch wrapper can be found after it ended only by its session id.
+
+**`--screen`** captures the session's tmux pane with `tmux capture-pane -p -e` and says what it shows, for a coordinating session that types into other panes (`/compact`, a brief as `@<file>`, the answer to a startup dialog) and must know when that is safe. The registry status cannot tell: startup dialogs come before the session has a usable record, and text someone has half typed is in no record. `--json` gets one more key, `screen`, after all the others:
+
+- `state`: `prompt_empty` (nothing typed, or only the dimmed `Try "…"` placeholder), `prompt_has_input`, `dialog` (such as workspace trust, MCP server approval or external `CLAUDE.md` imports), `permission_prompt`, `busy` (the spinner, or the greyed `❯` Claude Code draws while it works), or `unknown`.
+- `title`: the title line of a `dialog` or `permission_prompt`, else `null`.
+- `reason`: why nothing was captured, else `null`: `ended`, `not_in_tmux`, `tmux_unavailable`, `pane_gone`, `pane_not_owned` (the pane id now belongs to another process, as after a tmux server restart) or `capture_failed`. Then `state` is `unknown` and `lines` is `null`.
+- `pane`, `captured_at`, and `lines`: the last 20 lines of the pane as plain text, with runs of empty lines collapsed to one.
+
+The text output adds a `screen` row and prints the lines under the table.
+
+The classification is a heuristic over Claude Code's screen text, box drawing and colors, checked against captures of Claude Code 2.1.325, and it breaks when the UI changes. It answers `unknown` whenever the match is not certain, because a wrong `prompt_empty` makes a coordinator type into a dialog or over someone's half-typed text. The placeholder and typed text differ only in the dim attribute, so a capture without escape sequences never yields a prompt state. Known gaps: busy detection without a spinner relies on the dark theme's grey prompt glyph, and any other glyph color gives `unknown`; there are no light-theme captures; Edit and WebFetch permission prompts were not captured; a dimmed prompt suggestion is assumed empty, untested. Run the opt-in live contract test, `tests/test_live_screen.py`, after a Claude Code update.
 
 Exit codes: `0` when one session is shown. `1` when SESSION matches nothing or more than one session in a step.
 
@@ -267,7 +279,7 @@ Exit codes: `0` when the watch ends, whatever the reason. `1` when SESSION match
 - Python 3.11+
 - [ripgrep](https://github.com/BurntSushi/ripgrep) — optional. It makes `search --rg` faster; without it a built-in scan runs.
 - git — only for worktree-aware scoping and the branch in `list-active`. Outside a repo every subcommand falls back to the exact current directory.
-- tmux — optional. Without it `list-active` and `watch` report every tmux pane as unknown.
+- tmux — optional. Without it `list-active` and `watch` report every tmux pane as unknown, and `inspect --screen` captures nothing.
 
 ## Project structure
 
@@ -280,6 +292,7 @@ src/cc_session_tools/
 ├── list_active_cmd.py # the `list-active` command
 ├── inspect_cmd.py     # the `inspect` command
 ├── inspection.py      # one session, running or ended: the lookup and its fields
+├── screen.py          # what a captured tmux pane shows: empty prompt, input, dialog, permission prompt, busy
 ├── watch_cmd.py       # the `watch` command: options, header, stream and changelog
 ├── watcher.py         # the polling loop: registry records in, session events out
 ├── watch_events.py    # event kinds and groups, the --events filter, durations
@@ -293,7 +306,8 @@ src/cc_session_tools/
 ├── render.py          # condensed conversation -> markdown
 └── stats.py           # size and token estimates
 
-tests/                # unit tests
+tests/                # unit tests; test_live_screen.py is the opt-in live contract test (pytest -m live)
+└── fixtures/screen/  # tmux captures of real Claude Code panes, one per screen state
 
 .claude-plugin/marketplace.json          # Claude Code plugin marketplace
 coding-agent-plugins/claude-code/        # the plugin

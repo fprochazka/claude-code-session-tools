@@ -2,7 +2,7 @@
 [38;5;137m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 [39m  [1m[38;5;137mNew[0m [1m[38;5;137mMCP[0m [1m[38;5;137mserver[0m [1m[38;5;137mfound[0m [1m[38;5;137min[0m [1m[38;5;137mthis[0m [1m[38;5;137mproject:[0m [1m[38;5;137mccst-dummy[0m
 
-  MCP servers may execute code or access system resources. All tool calls require approval. Learn more in the ]8;id=c415zw;https://code.claude.com/docs/en/mcp\MCP documentation]8;;\.
+  MCP servers may execute code or access system resources. All tool calls require approval. Learn more in the MCP documentation.
 
     Use this MCP server
     Use this and all future MCP servers in this project

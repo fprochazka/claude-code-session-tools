@@ -7,7 +7,7 @@
   [38;5;241mExternal imports:[39m
   [38;5;241m  /tmp/ccst-screen-mNpo7t/ext/notes.md[39m
 
-  [38;5;241mImportant: Only use Claude Code with files you trust. Accessing untrusted files may pose security risks ]8;id=zaxmda;https://code.claude.com/docs/en/security\https://code.claude.com/docs/en/security]8;;\ [39m
+  [38;5;241mImportant: Only use Claude Code with files you trust. Accessing untrusted files may pose security risks https://code.claude.com/docs/en/security [39m
 
   [38;5;105m❯[39m [38;5;105mNo,[39m [38;5;105mdisable[39m [38;5;105mexternal[39m [38;5;105mimports[39m
     Yes, allow external imports

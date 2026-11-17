@@ -97,6 +97,12 @@ def test_a_prompt_box_with_more_than_a_footer_below_it_is_unknown() -> None:
     assert classify(box("\x1b[39m❯ ", footer=footer)).state == "unknown"
 
 
+def test_a_screen_that_shows_both_a_prompt_box_and_a_dialog_is_unknown() -> None:
+    dialog = "  Pick one\n  ❯ 1. Yes\n    2. No\n  Esc to cancel"
+    assert classify(f"{RULE}\n{dialog}\n").state == "dialog"
+    assert classify(box("\x1b[39m❯ ", footer=dialog)).state == "unknown"
+
+
 def test_a_dialog_without_a_selection_is_unknown() -> None:
     screen = f"{RULE}\n  Some notice\n\n  Press any key\n\n  Enter to confirm · Esc to cancel\n"
     assert classify(screen).state == "unknown"

@@ -222,13 +222,16 @@ def classify(captured: str) -> Classification:
     - ``busy``: the prompt box shows the spinner above it or the greyed glyph, whatever the box holds.
     - ``dialog``: a bordered box with a ``❯`` selection and an ``Esc to cancel`` footer, such as a startup dialog.
     - ``permission_prompt``: such a box that asks ``Do you want to …?`` with numbered options.
-    - ``unknown``: anything else, including a prompt box captured without ``-e``.
+    - ``unknown``: anything else, including a prompt box captured without ``-e`` and a screen that matches both the
+      prompt box and the dialog rules.
     """
     cells = parse(captured)
     texts = ["".join(cell.char for cell in line).rstrip() for line in cells]
     box = _prompt_box(texts)
-    if box is not None:
-        if "\x1b[" not in captured:
-            return Classification("unknown")
-        return _classify_prompt(cells, texts, *box)
-    return _classify_dialog(texts)
+    dialog = _classify_dialog(texts)
+    if box is None:
+        return dialog
+    if dialog.state != "unknown" or "\x1b[" not in captured:
+        # A dialog drawn under a prompt box takes the keys, so the box says nothing about what typing does.
+        return Classification("unknown")
+    return _classify_prompt(cells, texts, *box)

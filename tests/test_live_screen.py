@@ -12,7 +12,8 @@ one project entry to the profile's config, ever. Claude Code remembers the trust
 so after the first run those dialogs do not show; the test answers each one that shows, always the same way, and does
 not require them. ``CC_SESSION_TOOLS_LIVE_FRESH_DIR=1`` runs in a new temporary directory instead and requires all
 three dialogs to show and classify; each such run adds one more project entry to the profile's config. The unit tests
-cover the dialogs through fixtures either way.
+cover the dialogs through fixtures either way. Every run, in either mode, leaves the session's transcript under the
+profile's ``projects/`` dir; the test does not delete it.
 
 The session runs with hooks disabled and in the default permission mode, so the Bash command it is asked to run waits
 for approval; the test declines it. It never touches a tmux session it did not start.

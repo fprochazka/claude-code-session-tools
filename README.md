@@ -359,7 +359,7 @@ It starts the session in a temporary tmux session and drives it through its star
 - `CC_SESSION_TOOLS_LIVE_MODEL`: the model, `haiku` by default.
 - `CC_SESSION_TOOLS_LIVE_FRESH_DIR=1`: run in a new temporary directory and require the workspace trust, MCP server and external imports dialogs.
 
-By default the session runs in `~/.cache/cc-session-tools/live-test`. Claude Code stores the trust answer for that directory as a project entry in the profile's config, so the test adds at most one entry, ever. It also remembers the MCP and imports answers there, so after the first run the dialogs do not show; the test answers the ones that do, always the same way. With `CC_SESSION_TOOLS_LIVE_FRESH_DIR=1`, every run adds one more project entry to the profile's config. The unit tests cover the dialogs through captured fixtures either way.
+By default the session runs in `~/.cache/cc-session-tools/live-test`. Claude Code stores the trust answer for that directory as a project entry in the profile's config, so the test adds at most one entry, ever. It also remembers the MCP and imports answers there, so after the first run the dialogs do not show; the test answers the ones that do, always the same way. With `CC_SESSION_TOOLS_LIVE_FRESH_DIR=1`, every run adds one more project entry to the profile's config. Every run, in either mode, also leaves the session's transcript in the profile: a new `<session-id>.jsonl` under `<config dir>/projects/<encoded dir>/`, which the test does not delete. Those sessions show up in `search --all`. The unit tests cover the dialogs through captured fixtures either way.
 
 ## Releasing
 

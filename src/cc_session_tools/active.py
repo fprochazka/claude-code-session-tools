@@ -19,7 +19,7 @@ import fnmatch
 import os
 import subprocess
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -457,6 +457,34 @@ def read_last_response(session: ActiveSession) -> datetime | None:
         else:
             return None
         return transcript.last_model_activity_at
+    except (ClaudeBlackboxError, OSError):
+        return None
+
+
+def find_transcript_path(session: ActiveSession) -> Path | None:
+    """The session's main transcript as it is now: :attr:`ActiveSession.transcript_path` when that file exists, else
+    looked up by session id, as after a ``/clear`` or a cwd change. ``None`` when the session has written none yet."""
+    try:
+        path = session.transcript_path
+        if path is not None and path.is_file():
+            return path
+        if session.session_id is None:
+            return None
+        found = find_session_transcript(session.session_id, [session.profile], cwd=session.launch_cwd or session.cwd)
+        return found.path
+    except (ClaudeBlackboxError, OSError):
+        return None
+
+
+def read_context_window(session: ActiveSession, transcript: Path) -> ContextWindow | None:
+    """How full the session's context is now, read from ``transcript``, with the session's environment applied.
+
+    :attr:`ActiveSession.context_window` is a snapshot of the moment the session was listed; a watch needs the current
+    value, so this reads it on a copy of the session. Reading costs a millisecond or two, whatever the transcript's
+    size: it reads backwards from the end to the newest response.
+    """
+    try:
+        return replace(session, transcript_path=transcript, _transcript_projects_dir=None).context_window
     except (ClaudeBlackboxError, OSError):
         return None
 

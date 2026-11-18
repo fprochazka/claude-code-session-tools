@@ -42,8 +42,10 @@ from .watch_events import (
     LIFECYCLE_KINDS,
     WATCH_ENDED,
     WATCH_STARTED,
+    ContextMark,
     FilterError,
     WatchEvent,
+    parse_context_mark,
     parse_duration,
     produced_kinds,
     resolve_filter,
@@ -90,6 +92,18 @@ def _duration(option: str, value: str | None) -> float | None:
     if seconds <= 0:
         _fail(f"{option}: the duration must be longer than zero")
     return seconds
+
+
+def _context_marks(values: Sequence[str] | None) -> tuple[ContextMark, ...]:
+    marks: dict[str, ContextMark] = {}
+    for value in values or ():
+        try:
+            mark = parse_context_mark(value)
+        except ValueError as exc:
+            _fail(f"--context-above: {exc}")
+        marks.setdefault(mark.label, mark)
+    # Percentages first, then token counts, each from the lowest; the header lists them in this order.
+    return tuple(sorted(marks.values(), key=lambda m: (m.percent is None, m.percent or m.tokens or 0)))
 
 
 class Changelog:
@@ -288,6 +302,15 @@ def watch(
         help="Report idle_long at every multiple of this duration within an idle stretch.",
         show_default=False,
     ),
+    context_above: list[str] = typer.Option(
+        None,
+        "--context-above",
+        metavar="<N%|tokens>",
+        help="Report context_high once when a session's context fill reaches this mark, and again after it dropped "
+        "below it, as after a compaction. 75% is a percentage of the context window (a bare number below 100 is one "
+        "too); 150000, 150k or 1M is a number of tokens. Repeatable.",
+        show_default=False,
+    ),
     events_stream: StreamMode = typer.Option(
         StreamMode.auto,
         "--events-stream",
@@ -309,6 +332,7 @@ def watch(
         _duration("--waiting-after", waiting_after),
         idle_after=tuple(sorted({cast(float, _duration("--idle-after", value)) for value in idle_after or []})),
         idle_every=_duration("--idle-every", idle_every),
+        context_above=_context_marks(context_above),
     )
     ends = Ends(until, _duration("--timeout", timeout), _duration("--stop-after-quiet", stop_after_quiet))
     fixed = bool(sessions)

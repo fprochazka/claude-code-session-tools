@@ -30,20 +30,23 @@ from pathlib import Path
 from types import FrameType, MappingProxyType
 from typing import Any
 
-from cc_blackbox import ActiveSession, EventSink, list_active_sessions, list_profiles
+from cc_blackbox import ActiveSession, ContextWindow, EventSink, list_active_sessions, list_profiles
 
 from .active import (
     Filters,
     TmuxPane,
     TmuxState,
+    find_transcript_path,
     list_tmux_panes,
     pane_id_of,
     process_role,
+    read_context_window,
     read_last_response,
     waiting_for,
 )
 from .watch_events import (
     BUSY_LONG,
+    CONTEXT_HIGH,
     CWD_CHANGED,
     IDLE_LONG,
     RENAMED,
@@ -59,6 +62,7 @@ from .watch_events import (
     WAITING_LONG,
     WATCH_ENDED,
     WATCH_STARTED,
+    ContextMark,
     WatchEvent,
     format_duration,
     utc_iso,
@@ -69,6 +73,10 @@ TMUX_INTERVAL = 3.0
 ROLE_SETTLE = 60.0
 """For this long after a session's start, a missing role is looked for again at every tmux call: the auth-switch
 start hook logs it a moment after the session's record appears, next to a transcript the session may not have yet."""
+
+CONTEXT_INTERVAL = 3.0
+"""A session's context fill is read again at most this often, and only when its transcript changed since the last read.
+A busy session appends to its transcript all the time; one read costs a millisecond or two."""
 
 TURN_ENDS_FROM = frozenset({"busy", "waiting"})
 """A move to ``idle`` from one of these statuses is ``turn_finished``."""
@@ -202,6 +210,16 @@ class Tracked:
     """The auth-switch role, read only when the selection filters by role."""
     role_settled: bool = True
     """``False`` while a missing role is still looked for at every tmux call."""
+    transcript: Path | None = None
+    """The main transcript of :attr:`transcript_of`, looked up when ``--context-above`` needs it."""
+    transcript_of: str | None = None
+    """The session id :attr:`transcript` belongs to; a ``/clear`` gives the session another one."""
+    transcript_stamp: Stamp | None = None
+    """The transcript's stamp at the last read of the context fill."""
+    context_checked: float | None = None
+    """When the watch last looked at the transcript for the context fill."""
+    context_reached: frozenset[str] = frozenset()
+    """The labels of the ``--context-above`` marks the context fill is at or above, each reported once."""
 
     @property
     def pid(self) -> int:
@@ -237,6 +255,8 @@ class Thresholds:
     """``--idle-after``: each is reported once per idle stretch."""
     idle_every: float | None = None
     """``--idle-every``: every multiple is reported once per idle stretch."""
+    context_above: tuple[ContextMark, ...] = ()
+    """``--context-above``: each is reported once when the context fill reaches it, and again after it dropped below."""
 
     def enabled(self) -> list[str]:
         kinds = []
@@ -246,6 +266,8 @@ class Thresholds:
             kinds.append(WAITING_LONG)
         if self.idles:
             kinds.append(IDLE_LONG)
+        if self.context_above:
+            kinds.append(CONTEXT_HIGH)
         return kinds
 
     @property
@@ -284,6 +306,8 @@ class Thresholds:
             idle.append(f"every {format_duration(self.idle_every)}")
         if idle:
             parts.append(f"{IDLE_LONG} after {', '.join(idle)} since the last model response")
+        if self.context_above:
+            parts.append(f"{CONTEXT_HIGH} at {', '.join(m.label for m in self.context_above)} of the context window")
         return ", ".join(parts)
 
 
@@ -291,6 +315,16 @@ ListSessions = Callable[[], list[ActiveSession]]
 ListPanes = Callable[[], dict[str, TmuxPane] | None]
 ReadLastResponse = Callable[[ActiveSession], datetime | None]
 ReadRole = Callable[[ActiveSession], str | None]
+FindTranscript = Callable[[ActiveSession], Path | None]
+ReadContext = Callable[[ActiveSession, Path], ContextWindow | None]
+
+
+def transcript_stamp(path: Path) -> Stamp | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
 
 
 class SessionTracker:
@@ -307,7 +341,10 @@ class SessionTracker:
         is_running: Callable[[int], bool] = process_running,
         last_response: ReadLastResponse = read_last_response,
         role_of_session: ReadRole = process_role,
+        find_transcript: FindTranscript = find_transcript_path,
+        read_context: ReadContext = read_context_window,
         tmux_interval: float = TMUX_INTERVAL,
+        context_interval: float = CONTEXT_INTERVAL,
     ) -> None:
         self.selection = selection
         self.thresholds = thresholds
@@ -317,7 +354,10 @@ class SessionTracker:
         self._is_running = is_running
         self._last_response = last_response
         self._read_role_of = role_of_session
+        self._find_transcript = find_transcript
+        self._read_context = read_context
         self.tmux_interval = tmux_interval
+        self.context_interval = context_interval
         self.tracked: dict[int, Tracked] = {}
         self._stamps: dict[Path, Stamp] = {}
         self._panes: dict[str, TmuxPane] | None = None
@@ -436,6 +476,7 @@ class SessionTracker:
         events += self._refresh_tmux(now, report=True, observed=observed)
         events += self._refresh_roles(now, observed)
         events += self._thresholds(now, observed)
+        events += self._context(now, observed)
         return events
 
     @staticmethod
@@ -655,6 +696,70 @@ class SessionTracker:
                 tracked.threshold_sent = True
                 events.append(self._event(kind, tracked, observed, after=format_duration(after)))
         return events
+
+    def _context(self, now: float, observed: str) -> list[WatchEvent]:
+        """``context_high`` for the matching sessions whose context fill reached a mark since the last read.
+
+        A session's transcript is stat'ed at most every :data:`CONTEXT_INTERVAL`, and its context fill read only when
+        the transcript changed since the last read, so an idle session costs a stat.
+        """
+        if not self.thresholds.context_above:
+            return []
+        events = []
+        for tracked in self.ordered():
+            if not tracked.matched:
+                continue
+            if tracked.context_checked is not None and now - tracked.context_checked < self.context_interval:
+                continue
+            tracked.context_checked = now
+            path, stamp = self._context_transcript(tracked)
+            if path is None or stamp is None or stamp == tracked.transcript_stamp:
+                continue
+            tracked.transcript_stamp = stamp
+            event = self._context_high(tracked, self._read_context(tracked.session, path), observed)
+            if event is not None:
+                events.append(event)
+        return events
+
+    def _context_transcript(self, tracked: Tracked) -> tuple[Path | None, Stamp | None]:
+        """The session's transcript and its stamp. It is looked up again after a change of the session id, and when
+        the file is gone, as when a cwd change moved it."""
+        session_id = tracked.session.session_id
+        if tracked.transcript_of != session_id:
+            tracked.transcript, tracked.transcript_of, tracked.transcript_stamp = None, session_id, None
+        stamp = transcript_stamp(tracked.transcript) if tracked.transcript is not None else None
+        if stamp is None:
+            tracked.transcript = self._find_transcript(tracked.session)
+            stamp = transcript_stamp(tracked.transcript) if tracked.transcript is not None else None
+        return tracked.transcript, stamp
+
+    def _context_high(self, tracked: Tracked, window: ContextWindow | None, observed: str) -> WatchEvent | None:
+        """``context_high`` for the highest mark the fill reached that was not reported since it was last below it.
+
+        A mark is reported once and can be reported again after the fill dropped below it: after a compaction, a
+        ``/clear``, or when the window turned out larger. Marks that one read passes together give one event, for the
+        highest of them; of two that come to the same tokens, for the first in :attr:`Thresholds.context_above`.
+        """
+        if window is None or window.compacted:
+            tracked.context_reached = frozenset()
+            return None
+        reached = [m for m in self.thresholds.context_above if window.used >= m.tokens_for(window.size)]
+        new = [m for m in reached if m.label not in tracked.context_reached]
+        tracked.context_reached = frozenset(m.label for m in reached)
+        if not new:
+            return None
+        mark = max(new, key=lambda m: m.tokens_for(window.size))
+        return self._event(
+            CONTEXT_HIGH,
+            tracked,
+            observed,
+            used=window.used,
+            size=window.size,
+            percent=window.percent,
+            mark=mark.label,
+            mark_tokens=mark.tokens_for(window.size),
+            model=window.model,
+        )
 
     def seconds_until_threshold(self, now: float) -> float | None:
         waits = []

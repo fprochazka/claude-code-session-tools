@@ -27,6 +27,7 @@ WAITING = "waiting"
 BUSY_LONG = "busy_long"
 WAITING_LONG = "waiting_long"
 IDLE_LONG = "idle_long"
+CONTEXT_HIGH = "context_high"
 RENAMED = "renamed"
 CWD_CHANGED = "cwd_changed"
 TMUX_MOVED = "tmux_moved"
@@ -35,7 +36,7 @@ GROUPS: Mapping[str, tuple[str, ...]] = {
     "membership": (SESSION_STARTED, SESSION_ENDED, SESSION_MATCHED, SESSION_UNMATCHED),
     "status": (STATUS_CHANGED,),
     "turns": (TURN_FINISHED, WAITING),
-    "thresholds": (BUSY_LONG, WAITING_LONG, IDLE_LONG),
+    "thresholds": (BUSY_LONG, WAITING_LONG, IDLE_LONG, CONTEXT_HIGH),
     "changes": (RENAMED, CWD_CHANGED, TMUX_MOVED),
     "lifecycle": LIFECYCLE_KINDS,
 }
@@ -49,6 +50,7 @@ THRESHOLD_OPTIONS: Mapping[str, str] = {
     BUSY_LONG: "--busy-after",
     WAITING_LONG: "--waiting-after",
     IDLE_LONG: "--idle-after or --idle-every",
+    CONTEXT_HIGH: "--context-above",
 }
 """The kinds the watch reports only when their option is given."""
 
@@ -99,7 +101,7 @@ def _expand(values: Iterable[str], option: str, produced: frozenset[str], why_no
 
 def _why_not(fixed_set: bool) -> dict[str, str]:
     reasons = {kind: f"it needs {option}" for kind, option in THRESHOLD_OPTIONS.items()}
-    reasons["thresholds"] = "it needs --busy-after, --waiting-after, --idle-after or --idle-every"
+    reasons["thresholds"] = "it needs --busy-after, --waiting-after, --idle-after, --idle-every or --context-above"
     if fixed_set:
         for kind in JOIN_LEAVE_KINDS:
             reasons[kind] = "a watch of named sessions has a fixed set"
@@ -173,6 +175,55 @@ def parse_duration(value: str) -> float:
         raise ValueError(f"cannot read the duration {value!r}; use for example 90s, 30m, 2h or 1h30m")
     parts = {k: int(v) if v else 0 for k, v in match.groupdict().items()}
     return float(parts["h"] * 3600 + parts["m"] * 60 + parts["s"])
+
+
+_PERCENT_RE = re.compile(r"^(\d+)%$")
+_TOKENS_RE = re.compile(r"^(\d+(?:\.\d+)?)([km])$")
+_TOKEN_SUFFIXES = {"k": 1_000, "m": 1_000_000}
+
+
+@dataclass(frozen=True, slots=True)
+class ContextMark:
+    """One ``--context-above`` mark: a percentage of the session's context window, or a number of tokens."""
+
+    label: str
+    """The mark as events show it: ``75%`` for a percentage, else the token count as given, such as ``150k``."""
+    percent: int | None = None
+    tokens: int | None = None
+
+    def tokens_for(self, size: int) -> int:
+        """The used tokens that reach this mark in a window of ``size`` tokens."""
+        if self.tokens is not None:
+            return self.tokens
+        assert self.percent is not None
+        return -(-size * self.percent // 100)
+
+
+def parse_context_mark(value: str) -> ContextMark:
+    """``75%`` or a bare ``75`` is a percentage from 1 to 99; ``150000``, ``150k`` or ``1M`` is a number of tokens.
+
+    A bare number below 100 is a percentage, from 100 on it is a token count.
+
+    Raises:
+        ValueError: the text is none of these, is zero, or is a percentage of 100 or more.
+    """
+    text = value.strip()
+    hint = "use for example 75%, 150k or 1M"
+    percent = _PERCENT_RE.match(text)
+    if percent is not None or text.isdigit() and int(text) < 100:
+        number = int(percent.group(1) if percent is not None else text)
+        if not 1 <= number <= 99:
+            raise ValueError(f"the percentage {value!r} is not from 1% to 99%")
+        return ContextMark(f"{number}%", percent=number)
+    if text.isdigit():
+        return ContextMark(text, tokens=int(text))
+    tokens = _TOKENS_RE.match(text.lower())
+    if tokens is None:
+        raise ValueError(f"cannot read the context mark {value!r}; {hint}")
+    count = int(float(tokens.group(1)) * _TOKEN_SUFFIXES[tokens.group(2)])
+    if count <= 0:
+        raise ValueError(f"the token count {value!r} must be more than zero")
+    return ContextMark(text, tokens=count)
 
 
 def format_duration(seconds: float) -> str:

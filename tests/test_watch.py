@@ -8,15 +8,23 @@ from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import Machine, RealTmux, fake_tmux, log_start, response, sid, write_records
+from conftest import Machine, RealTmux, compact_boundary, fake_tmux, log_start, response, sid, write_records
 from typer.testing import CliRunner
 
-from cc_session_tools.active import Filters, list_tmux_panes, resolve_profile_globs, resolve_tmux_session
+from cc_session_tools.active import (
+    Filters,
+    list_tmux_panes,
+    read_context_window,
+    resolve_profile_globs,
+    resolve_tmux_session,
+)
 from cc_session_tools.cli import app
 from cc_session_tools.watch_events import (
+    ContextMark,
     FilterError,
     WatchEvent,
     format_duration,
+    parse_context_mark,
     parse_duration,
     resolve_filter,
 )
@@ -427,8 +435,12 @@ def test_waiting_long(machine: Machine) -> None:
 
 def transcript(machine: Machine, name: str, *responses_at: float) -> None:
     """Write the transcript of the session ``name`` of the ``work`` profile, with a model response at each time."""
+    write_transcript(machine, name, [response(at) for at in responses_at])
+
+
+def write_transcript(machine: Machine, name: str, records: list[dict[str, Any]]) -> None:
     project = machine.config_dir("work") / "projects" / project_slug(machine.home / "elsewhere")
-    write_records(project / f"{sid(name)}.jsonl", [response(at) for at in responses_at])
+    write_records(project / f"{sid(name)}.jsonl", records)
 
 
 def idle_long(events: list[WatchEvent]) -> list[str]:
@@ -543,6 +555,150 @@ def test_idle_long_for_a_session_already_idle_at_the_start(machine: Machine) -> 
     t = tracker(thresholds=Thresholds(idle_after=(600, 3000)))
     [event] = t.poll(NOW + 1)
     assert (event.data["session"], event.data["threshold"]) == ("work/worker", "50m")
+
+
+# --- context thresholds ---
+
+
+def marks(*values: str) -> Thresholds:
+    return Thresholds(context_above=tuple(parse_context_mark(v) for v in values))
+
+
+def context_high(events: list[WatchEvent]) -> list[tuple[str, str]]:
+    return [(e.data["session"], e.data["mark"]) for e in events if e.kind == "context_high"]
+
+
+def test_context_high_once_per_mark_as_the_fill_grows(machine: Machine) -> None:
+    machine.session("work", "worker", status="busy")
+    records = [response(NOW - 60, used=600_000)]
+    write_transcript(machine, "worker", records)
+    t = tracker(thresholds=marks("75%", "90%"))
+    assert t.poll(NOW + 1) == []
+
+    records.append(response(NOW + 5, used=760_000))
+    write_transcript(machine, "worker", records)
+    [event] = t.poll(NOW + 10)
+    assert (event.kind, event.data) == (
+        "context_high",
+        {
+            "session": "work/worker",
+            "used": 760_000,
+            "size": 1_000_000,
+            "percent": 76,
+            "mark": "75%",
+            "mark_tokens": 750_000,
+            "model": "claude-opus-5-5",
+        },
+    )
+    records.append(response(NOW + 15, used=800_000))
+    write_transcript(machine, "worker", records)
+    assert t.poll(NOW + 20) == []
+
+    records.append(response(NOW + 25, used=900_000))
+    write_transcript(machine, "worker", records)
+    assert context_high(t.poll(NOW + 30)) == [("work/worker", "90%")]
+    assert t.poll(NOW + 40) == []
+
+
+def test_a_session_past_several_marks_at_the_start_gets_one_event_for_the_highest(machine: Machine) -> None:
+    machine.session("work", "worker")
+    machine.session("work", "small")
+    write_transcript(machine, "worker", [response(NOW - 60, used=950_000)])
+    write_transcript(machine, "small", [response(NOW - 60, used=10_000)])
+    t = tracker(thresholds=marks("75%", "90%"))
+    assert context_high(t.poll(NOW + 1)) == [("work/worker", "90%")]
+    assert t.poll(NOW + 10) == []
+
+
+def test_a_mark_is_reported_again_after_a_compaction_or_a_drop_below_it(machine: Machine) -> None:
+    machine.session("work", "worker", status="busy")
+    records = [response(NOW - 60, used=760_000)]
+    write_transcript(machine, "worker", records)
+    t = tracker(thresholds=marks("75%"))
+    assert context_high(t.poll(NOW + 1)) == [("work/worker", "75%")]
+
+    # After a compaction the fill is unknown until the next response, and the mark is armed again.
+    records.append(compact_boundary(NOW + 5))
+    write_transcript(machine, "worker", records)
+    assert t.poll(NOW + 10) == []
+    records.append(response(NOW + 15, used=200_000))
+    write_transcript(machine, "worker", records)
+    assert t.poll(NOW + 20) == []
+    records.append(response(NOW + 25, used=780_000))
+    write_transcript(machine, "worker", records)
+    assert context_high(t.poll(NOW + 30)) == [("work/worker", "75%")]
+
+    # A fill that drops below the mark without a compaction arms it too.
+    records.append(response(NOW + 35, used=700_000))
+    write_transcript(machine, "worker", records)
+    assert t.poll(NOW + 40) == []
+    records.append(response(NOW + 45, used=751_000))
+    write_transcript(machine, "worker", records)
+    assert context_high(t.poll(NOW + 50)) == [("work/worker", "75%")]
+
+
+def test_a_clear_arms_the_marks_again(machine: Machine) -> None:
+    pid = machine.session("work", "worker")
+    write_transcript(machine, "worker", [response(NOW - 60, used=760_000)])
+    t = tracker(thresholds=marks("75%"))
+    assert context_high(t.poll(NOW + 1)) == [("work/worker", "75%")]
+
+    # /clear: a new session id without a transcript, then a first turn that fills the context again.
+    machine.update(pid, sessionId=sid("cleared"))
+    assert t.poll(NOW + 10) == []
+    write_transcript(machine, "cleared", [response(NOW + 15, used=10_000)])
+    assert t.poll(NOW + 20) == []
+    write_transcript(machine, "cleared", [response(NOW + 15, used=10_000), response(NOW + 25, used=800_000)])
+    assert context_high(t.poll(NOW + 30)) == [("work/worker", "75%")]
+
+
+def test_token_marks_on_200k_and_1m_windows(machine: Machine) -> None:
+    machine.session("work", "small-window")
+    machine.session("work", "large-window")
+    write_transcript(machine, "small-window", [response(NOW - 60, model="claude-sonnet-4-5", used=160_000)])
+    write_transcript(machine, "large-window", [response(NOW - 60, used=160_000)])
+    t = tracker(thresholds=marks("150k", "75%"))
+    events = {e.data["session"]: e.data for e in t.poll(NOW + 1)}
+
+    # On a 200k window 75% is 150k tokens: one event, for the mark listed first.
+    assert events["work/small-window"] == {
+        "session": "work/small-window",
+        "used": 160_000,
+        "size": 200_000,
+        "percent": 80,
+        "mark": "150k",
+        "mark_tokens": 150_000,
+        "model": "claude-sonnet-4-5",
+    }
+    assert (events["work/large-window"]["mark"], events["work/large-window"]["mark_tokens"]) == ("150k", 150_000)
+    assert events["work/large-window"]["percent"] == 16
+
+
+def test_the_context_is_read_only_when_the_transcript_changed(machine: Machine) -> None:
+    machine.session("work", "worker", status="busy")
+    records = [response(NOW - 60, used=10_000)]
+    write_transcript(machine, "worker", records)
+    reads: list[float] = []
+    now = NOW
+
+    def read_context(session: Any, path: Path) -> Any:
+        reads.append(now)
+        return read_context_window(session, path)
+
+    t = SessionTracker(Selection(), marks("75%"), tmux_interval=0, read_context=read_context)
+    t.start(NOW)
+    for second in range(1, 8):
+        now = NOW + second
+        t.poll(now)
+    assert reads == [NOW + 1]
+
+    # The transcript is looked at every CONTEXT_INTERVAL seconds, at NOW+4 and NOW+7 above, and NOW+10 and NOW+13
+    # here, also while it grows on every poll.
+    for second in range(8, 15):
+        now = NOW + second
+        write_transcript(machine, "worker", [*records, response(now, used=20_000)])
+        t.poll(now)
+    assert reads == [NOW + 1, NOW + 10, NOW + 13]
 
 
 # --- ends ---
@@ -667,6 +823,7 @@ def test_filter_expands_groups_and_always_keeps_the_lifecycle() -> None:
         (["busy_long"], None, {}, "it needs --busy-after"),
         (["thresholds"], None, {}, "the group 'thresholds' has no events"),
         (["idle_long"], None, {}, "it needs --idle-after or --idle-every"),
+        (["context_high"], None, {}, "it needs --context-above"),
         (None, ["lifecycle"], {}, "cannot be excluded"),
         (["session_started"], None, {"fixed_set": True}, "never produces 'session_started'"),
         (["turns"], None, {"enabled_thresholds": ["busy_long"]}, "--busy-after: 'busy_long' is filtered out"),
@@ -675,6 +832,36 @@ def test_filter_expands_groups_and_always_keeps_the_lifecycle() -> None:
 def test_filter_errors(include: Any, exclude: Any, kwargs: dict[str, Any], message: str) -> None:
     with pytest.raises(FilterError, match=message):
         resolve_filter(include, exclude, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("value", "mark"),
+    [
+        ("75%", ContextMark("75%", percent=75)),
+        ("75", ContextMark("75%", percent=75)),
+        ("1%", ContextMark("1%", percent=1)),
+        ("99", ContextMark("99%", percent=99)),
+        ("100", ContextMark("100", tokens=100)),
+        ("150000", ContextMark("150000", tokens=150_000)),
+        ("150k", ContextMark("150k", tokens=150_000)),
+        ("1M", ContextMark("1M", tokens=1_000_000)),
+        ("1.5m", ContextMark("1.5m", tokens=1_500_000)),
+    ],
+)
+def test_context_marks(value: str, mark: ContextMark) -> None:
+    assert parse_context_mark(value) == mark
+
+
+@pytest.mark.parametrize("value", ["0", "0%", "100%", "150%", "-5%", "75.5%", "abc", "0k", "", "10x", "1e5"])
+def test_bad_context_marks(value: str) -> None:
+    with pytest.raises(ValueError):
+        parse_context_mark(value)
+
+
+def test_a_percentage_mark_rounds_up_to_whole_tokens() -> None:
+    assert parse_context_mark("75%").tokens_for(200_000) == 150_000
+    assert parse_context_mark("33%").tokens_for(1_000) == 330
+    assert parse_context_mark("1%").tokens_for(150) == 2
 
 
 def test_durations() -> None:

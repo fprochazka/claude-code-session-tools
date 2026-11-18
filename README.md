@@ -217,6 +217,7 @@ cc-session-tools watch --name 'w*-order-planner' --until=turn_finished   # stop 
 cc-session-tools watch w1-order-planner w2-order-planner       # these two sessions, until both have ended
 cc-session-tools watch --busy-after=30m --waiting-after=5m --stop-after-quiet=2h
 cc-session-tools watch --tmux-session current --idle-after=10m --idle-every=50m   # idle workers next to this session
+cc-session-tools watch --context-above 75% --context-above 90% --events=context_high   # sessions whose context fills up
 cc-session-tools watch --here --events-stream=stdout --timeout=10m
 ```
 
@@ -242,6 +243,7 @@ cc-session-tools watch --here --events-stream=stdout --timeout=10m
 | `waiting` | `turns` | `session`, `waiting_for` |
 | `busy_long`, `waiting_long` | `thresholds` | `session`, `after` |
 | `idle_long` | `thresholds` | `session`, `threshold`: the idle duration reached, such as `50m` |
+| `context_high` | `thresholds` | `session`, `used`, `size`, `percent`, `mark`: the mark reached as `75%` or as the token count given, `mark_tokens`: the mark in tokens for this window, `model` |
 | `renamed` | `changes` | `session` with the new name, `from`: the `session` string before the rename |
 | `cwd_changed` | `changes` | `session`, `to`: the new cwd |
 | `tmux_moved` | `changes` | `session`, `to`: `<tmux session>:<window index>`, or `null` when the tmux server no longer has the pane |
@@ -252,11 +254,15 @@ cc-session-tools watch --here --events-stream=stdout --timeout=10m
 
 One status transition can yield two events: `busy` to `idle` is `status_changed` and `turn_finished`, anything to `waiting` is `status_changed` and `waiting`. Take `--events=turns` for the derived events alone. A change is reported for a session that matched before it, so a rename out of a `--name` glob is `renamed`, then `session_unmatched`. A session that starts to match is reported once, as `session_matched` with its new state.
 
-`--events` and `--exclude-events` take kinds and groups, comma-separated and repeatable. `lifecycle` is always on. An unknown kind or group, or one this watch never produces, is an error at start: `busy_long` needs `--busy-after`, `waiting_long` needs `--waiting-after`, `idle_long` needs `--idle-after` or `--idle-every`, and a watch of named sessions never produces `session_started`, `session_matched` or `session_unmatched`.
+`--events` and `--exclude-events` take kinds and groups, comma-separated and repeatable. `lifecycle` is always on. An unknown kind or group, or one this watch never produces, is an error at start: `busy_long` needs `--busy-after`, `waiting_long` needs `--waiting-after`, `idle_long` needs `--idle-after` or `--idle-every`, `context_high` needs `--context-above`, and a watch of named sessions never produces `session_started`, `session_matched` or `session_unmatched`.
 
-**Ends and thresholds.** `--until=<kind>` stops after the first reported event of that kind. `--timeout` stops that long after the start, `--stop-after-quiet` when nothing was reported for that long; `busy_long`, `waiting_long` and `idle_long` do not count as activity. `--busy-after` reports `busy_long` once per busy stretch of a session, `--waiting-after` reports `waiting_long` once per waiting stretch. A stretch starts at the record's `statusUpdatedAt`, so a session that was already busy for an hour when the watch started gets its `busy_long` at once.
+**Ends and thresholds.** `--until=<kind>` stops after the first reported event of that kind. `--timeout` stops that long after the start, `--stop-after-quiet` when nothing was reported for that long; `busy_long`, `waiting_long`, `idle_long` and `context_high` do not count as activity. `--busy-after` reports `busy_long` once per busy stretch of a session, `--waiting-after` reports `waiting_long` once per waiting stretch. A stretch starts at the record's `statusUpdatedAt`, so a session that was already busy for an hour when the watch started gets its `busy_long` at once.
 
 **Idle thresholds.** `--idle-after` reports `idle_long` once per idle stretch, when a session has had the status `idle` for that long since its last model response, in its transcript or any subagent's. It is repeatable: `--idle-after 10m --idle-after 50m` gives two events per stretch. `--idle-every` reports `idle_long` again at every multiple of its duration within the stretch, for example to decide whether to keep a session's prompt cache warm. A stretch ends at the next model response, so a message that makes the session answer starts the count again. A turn without a response, such as a local command, does not. A session without any response counts from its start. A resumed session counts from the start of its process, not from a response of an earlier run, and a session whose id changes by `/clear` or an in-process `/resume` counts from that change: during the watch the record shows it, before the watch the auth-switch start log does. When a watch starts, or polls late, past several thresholds of one stretch, it reports the longest one once, so a session idle for three hours when the watch starts gets one `idle_long`. The watcher reads the end of the transcript when a session becomes idle and again before it reports `idle_long`, because a background subagent can answer while its session stays idle.
+
+**Context thresholds.** `--context-above` reports `context_high` when a session's context fill reaches a mark, so a coordinator can compact a worker before its context runs out. The fill is `context_window.used` of `list-active --json`: the input and cache tokens of the newest response of the main conversation. The option is repeatable: `--context-above 75% --context-above 90%` gives one event at each mark. A mark is a percentage of the session's context window, such as `75%`, from `1%` to `99%`. A bare number below 100 is a percentage too, but write the `%`: the number alone is easy to misread as tokens. A number from 100 on is a token count, such as `150000`, and `k` and `M` stand for thousands and millions, as in `150k` or `1M`. A token mark is the same number of tokens on every window: `150k` is 75% of a 200k window and 15% of a 1M one, and a mark above a session's window never fires for it. `75%` needs no quotes in bash or zsh, which treat `%` as special only in job control commands such as `fg %1`.
+
+Each mark is reported once, and again only after the fill dropped below it: after a compaction, after a `/clear`, or when a smaller response follows. A session that passes several marks between two reads, or that is past them when the watch starts, gets one event, for the highest mark. The watcher looks at a session's transcript every 3 seconds and reads the fill only when the transcript changed since the last read. A read takes 1 to 2 milliseconds, also for a transcript of 430 MB, because it reads backwards from the end to the newest response. A session that passes a mark gets its event within about 3 seconds of the response that passed it.
 
 Durations are `90s`, `30m`, `2h`, `1h30m` or plain seconds.
 
@@ -286,9 +292,9 @@ Events that arrive within 3 seconds go out as one message, and a batch above 64 
 
 **Changelog.** Every reported event is also appended to `watch-<time>-<pid>.events.jsonl`, under `<session scratchpad>/cc-session-tools/` when the command runs under a session, else under `$TMPDIR/cc-session-tools-<uid>/`. The header names it. Nothing deletes it.
 
-**Cost.** No daemon: the watcher stats every registry record of every profile once a second, reading a record again only when its mtime or size moved, and lists the sessions through cc-blackbox only when a new record appears. tmux is asked once every 3 seconds. A status that lasts less than one poll can be missed.
+**Cost.** No daemon: the watcher stats every registry record of every profile once a second, reading a record again only when its mtime or size moved, and lists the sessions through cc-blackbox only when a new record appears. tmux is asked once every 3 seconds. With `--context-above`, the transcript of every matching session is stat'ed every 3 seconds and its context fill read when it changed. A status that lasts less than one poll can be missed.
 
-Exit codes: `0` when the watch ends, whatever the reason. `1` when SESSION matches nothing or several sessions, names the own session, a `--profile` glob matches no profile, `--tmux-session` matches no tmux session, or `claude-message` is not possible. `2` for a usage error: an unknown event kind or group, a bad duration, an `--until` kind the watch does not report, or `--tmux-session` with `--no-tmux`.
+Exit codes: `0` when the watch ends, whatever the reason. `1` when SESSION matches nothing or several sessions, names the own session, a `--profile` glob matches no profile, `--tmux-session` matches no tmux session, or `claude-message` is not possible. `2` for a usage error: an unknown event kind or group, a bad duration, a `--context-above` mark that is not a percentage from 1% to 99% or a token count above zero, an `--until` kind the watch does not report, or `--tmux-session` with `--no-tmux`.
 
 ## Requirements
 

@@ -13,7 +13,7 @@ import typer
 from rich.table import Table
 from rich.text import Text
 
-from .active import SessionLookupError
+from .active import SessionLookupError, context_window_text
 from .console import build_console
 from .inspection import DEFAULT_DAYS, find, to_inspect_json
 from .watch_events import format_duration
@@ -96,6 +96,11 @@ def _print_details(data: dict[str, object]) -> None:
             lines = _cost_lines(value, running=data["state"] == "running")  # type: ignore[arg-type]
             for index, line in enumerate(lines):
                 table.add_row(Text(key if index == 0 else ""), Text(line))
+            continue
+        if key == "context_window" and isinstance(value, dict):
+            text = context_window_text(value)
+            text.append(f"  {value['model'] or 'unknown model'}, size from {value['size_source']}", style="dim")
+            table.add_row(Text(key), text)
             continue
         if key == "screen" and isinstance(value, dict):
             table.add_row(Text(key), Text(_screen(value)))

@@ -322,6 +322,7 @@ INSPECT_KEYS = (
     "scratchpad_dir_inferred",
     "transcript_path",
     "cost",
+    "context_window",
     "record_path",
     "alive",
     "profile_starts",

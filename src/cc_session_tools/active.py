@@ -29,6 +29,7 @@ from cc_blackbox import (
     AmbiguousSession,
     ClaudeBlackboxError,
     ClaudeProfile,
+    ContextWindow,
     CostState,
     ProfileNotFound,
     SessionNotFound,
@@ -38,6 +39,7 @@ from cc_blackbox import (
     list_profiles,
     read_session_transcript,
 )
+from rich.text import Text
 
 from .discovery import Scope
 from .gitrepo import GitLocation, git_location
@@ -516,14 +518,48 @@ def cost_json(cost: CostState | None) -> dict[str, Any] | None:
     }
 
 
+def context_window_json(window: ContextWindow | None) -> dict[str, Any] | None:
+    """The ``context_window`` object of ``--json``: how full the context was at the newest response of the main
+    conversation, as the session's status line shows it."""
+    if window is None:
+        return None
+    return {
+        "size": window.size,
+        "used": window.used,
+        "percent": window.percent,
+        "compacted": window.compacted,
+        "model": window.model,
+        "size_source": window.size_source,
+        "measured_at": _iso(window.measured_at),
+    }
+
+
+def _tokens(count: int) -> str:
+    # Thousands are cut off, as the status line cuts them off.
+    return f"{count // 1_000_000}M" if count >= 1_000_000 and count % 1_000_000 == 0 else f"{count // 1000}k"
+
+
+def context_window_text(window: Mapping[str, Any] | None) -> Text:
+    """``312k/1M 31%``, or ``0k/1M compacted`` after a compaction. The size is dimmed when it is Claude Code's default
+    for an unknown model, a guess."""
+    if window is None:
+        return Text("-", style="dim")
+    text = Text(f"{_tokens(window['used'])}/")
+    text.append(_tokens(window["size"]), style="dim" if window["size_source"] == "default" else "")
+    text.append(" compacted" if window["compacted"] else f" {window['percent']}%")
+    return text
+
+
 def transcript_json(transcript: SessionTranscript | None) -> dict[str, Any]:
-    """The keys that come from the transcript: ``last_activity_at``, ``last_record_at`` and ``cost``."""
+    """The keys that come from the transcript: ``last_activity_at``, ``last_record_at``, ``cost`` and
+    ``context_window``."""
     if transcript is None:
-        return {"last_activity_at": None, "last_record_at": None, "cost": None}
+        return {"last_activity_at": None, "last_record_at": None, "cost": None, "context_window": None}
     return {
         "last_activity_at": _iso(transcript.last_model_activity_at),
         "last_record_at": _iso(transcript.last_record_at),
         "cost": cost_json(transcript.cost_state),
+        "context_window": context_window_json(transcript.context_window),
     }
 
 
@@ -582,6 +618,8 @@ def to_json(view: SessionView) -> dict[str, Any]:
         "scratchpad_dir_inferred": s.scratchpad_dir_inferred,
         "transcript_path": _path(s.transcript_path),
         "cost": from_transcript["cost"],
+        # The running session's own value applies CLAUDE_CODE_DISABLE_1M_CONTEXT, which the transcript cannot see.
+        "context_window": context_window_json(s.context_window),
         "record_path": str(s.record_path),
         "alive": True,
         "raw": _plain(s.raw),

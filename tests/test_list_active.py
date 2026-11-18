@@ -8,10 +8,21 @@ from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import Machine, RealTmux, fake_tmux, git, log_start, response, sid, write_records
+from conftest import (
+    Machine,
+    RealTmux,
+    compact_boundary,
+    fake_tmux,
+    git,
+    log_start,
+    response,
+    sid,
+    stamp,
+    write_records,
+)
 from typer.testing import CliRunner
 
-from cc_session_tools.active import list_tmux_panes, pane_id_of
+from cc_session_tools.active import context_window_text, list_tmux_panes, pane_id_of
 from cc_session_tools.cli import app
 from cc_session_tools.list_active_cmd import _middle_ellipsis
 
@@ -433,6 +444,7 @@ JSON_KEYS = [
     "scratchpad_dir_inferred",
     "transcript_path",
     "cost",
+    "context_window",
     "record_path",
     "alive",
     "raw",
@@ -458,6 +470,7 @@ def test_json_shape(machine: Machine, fake_bin: Path) -> None:
     assert data["git_branch"] is None and data["git_repo_root"] is None
     assert data["transcript_path"] is None
     assert data["last_activity_at"] is None and data["last_record_at"] is None and data["cost"] is None
+    assert data["context_window"] is None
     assert data["bridge_session_id"] is None
     assert data["alive"] is True
     assert data["raw"]["pid"] == pid
@@ -540,3 +553,47 @@ def test_list_tmux_panes_parses_one_call(fake_bin: Path) -> None:
 )
 def test_pane_id_of(recorded: str | None, pane: str | None) -> None:
     assert pane_id_of(recorded) == pane
+
+
+# --- the context window ---
+
+
+def test_the_context_window_shows_the_fill_of_the_newest_response(machine: Machine, fake_bin: Path) -> None:
+    fake_tmux(fake_bin, [])
+    cwd = machine.home / "proj"
+    for name in ("filled", "compacted", "fresh"):
+        machine.session("work", name, cwd=str(cwd))
+    project = machine.config_dir("work") / "projects" / project_slug(cwd)
+    first = {"type": "user", "cwd": str(cwd), "timestamp": stamp(time.time() - 60), "message": {"content": "hi"}}
+    answered = response(time.time() - 30, used=312_345) | {"requestedModel": "claude-opus-5-5"}
+    write_records(project / f"{sid('filled')}.jsonl", [first, answered])
+    write_records(project / f"{sid('compacted')}.jsonl", [first, answered, compact_boundary(time.time() - 20)])
+    write_records(project / f"{sid('fresh')}.jsonl", [first])
+
+    assert one("filled")["context_window"] == {
+        "size": 1_000_000,
+        "used": 312_345,
+        "percent": 31,
+        "compacted": False,
+        "model": "claude-opus-5-5",
+        "size_source": "model_table",
+        "measured_at": f"{answered['timestamp'][:19]}+00:00",
+    }
+    compacted = one("compacted")["context_window"]
+    assert (compacted["used"], compacted["percent"], compacted["compacted"]) == (0, 0, True)
+    assert one("fresh")["context_window"] is None
+
+    result = invoke()
+    assert result.exit_code == 0, result.output
+    assert result.stdout.splitlines()[0].split()[:5] == ["Profile", "Name", "Status", "Active", "Ctx"]
+    lines = {line.split()[1]: line for line in result.stdout.splitlines()[1:]}
+    assert "312k/1M 31%" in lines["filled"]
+    assert "0k/1M compacted" in lines["compacted"]
+
+
+def test_the_context_window_dims_a_size_assumed_for_an_unknown_model() -> None:
+    window = {"size": 200_000, "used": 64_999, "percent": 32, "compacted": False, "size_source": "default"}
+    text = context_window_text(window)
+    assert text.plain == "64k/200k 32%"
+    assert [text.plain[span.start : span.end] for span in text.spans if span.style == "dim"] == ["200k"]
+    assert not [span for span in context_window_text({**window, "size_source": "model_table"}).spans if span.style]

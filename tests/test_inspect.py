@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import Machine, cost_state, fake_tmux, log_start, response, sid, stamp, write_records
+from conftest import Machine, compact_boundary, cost_state, fake_tmux, log_start, response, sid, stamp, write_records
 from typer.testing import CliRunner
 
 from cc_session_tools.cli import app
@@ -58,6 +58,7 @@ LIST_ACTIVE_KEYS = [
     "scratchpad_dir_inferred",
     "transcript_path",
     "cost",
+    "context_window",
     "record_path",
     "alive",
     "raw",
@@ -510,3 +511,19 @@ def test_screen_of_an_ended_session(machine: Machine) -> None:
         "captured_at": None,
         "lines": None,
     }
+
+
+def test_an_ended_session_reports_its_context_window_and_a_compaction(machine: Machine) -> None:
+    now = time.time()
+    ended(machine, "work", "full", names=["full"], tail=[response(now - 7200, used=150_000, model="claude-sonnet-4-5")])
+    compacted = [response(now - 7200, used=90_000), compact_boundary(now - 60)]
+    ended(machine, "work", "compacted", names=["compacted"], tail=compacted)
+
+    window = json_of("full")["context_window"]
+    assert (window["size"], window["used"], window["percent"], window["compacted"]) == (200_000, 150_000, 75, False)
+    assert (window["model"], window["size_source"]) == ("claude-sonnet-4-5", "model_table")
+    assert "150k/200k 75%  claude-sonnet-4-5, size from model_table" in invoke("full").stdout
+
+    window = json_of("compacted")["context_window"]
+    assert (window["used"], window["compacted"], window["measured_at"]) == (0, True, f"{stamp(now - 60)[:19]}+00:00")
+    assert "0k/1M compacted  claude-opus-5-5" in invoke("compacted").stdout

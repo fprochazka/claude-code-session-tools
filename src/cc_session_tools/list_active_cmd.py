@@ -28,6 +28,8 @@ from .active import (
     activity_of,
     apply_filters,
     build_views,
+    context_window_json,
+    context_window_text,
     list_tmux_panes,
     process_role,
     resolve_profile_globs,
@@ -138,13 +140,14 @@ def _print_table(views: list[SessionView]) -> None:
             *([Text(role or "")] if with_role else []),
             Text(_status(s)),
             _active(s),
+            context_window_text(context_window_json(s.context_window)),
         ]
         rows.append((*pinned, _where(view), _pane(view)))
     # Borderless like the search table, but not expanded: the columns are short and stay next to each other. When a
     # row is wider than the console, rich shrinks every column; the leading ones are pinned to their content, so only
     # the branch and the tmux session lose their tail. The pane id leads its cell and survives.
     table = Table(show_lines=False, box=None, pad_edge=False)
-    headers = ("Profile", "Name", *(("Role",) if with_role else ()), "Status", "Active")
+    headers = ("Profile", "Name", *(("Role",) if with_role else ()), "Status", "Active", "Ctx")
     for index, header in enumerate(headers):
         width = max([len(header)] + [row[index].cell_len for row in rows])
         table.add_column(header, no_wrap=True, min_width=width)
@@ -194,9 +197,11 @@ def list_active(
     """List the running Claude Code sessions of every profile.
 
     One row per session, by profile and then start time. Role is the auth-switch role its process was started with,
-    a column only when a session has one. Active is the time since the session's last model response, in
-    its transcript or a subagent's; a session without one shows its start, dimmed. The tmux pane is the pane id with the
-    tmux session and window that pane is in now, read from the tmux server. The inspect command shows one session.
+    a column only when a session has one. Active is the time since the session's last model response, in its
+    transcript or a subagent's; a session without one shows its start, dimmed. Ctx is how full the context is, as the
+    session's status line shows it; after a compaction it is 0 until the next response. The tmux pane is the pane id
+    with the tmux session and window that pane is in now, read from the tmux server. The inspect command shows one
+    session.
     """
     if ctx.args:
         # The single-session mode moved to inspect; say where instead of failing with a bare usage error.

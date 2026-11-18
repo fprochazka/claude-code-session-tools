@@ -195,13 +195,17 @@ def write_records(path: Path, records: list[dict[str, Any]]) -> Path:
     return path
 
 
-def response(epoch_seconds: float, *, model: str = "claude-opus-5-5") -> dict[str, Any]:
-    """An assistant record: a model response at ``epoch_seconds``."""
-    return {
-        "type": "assistant",
-        "timestamp": stamp(epoch_seconds),
-        "message": {"role": "assistant", "model": model, "content": [{"type": "text", "text": "ok"}]},
-    }
+def response(epoch_seconds: float, *, model: str = "claude-opus-5-5", used: int | None = None) -> dict[str, Any]:
+    """An assistant record: a model response at ``epoch_seconds``, with ``used`` context tokens when given."""
+    message: dict[str, Any] = {"role": "assistant", "model": model, "content": [{"type": "text", "text": "ok"}]}
+    if used is not None:
+        message["usage"] = {"input_tokens": 2, "cache_read_input_tokens": used - 2, "output_tokens": 300}
+    return {"type": "assistant", "timestamp": stamp(epoch_seconds), "message": message}
+
+
+def compact_boundary(epoch_seconds: float) -> dict[str, Any]:
+    """The record Claude Code writes when a session compacts its context."""
+    return {"type": "system", "subtype": "compact_boundary", "timestamp": stamp(epoch_seconds)}
 
 
 def cost_state(total: float) -> dict[str, Any]:

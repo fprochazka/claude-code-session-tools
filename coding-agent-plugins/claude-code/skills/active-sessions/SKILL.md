@@ -1,13 +1,13 @@
 ---
 name: active-sessions
-description: CLI for listing the Claude Code sessions that run on this machine right now, across every Claude Code profile — their profile, name, status, context fill, branch, live tmux pane and messaging address — and for inspecting one session, running or ended. Use when you need to find another running session, check which sessions are busy, find the tmux pane or profile a session runs in, get a session's messaging address before sending it a message, peek at what another session shows, check whether its prompt is empty or it shows a startup dialog or permission prompt before typing into its pane, or find out what became of a session that ended and how to resume it. Triggered by requests involving running sessions, other agents, "which sessions are busy", "where is session X", "what is the pane of", "is X still running", "which sessions worked in the last hour", "what did session X cost", "how full is the context of", "is it safe to type into", or tmux panes of Claude sessions.
-trigger-keywords: running sessions, active sessions, live sessions, other sessions, tmux pane, session status, busy sessions, messaging address, ended session, resume session, recently active sessions, session cost, context window, context fill, pane screen, empty prompt, startup dialog, permission prompt, list-active, inspect
-allowed-tools: Bash(cc-session-tools --help), Bash(cc-session-tools list-active:*), Bash(cc-session-tools inspect:*)
+description: CLI for listing the Claude Code sessions that run on this machine right now, across every Claude Code profile — their profile, name, status, context fill, branch, live tmux pane and messaging address — and for inspecting one session, running or ended. Use when you need to find another running session, check which sessions are busy, find the tmux pane or profile a session runs in, get a session's messaging address before sending it a message, peek at what another session shows, check whether its prompt is empty or it shows a startup dialog or permission prompt before typing into its pane, or find out what became of a session that ended and how to resume it, or see how much of each profile's rate limits (5-hour and weekly) is used. Triggered by requests involving running sessions, other agents, "which sessions are busy", "where is session X", "what is the pane of", "is X still running", "which sessions worked in the last hour", "what did session X cost", "how full is the context of", "is it safe to type into", "rate limits", "usage limits", "which profile has quota left", or tmux panes of Claude sessions.
+trigger-keywords: running sessions, active sessions, live sessions, other sessions, tmux pane, session status, busy sessions, messaging address, ended session, resume session, recently active sessions, session cost, context window, context fill, pane screen, empty prompt, startup dialog, permission prompt, rate limits, usage limits, quota, list-active, inspect, limits
+allowed-tools: Bash(cc-session-tools --help), Bash(cc-session-tools list-active:*), Bash(cc-session-tools inspect:*), Bash(cc-session-tools limits:*)
 ---
 
-# cc-session-tools list-active and inspect
+# cc-session-tools list-active, inspect and limits
 
-`list-active` lists the running sessions; `inspect` shows one session, running or ended.
+`list-active` lists the running sessions; `inspect` shows one session, running or ended; `limits` shows the rate limits of every profile's account.
 
 ## list-active
 
@@ -209,3 +209,39 @@ Every tmux command accepts the pane id as a target, wherever the window has move
 - `tmux send-keys -t %14 …` types into the session. Never do this without the user's explicit request; to talk to another session, send it a message at its `messaging_address` instead. When you do type, run `cc-session-tools inspect <session> --screen --json` first and type only when `.screen.state` is `prompt_empty`.
 
 When `tmux_state` is `gone`, the tmux server has no pane with that id, so the session no longer runs in the pane it started in. When it is `unknown`, this process cannot reach the tmux server the session runs in.
+
+## limits
+
+```text
+Usage: cc-session-tools limits [OPTIONS]
+
+  Show the rate limits of every profile's account: the 5-hour and weekly
+  windows, and a gateway's spend limit.
+
+  claude-code-auth-switch's launchers record what Claude Code passes to the
+  status line, so a profile has data once a session started through a launcher
+  got a response. The values are the last ones a session reported, as old as
+  Measured says, and stay valid until their window resets; usage on other
+  machines or claude.ai shows with the next response here. A window whose
+  reset time has passed shows as reset, with the usage from before the reset.
+
+Options:
+  -p, --profile <str>  Only the profiles whose name matches this glob, for
+                       example 'work*'. Repeatable.
+  --json               Print every profile's limits as a JSON array.
+  --help               Show this message and exit.
+```
+
+The values come from the status line of claude-code-auth-switch's launchers, which records what Claude Code passes it; a profile without such a session shows `no data` (`windows` is `null` in `--json`). Read them as a lower bound with no expiry:
+
+- **`measured_at`** is when a session last reported the window. The value stays valid until `resets_at`, however old, but usage on another machine or claude.ai is not in it until a session here gets its next response.
+- **`reset: true`** means `resets_at` had passed when the command ran: `used_percentage` is the usage from before the reset, and the current usage is unknown, not 0.
+- Windows: `five_hour` and `seven_day` for a claude.ai subscription, `spend_limit` for a Claude apps gateway (its `raw` holds `used_usd`, `limit_usd` and `period`), and any window a newer Claude Code adds.
+
+```bash
+# Weekly usage of each profile, highest first
+cc-session-tools limits --json | jq -r 'map(select(.windows.seven_day)) | sort_by(-.windows.seven_day.used_percentage) | .[] | "\(.windows.seven_day.used_percentage)%\t\(.profile)"'
+
+# Profiles with five-hour headroom left, current windows only
+cc-session-tools limits --json | jq -r '.[] | select(.windows.five_hour and (.windows.five_hour.reset or .windows.five_hour.used_percentage < 80)) | .profile'
+```

@@ -2,7 +2,7 @@
 
 Commands and skills for finding and distilling past Claude Code sessions, and for listing the running ones, with the `cc-session-tools` CLI.
 
-The CLI has five subcommands. `search` lists and greps the sessions that belong to the directory you run it in. `distill` condenses one session transcript into markdown. `list-active` lists the sessions that run on the machine now, in every profile, with their live tmux pane. `inspect` shows every field of one session, running or ended. `watch` reports changes to the running sessions as JSON events, for an agent that waits for other sessions.
+The CLI has six subcommands. `search` lists and greps the sessions that belong to the directory you run it in. `distill` condenses one session transcript into markdown. `list-active` lists the sessions that run on the machine now, in every profile, with their live tmux pane. `inspect` shows every field of one session, running or ended. `watch` reports changes to the running sessions as JSON events, for an agent that waits for other sessions. `limits` shows the rate limits of every profile's account.
 
 ## Why
 
@@ -52,7 +52,7 @@ This repository is also a [Claude Code](https://docs.anthropic.com/en/docs/claud
 - `/session-tools:distill <session-id | latest>` — condense one session into a recap at `./.claude/plans/session-distill-<slug>.md`.
 - The `session-tools` skill, which teaches Claude `search` and `distill` and how they scope their results.
 - The `session-watch` skill, which teaches Claude `watch`: waiting for other sessions to finish a turn, wait for their user or end, with the events arriving as messages, and never watching its own session.
-- The `active-sessions` skill, which teaches Claude `list-active` and `inspect`: finding another session, running or ended, its profile, tmux pane, messaging address and resume command, through `--json` and `jq`.
+- The `active-sessions` skill, which teaches Claude `list-active`, `inspect` and `limits`: finding another session, running or ended, its profile, tmux pane, messaging address and resume command, and how much of each profile's rate limits is left, through `--json` and `jq`.
 
 Install the CLI first, then add the marketplace and the plugin:
 
@@ -296,6 +296,24 @@ Events that arrive within 3 seconds go out as one message, and a batch above 64 
 
 Exit codes: `0` when the watch ends, whatever the reason. `1` when SESSION matches nothing or several sessions, names the own session, a `--profile` glob matches no profile, `--tmux-session` matches no tmux session, or `claude-message` is not possible. `2` for a usage error: an unknown event kind or group, a bad duration, a `--context-above` mark that is not a percentage from 1% to 99% or a token count above zero, an `--until` kind the watch does not report, or `--tmux-session` with `--no-tmux`.
 
+### limits
+
+```bash
+cc-session-tools limits                       # every profile and its rate limits
+cc-session-tools limits --profile 'work*'     # profiles whose name matches a glob
+cc-session-tools limits --json | jq …         # every field, as JSON
+```
+
+Claude Code passes an account's rate limits only to its [status line](https://code.claude.com/docs/en/statusline) command. The launchers of [claude-code-auth-switch](https://github.com/fprochazka/claude-code-auth-switch) put a status line in front of yours that records them in `auth-switch-rate-limits.json` in the profile dir, merged from every session of the profile, and [cc-blackbox](https://github.com/fprochazka/cc-blackbox) reads that file. A profile has data once a session started through such a launcher got a response.
+
+The table has a row per profile and the columns **Profile**, **5h** and **7d** (the five-hour and weekly windows of a claude.ai subscription), **Spend** (the spend limit of a Claude apps gateway, only when a profile has one) and **Measured** (how long ago a session last reported the values). A window shows as `23% · resets in 1h12m (16:40)`, green below 65%, yellow below 85% and red from there. A window whose reset time has passed shows dimmed as `reset 14:00 · was 87%`. A profile without data shows `no data`: no session of it was started through a launcher yet, or its account has no rate limits, as with an API key or Vertex AI.
+
+**The values are a lower bound with no expiry.** They are the last ones a session reported and stay valid until their window resets, whether a session still runs or not; Measured says how old they are. Usage on another machine or on claude.ai shows only with the next response of a session here. After a reset the current usage is unknown until a session reports the new window, so the table shows the usage from before the reset instead of 0.
+
+**`--json`** prints an array with one object per profile: `profile`, `config_dir`, `path` (the file), `measured_at`, `written_at`, `session_id`, `model` and `claude_version` of the session that wrote the file last, and `windows`, keyed by window name (`five_hour`, `seven_day`, `spend_limit`, and any window a newer Claude Code adds), each with `used_percentage`, `resets_at`, `reset` (whether `resets_at` had passed when the command ran; never `true` without `resets_at`), `measured_at`, `changed_at`, `session_id` and `raw` (the window as the file holds it, with `used_usd`, `limit_usd` and `period` for a spend limit). Every key but `profile` and `config_dir` is `null` for a profile without data.
+
+Exit codes: `0`, also when no profile has data. `1` when a `--profile` glob matches no profile.
+
 ## Requirements
 
 - Python 3.12+
@@ -318,6 +336,7 @@ src/cc_session_tools/
 ├── watch_cmd.py       # the `watch` command: options, header, stream and changelog
 ├── watcher.py         # the polling loop: registry records in, session events out
 ├── watch_events.py    # event kinds and groups, the --events filter, durations
+├── limits_cmd.py      # the `limits` command
 ├── active.py          # running sessions with the live tmux pane and git location, the JSON shape
 ├── console.py         # the console every table prints on
 ├── gitrepo.py         # git worktree resolution and the branch of a dir

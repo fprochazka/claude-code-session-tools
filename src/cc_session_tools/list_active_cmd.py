@@ -37,7 +37,6 @@ from .active import (
     shorten_home,
     sort_sessions,
     to_json,
-    waiting_for,
 )
 from .console import build_console
 from .discovery import resolve_scope
@@ -85,9 +84,9 @@ def tmux_session_filter(
     return resolve_tmux_session(value, panes), panes
 
 
-def _status(session: ActiveSession) -> str:
-    reason = waiting_for(session)
-    return f"{session.status}: {reason}" if reason is not None else session.status or "-"
+def _status(view: SessionView) -> str:
+    reason = view.waiting_for
+    return f"{view.session.status}: {reason}" if reason is not None else view.session.status or "-"
 
 
 def _active(session: ActiveSession) -> Text:
@@ -138,7 +137,7 @@ def _print_table(views: list[SessionView]) -> None:
             Text(s.profile.name),
             Text(s.name) if s.name else Text(f"pid:{s.pid}", style="dim"),
             *([Text(role or "")] if with_role else []),
-            Text(_status(s)),
+            Text(_status(view)),
             _active(s),
             context_window_text(context_window_json(s.context_window)),
         ]

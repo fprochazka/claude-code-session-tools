@@ -153,7 +153,9 @@ The table has seven or eight columns: **Profile**, **Name** (`pid:<pid>` dimmed 
 
 **Filters** combine with AND. `--profile` takes a glob, matched case-sensitively against the profile names, so a plain name matches only that profile. A glob that matches no profile is an error that lists the known ones. `--here` uses the scope of `search` and matches the session's current cwd. `--tmux-session <name>` keeps the sessions whose pane is in that tmux session now, by the tmux server, so a window moved there with `move-window` counts; `current` is the tmux session of `$TMUX_PANE`, the pane the command runs in. A name no tmux session has, `current` outside tmux, or a tmux server that does not answer is an error that lists the tmux sessions. `--role` takes a glob, matched case-sensitively against the session's role, and is repeatable; a session without a role never matches it. `--active-within` takes a duration like `watch` does (`90s`, `30m`, `2h`, `1h30m`) and keeps the sessions whose last model response, or start when they have no response yet, is within it.
 
-**`--json`** prints an array of objects. The keys are a stable contract: snake_case, ISO 8601 timestamps, paths as strings, `null` for a missing value. They cover every field of the registry record (`raw` holds the record itself) plus derived ones: `role`, `waiting_for`, `tmux_pane`, `tmux_state`, `tmux_live`, `tmux_recorded`, `messaging_address`, `git_branch`, `git_worktree_root`, `git_repo_root` and `transcript_path`, and from the transcript `last_activity_at` (the last model response), `last_record_at` (the newest record of any kind), `cost` and `context_window`. `updated_at` is the last change of the registry record, not activity. The [active-sessions skill](coding-agent-plugins/claude-code/skills/active-sessions/SKILL.md) documents each key.
+**`--json`** prints an array of objects. The keys are a stable contract: snake_case, ISO 8601 timestamps, paths as strings, `null` for a missing value. They cover every field of the registry record (`raw` holds the record itself) plus derived ones: `role`, `waiting_for` (see below), `tmux_pane`, `tmux_state`, `tmux_live`, `tmux_recorded`, `messaging_address`, `git_branch`, `git_worktree_root`, `git_repo_root` and `transcript_path`, and from the transcript `last_activity_at` (the last model response), `last_record_at` (the newest record of any kind), `cost` and `context_window`. `updated_at` is the last change of the registry record, not activity. The [active-sessions skill](coding-agent-plugins/claude-code/skills/active-sessions/SKILL.md) documents each key.
+
+**`waiting_for`** is what a `waiting` session waits for: the record's `waitingFor`, such as `permission prompt`, and `null` in every other status. The table shows it as `waiting: <reason>`. Claude Code's record says `permission prompt` for the plan approval dialog of plan mode too, so for a session in that state that runs in tmux, `list-active` captures its pane and reports `plan approval` when the pane shows that dialog, as `inspect --screen` classifies it as `plan_approval`. That costs one `tmux capture-pane` per such session. A session outside tmux, or a pane that cannot be captured, keeps `permission prompt`. `raw.waitingFor` keeps the record's value.
 
 **`context_window`** is how full the session's context is: the same numbers Claude Code gives its status line. The object has `used` (the input and cache tokens of the newest response of the main conversation), `size` (the window in tokens), `percent`, `compacted`, `model`, `size_source` and `measured_at` (the time of that response, or of the compaction after it). Output tokens do not count, and neither do subagents, which have contexts of their own. It is `null` for a session without a response, as right after a `/clear`.
 
@@ -236,14 +238,14 @@ cc-session-tools watch --here --events-stream=stdout --timeout=10m
 
 | Kind | Group | `data` |
 |------|-------|--------|
-| `watch_started` | `lifecycle` | `selection`, and `sessions`: `{session, status}` for every matching session, plus `waiting_for` when it waits |
+| `watch_started` | `lifecycle` | `selection`, and `sessions`: `{session, status}` for every matching session, plus `waiting_for` when it waits, `plan approval` included |
 | `watch_ended` | `lifecycle` | `reason`: `until` (with `event` and `seq`), `timeout`, `quiet` (with `stop_after_quiet`), `sessions_ended`, `session_gone`, or `signal SIGTERM`/`signal SIGINT` |
 | `session_started`, `session_matched` | `membership` | `session`, `status`: a new session that matches, or a running one that starts to |
 | `session_ended` | `membership` | `session`, `reason`: `record_removed` (a clean exit) or `process_gone` |
 | `session_unmatched` | `membership` | `session`: it no longer matches the filters |
 | `status_changed` | `status` | `session`, `from`, `to`, and `waiting_for` when `to` is `waiting` |
 | `turn_finished` | `turns` | `session`, `from`: `busy` or `waiting`, the status before `idle` |
-| `waiting` | `turns` | `session`, `waiting_for` |
+| `waiting` | `turns` | `session`, `waiting_for`, and `plan_file` when `waiting_for` is `plan approval`: the path of `inspect`'s `plan.file`, or `null` when the transcript names none |
 | `busy_long`, `waiting_long` | `thresholds` | `session`, `after` |
 | `idle_long` | `thresholds` | `session`, `threshold`: the idle duration reached, such as `50m` |
 | `context_high` | `thresholds` | `session`, `used`, `size`, `percent`, `mark`: the mark reached as `75%` or as the token count given, `mark_tokens`: the mark in tokens for this window, `model` |
@@ -254,6 +256,8 @@ cc-session-tools watch --here --events-stream=stdout --timeout=10m
 ```json
 {"kind":"turn_finished","seq":6,"observed_at":"2026-11-16T17:05:03.120Z","data":{"session":"work/w1-order-planner","from":"busy"}}
 ```
+
+`waiting_for` is `plan approval` when the session's pane shows the plan approval dialog, as in `list-active`. Claude Code writes the record before it draws the dialog, so a pane that reads `unknown` is captured once more after 1 second, which delays the poll by that second. `plan_file` costs a read of the transcript, once per plan approval.
 
 One status transition can yield two events: `busy` to `idle` is `status_changed` and `turn_finished`, anything to `waiting` is `status_changed` and `waiting`. Take `--events=turns` for the derived events alone. A change is reported for a session that matched before it, so a rename out of a `--name` glob is `renamed`, then `session_unmatched`. A session that starts to match is reported once, as `session_matched` with its new state.
 

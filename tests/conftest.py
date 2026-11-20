@@ -311,3 +311,47 @@ def log_start(project_dir: Path, session_id: str, ts_ms: int, **fields: Any) -> 
     with open(log, "a", encoding="utf-8") as fh:
         fh.write(json.dumps({k: v for k, v in line.items() if v is not None}) + "\n")
     return log
+
+
+def screen_tmux(
+    bin_dir: Path,
+    *,
+    pane_pid: int,
+    capture: str | None,
+    panes: list[str],
+    mode: str = "0",
+    vanish: bool = False,
+    cursor: str = "0 0",
+    cursor_after: str | None = None,
+) -> None:
+    """Install a ``tmux`` that lists ``panes``, says the pane runs ``pane_pid``, and captures ``capture``.
+
+    ``cursor`` is the pane's ``#{cursor_x} #{cursor_y}``.
+
+    ``cursor_after`` is the cursor once the pane was captured, for a cursor that moves during the capture.
+
+    ``mode`` is the pane's ``pane_in_mode``, or ``after-capture`` for a pane that enters copy mode while it is captured.
+    ``vanish`` closes the pane when ``display-message`` asks about it, as if it closed after the listing.
+    """
+    panes_file = bin_dir / "tmux-panes.txt"
+    panes_file.write_text("".join(f"{line}\n" for line in panes))
+    capture_file = bin_dir / "tmux-capture.txt"
+    capture_file.write_text(capture or "")
+    captured = bin_dir / "tmux-captured"
+    capture_exit = 1 if capture is None else 0
+    before = f"{pane_pid} {'0' if mode == 'after-capture' else mode} {cursor}"
+    after = f"{pane_pid} {'1' if mode == 'after-capture' else mode} {cursor_after or cursor}"
+    if vanish:
+        display = f": > '{panes_file}'; exit 1"
+    else:
+        display = f"if [ -e '{captured}' ]; then echo '{after}'; else echo '{before}'; fi"
+    script = bin_dir / "tmux"
+    script.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        f"  list-panes) cat '{panes_file}' ;;\n"
+        f"  display-message) {display} ;;\n"
+        f"  capture-pane) touch '{captured}'; cat '{capture_file}'; exit {capture_exit} ;;\n"
+        "esac\n"
+    )
+    script.chmod(0o755)

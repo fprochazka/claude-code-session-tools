@@ -33,6 +33,8 @@ from typing import Any
 from cc_blackbox import ActiveSession, ContextWindow, EventSink, list_active_sessions, list_profiles
 
 from .active import (
+    PERMISSION_PROMPT,
+    PLAN_APPROVAL,
     Filters,
     TmuxPane,
     TmuxState,
@@ -42,8 +44,10 @@ from .active import (
     process_role,
     read_context_window,
     read_last_response,
+    screen_state,
     waiting_for,
 )
+from .plan import read_plan_file
 from .watch_events import (
     BUSY_LONG,
     CONTEXT_HIGH,
@@ -73,6 +77,10 @@ TMUX_INTERVAL = 3.0
 ROLE_SETTLE = 60.0
 """For this long after a session's start, a missing role is looked for again at every tmux call: the auth-switch
 start hook logs it a moment after the session's record appears, next to a transcript the session may not have yet."""
+
+SCREEN_RETRY = 1.0
+"""How long to wait before a second capture of a pane that read ``unknown``: Claude Code writes the record of a
+permission prompt before it draws the dialog."""
 
 CONTEXT_INTERVAL = 3.0
 """A session's context fill is read again at most this often, and only when its transcript changed since the last read.
@@ -317,6 +325,15 @@ ReadLastResponse = Callable[[ActiveSession], datetime | None]
 ReadRole = Callable[[ActiveSession], str | None]
 FindTranscript = Callable[[ActiveSession], Path | None]
 ReadContext = Callable[[ActiveSession, Path], ContextWindow | None]
+ReadScreen = Callable[[ActiveSession], str | None]
+FindPlan = Callable[[ActiveSession], Path | None]
+
+
+def find_plan_file(session: ActiveSession) -> Path | None:
+    """The session's plan file, from its transcript; see :func:`~cc_session_tools.plan.read_plan_file`."""
+    transcript = find_transcript_path(session)
+    plan = read_plan_file(transcript) if transcript is not None else None
+    return plan.path if plan is not None else None
 
 
 def transcript_stamp(path: Path) -> Stamp | None:
@@ -343,8 +360,12 @@ class SessionTracker:
         role_of_session: ReadRole = process_role,
         find_transcript: FindTranscript = find_transcript_path,
         read_context: ReadContext = read_context_window,
+        read_screen: ReadScreen = screen_state,
+        find_plan: FindPlan = find_plan_file,
+        sleep: Callable[[float], None] = time.sleep,
         tmux_interval: float = TMUX_INTERVAL,
         context_interval: float = CONTEXT_INTERVAL,
+        screen_retry: float = SCREEN_RETRY,
     ) -> None:
         self.selection = selection
         self.thresholds = thresholds
@@ -356,6 +377,10 @@ class SessionTracker:
         self._read_role_of = role_of_session
         self._find_transcript = find_transcript
         self._read_context = read_context
+        self._read_screen = read_screen
+        self._find_plan = find_plan
+        self._sleep = sleep
+        self.screen_retry = screen_retry
         self.tmux_interval = tmux_interval
         self.context_interval = context_interval
         self.tracked: dict[int, Tracked] = {}
@@ -423,10 +448,25 @@ class SessionTracker:
                 return f"{session.profile.name}/{session.name}"
         return f"{session.profile.name}/pid:{session.pid}"
 
+    def waiting_for(self, session: ActiveSession) -> str | None:
+        """What the session waits for, with ``plan approval`` when its pane shows the plan approval dialog.
+
+        The record says ``permission prompt`` for that dialog too, so the pane of a session in that state is captured.
+        A screen that reads ``unknown`` may not be drawn yet, and is captured once more after :attr:`screen_retry`.
+        """
+        value = waiting_for(session)
+        if value != PERMISSION_PROMPT or pane_id_of(session.tmux) is None:
+            return value
+        state = self._read_screen(session)
+        if state == "unknown":
+            self._sleep(self.screen_retry)
+            state = self._read_screen(session)
+        return PLAN_APPROVAL if state == "plan_approval" else value
+
     def summary(self, tracked: Tracked) -> dict[str, Any]:
         """A session in ``watch_started``: who it is and its status, with ``waiting_for`` when it waits."""
         data: dict[str, Any] = {"session": self.identify(tracked), "status": tracked.session.status}
-        reason = waiting_for(tracked.session)
+        reason = self.waiting_for(tracked.session)
         if reason is not None:
             data["waiting_for"] = reason
         return data
@@ -553,7 +593,7 @@ class SessionTracker:
             tracked.status_since = _status_since(new, now)
             tracked.threshold_sent = False
             tracked.idle_checked = False
-            reason = waiting_for(new)
+            reason = self.waiting_for(new) if was_matched else waiting_for(new)
             change: dict[str, Any] = {"from": old.status, "to": new.status}
             if reason is not None:
                 change["waiting_for"] = reason
@@ -561,7 +601,11 @@ class SessionTracker:
             if new.status == "idle" and old.status in TURN_ENDS_FROM:
                 changed(TURN_FINISHED, **{"from": old.status})
             if new.status == "waiting":
-                changed(WAITING, waiting_for=reason)
+                extra: dict[str, Any] = {}
+                if reason == PLAN_APPROVAL:
+                    plan = self._find_plan(new)
+                    extra["plan_file"] = str(plan) if plan is not None else None
+                changed(WAITING, waiting_for=reason, **extra)
 
         if self._needs_roles and tracked.role is None:
             # A record change is cheap to wait for, and the transcript the role sits next to may have appeared.

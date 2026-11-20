@@ -11,7 +11,18 @@ from typing import Any
 
 import pytest
 from cc_blackbox import project_slug
-from conftest import Machine, compact_boundary, cost_state, fake_tmux, log_start, response, sid, stamp, write_records
+from conftest import (
+    Machine,
+    compact_boundary,
+    cost_state,
+    fake_tmux,
+    log_start,
+    response,
+    screen_tmux,
+    sid,
+    stamp,
+    write_records,
+)
 from typer.testing import CliRunner
 
 from cc_session_tools.cli import app
@@ -346,50 +357,6 @@ def test_nothing_matches(machine: Machine) -> None:
 SCREEN_FIXTURES = Path(__file__).parent / "fixtures" / "screen"
 
 
-def screen_tmux(
-    bin_dir: Path,
-    *,
-    pane_pid: int,
-    capture: str | None,
-    panes: list[str],
-    mode: str = "0",
-    vanish: bool = False,
-    cursor: str = "0 0",
-    cursor_after: str | None = None,
-) -> None:
-    """Install a ``tmux`` that lists ``panes``, says the pane runs ``pane_pid``, and captures ``capture``.
-
-    ``cursor`` is the pane's ``#{cursor_x} #{cursor_y}``.
-
-    ``cursor_after`` is the cursor once the pane was captured, for a cursor that moves during the capture.
-
-    ``mode`` is the pane's ``pane_in_mode``, or ``after-capture`` for a pane that enters copy mode while it is captured.
-    ``vanish`` closes the pane when ``display-message`` asks about it, as if it closed after the listing.
-    """
-    panes_file = bin_dir / "tmux-panes.txt"
-    panes_file.write_text("".join(f"{line}\n" for line in panes))
-    capture_file = bin_dir / "tmux-capture.txt"
-    capture_file.write_text(capture or "")
-    captured = bin_dir / "tmux-captured"
-    capture_exit = 1 if capture is None else 0
-    before = f"{pane_pid} {'0' if mode == 'after-capture' else mode} {cursor}"
-    after = f"{pane_pid} {'1' if mode == 'after-capture' else mode} {cursor_after or cursor}"
-    if vanish:
-        display = f": > '{panes_file}'; exit 1"
-    else:
-        display = f"if [ -e '{captured}' ]; then echo '{after}'; else echo '{before}'; fi"
-    script = bin_dir / "tmux"
-    script.write_text(
-        "#!/bin/sh\n"
-        'case "$1" in\n'
-        f"  list-panes) cat '{panes_file}' ;;\n"
-        f"  display-message) {display} ;;\n"
-        f"  capture-pane) touch '{captured}'; cat '{capture_file}'; exit {capture_exit} ;;\n"
-        "esac\n"
-    )
-    script.chmod(0o755)
-
-
 PANE = "%14\tmain\t3\t@14\t$1\tw1"
 
 
@@ -546,6 +513,31 @@ def plan_attachment(kind: str, path: Path, epoch_seconds: float) -> dict[str, An
         "timestamp": stamp(epoch_seconds),
         "attachment": {"type": kind, "planFilePath": str(path), "planExists": kind != "plan_mode"},
     }
+
+
+@pytest.mark.parametrize(
+    ("capture", "expected"),
+    [("plan-approval", "plan approval"), ("permission-bash", "permission prompt"), ("busy-tool", "permission prompt")],
+)
+def test_a_permission_prompt_whose_pane_shows_the_plan_dialog_waits_for_plan_approval(
+    machine: Machine, fake_bin: Path, capture: str, expected: str
+) -> None:
+    pid = machine.session("work", "planner", status="waiting", waitingFor="permission prompt", tmux="main:@14.%14")
+    screen_tmux(
+        fake_bin, pane_pid=pid, capture=(SCREEN_FIXTURES / f"{capture}.ansi").read_text(encoding="utf-8"), panes=[PANE]
+    )
+    data = json_of("planner", "--screen")
+    assert data["waiting_for"] == expected
+    assert data["raw"]["waitingFor"] == "permission prompt"
+    if capture == "plan-approval":
+        assert (data["screen"]["state"], data["screen"]["title"]) == ("plan_approval", "Ready to code?")
+        assert [o["key"] for o in data["screen"]["options"]] == ["1", "2", "3"]
+        assert data["screen"]["options"][0] == {"key": "1", "label": "Yes, and use auto mode", "selected": True}
+
+
+def test_a_permission_prompt_outside_tmux_keeps_the_record_value(machine: Machine) -> None:
+    machine.session("work", "planner", status="waiting", waitingFor="permission prompt")
+    assert json_of("planner")["waiting_for"] == "permission prompt"
 
 
 def test_the_plan_file_of_a_running_session_comes_from_the_newest_plan_attachment(machine: Machine) -> None:

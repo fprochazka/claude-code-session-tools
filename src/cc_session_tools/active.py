@@ -18,9 +18,9 @@ from __future__ import annotations
 import fnmatch
 import os
 import subprocess
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -43,6 +43,7 @@ from rich.text import Text
 
 from .discovery import Scope
 from .gitrepo import GitLocation, git_location
+from .screen import Classification, classify
 
 TmuxState = Literal["present", "gone", "unknown"]
 """``present``: the pane exists. ``gone``: the tmux server runs and has no such pane. ``unknown``: tmux is not
@@ -184,6 +185,53 @@ def runs_in_pane(pane_pid: int, pid: int) -> bool:
 
 
 @dataclass(frozen=True)
+class ScreenCapture:
+    """One capture of a session's pane, classified, or why there is none."""
+
+    reason: str | None
+    """Why nothing was captured: ``tmux_unavailable``, ``pane_gone``, ``pane_not_owned``, ``pane_in_mode`` or
+    ``capture_failed``; ``None`` when the pane was captured."""
+    classification: Classification
+    """``unknown`` when nothing was captured."""
+    text: str | None = None
+    """The captured text with its escape sequences."""
+    captured_at: datetime | None = None
+
+
+def _check_pane(pane: str, pid: int) -> tuple[str | None, PaneState | None]:
+    """Why the pane cannot be captured for the session ``pid`` now, or ``None`` and the pane's state when it can."""
+    state = pane_state(pane)
+    if state is None:
+        panes = list_tmux_panes()
+        if panes is None:
+            return "tmux_unavailable", None
+        return ("pane_gone" if pane not in panes else "capture_failed"), None
+    if not runs_in_pane(state.pid, pid):
+        return "pane_not_owned", None
+    if state.in_mode:
+        return "pane_in_mode", None
+    return None, state
+
+
+def capture_screen(pane: str, pid: int) -> ScreenCapture:
+    """Capture the pane of the session ``pid`` and classify what it shows.
+
+    The pane must run the session's process and be in no tmux mode, before and after the capture: a pane can enter
+    copy mode, or close, while it is captured, and then the capture does not count. The cursor counts only when it did
+    not move during the capture. Costs three or four tmux calls.
+    """
+    reason, before = _check_pane(pane, pid)
+    if reason is not None or before is None:
+        return ScreenCapture(reason, Classification("unknown"))
+    captured = capture_pane(pane)
+    reason, after = _check_pane(pane, pid)
+    if captured is None or after is None:
+        return ScreenCapture(reason or "capture_failed", Classification("unknown"))
+    cursor = after.cursor if before.cursor == after.cursor else None
+    return ScreenCapture(None, classify(captured, cursor), captured, datetime.now(UTC))
+
+
+@dataclass(frozen=True)
 class SessionView:
     """One running session with the parts that are resolved live."""
 
@@ -193,6 +241,9 @@ class SessionView:
     """``None`` when the session does not run in tmux."""
     tmux_live: TmuxPane | None
     git: GitLocation | None
+    waiting_for: str | None = None
+    """What the session waits for, with ``plan approval`` told apart from a permission prompt: see
+    :func:`derive_waiting_for`."""
 
     @property
     def messaging_address(self) -> str | None:
@@ -259,6 +310,9 @@ def build_views(
 ) -> list[SessionView]:
     """Resolve the tmux pane of every session with one tmux call, and the git location of each distinct cwd once.
 
+    A session whose record waits for a permission prompt and that runs in a pane also costs a capture of that pane,
+    to tell a plan approval from it; see :func:`derive_waiting_for`.
+
     ``panes`` is a listing of the tmux server the caller already has; without it, tmux is asked when a session runs
     in tmux.
     """
@@ -281,7 +335,12 @@ def build_views(
             if session.cwd not in git_cache:
                 git_cache[session.cwd] = git_location(session.cwd)
             git = git_cache[session.cwd]
-        views.append(SessionView(session=session, tmux_pane=pane_id, tmux_state=state, tmux_live=live, git=git))
+        waits = derive_waiting_for(session) if state == "present" else waiting_for(session)
+        views.append(
+            SessionView(
+                session=session, tmux_pane=pane_id, tmux_state=state, tmux_live=live, git=git, waiting_for=waits
+            )
+        )
     return views
 
 
@@ -499,10 +558,42 @@ def active_since(sessions: Iterable[ActiveSession], since: datetime) -> list[Act
     return kept
 
 
+PERMISSION_PROMPT = "permission prompt"
+"""The record's ``waitingFor`` for a tool's permission prompt, and for the plan approval dialog too."""
+PLAN_APPROVAL = "plan approval"
+"""The ``waiting_for`` this tool reports when the pane of a session waiting for a permission prompt shows the plan
+approval dialog."""
+
+
 def waiting_for(session: ActiveSession) -> str | None:
     """What a ``waiting`` session waits for, from the record's ``waitingFor``; ``None`` in any other status."""
     value = session.raw.get("waitingFor")
     return value if session.status == "waiting" and isinstance(value, str) and value else None
+
+
+def screen_state(session: ActiveSession) -> str | None:
+    """The state of what the session's pane shows now, or ``None`` when it does not run in tmux or the pane cannot be
+    captured."""
+    pane = pane_id_of(session.tmux)
+    if pane is None:
+        return None
+    capture = capture_screen(pane, session.pid)
+    return capture.classification.state if capture.reason is None else None
+
+
+def derive_waiting_for(
+    session: ActiveSession, screen: Callable[[ActiveSession], str | None] = screen_state
+) -> str | None:
+    """:func:`waiting_for`, with ``plan approval`` for a session whose pane shows the plan approval dialog.
+
+    Claude Code's record says ``permission prompt`` for that dialog too, so a session in that state that runs in tmux
+    costs one capture of its pane. A session outside tmux, a pane that cannot be captured and a screen that reads
+    anything else keep the record's value.
+    """
+    value = waiting_for(session)
+    if value == PERMISSION_PROMPT and screen(session) == "plan_approval":
+        return PLAN_APPROVAL
+    return value
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -619,7 +710,7 @@ def to_json(view: SessionView) -> dict[str, Any]:
         "name_source": s.name_source,
         "role": process_role(s),
         "status": s.status,
-        "waiting_for": waiting_for(s),
+        "waiting_for": view.waiting_for,
         "kind": s.kind,
         "entrypoint": s.entrypoint,
         "version": s.version,

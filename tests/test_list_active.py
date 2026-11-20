@@ -16,6 +16,7 @@ from conftest import (
     git,
     log_start,
     response,
+    screen_tmux,
     sid,
     stamp,
     write_records,
@@ -119,6 +120,19 @@ def test_a_waiting_session_shows_what_it_waits_for(machine: Machine, fake_bin: P
     by_name = {s["name"]: s for s in json_of()}
     assert by_name["asking"]["waiting_for"] == "permission prompt"
     assert by_name["stale"]["waiting_for"] is None
+
+
+def test_a_session_whose_pane_shows_the_plan_dialog_waits_for_plan_approval(machine: Machine, fake_bin: Path) -> None:
+    pid = machine.session("work", "planner", status="waiting", waitingFor="permission prompt", tmux="main:@14.%14")
+    capture = (Path(__file__).parent / "fixtures" / "screen" / "plan-approval.ansi").read_text(encoding="utf-8")
+    screen_tmux(fake_bin, pane_pid=pid, capture=capture, panes=["%14\tmain\t3\t@14\t$1\tw1"])
+
+    result = invoke()
+
+    assert result.exit_code == 0, result.output
+    assert "waiting: plan approval" in result.stdout
+    [session] = json_of()
+    assert (session["waiting_for"], session["raw"]["waitingFor"]) == ("plan approval", "permission prompt")
 
 
 def transcript_of(machine: Machine, profile: str, name: str, records: list[dict[str, Any]]) -> Path:

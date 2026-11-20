@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from cc_blackbox import project_slug
+from cc_blackbox import ActiveSession, project_slug
 from conftest import Machine, RealTmux, compact_boundary, fake_tmux, log_start, response, sid, write_records
 from typer.testing import CliRunner
 
@@ -220,6 +220,55 @@ def test_status_transitions_with_derived_events(machine: Machine) -> None:
     machine_events = t.poll(NOW + 4)
     machine.update(pid, status="idle")
     assert kinds(machine_events + t.poll(NOW + 5)) == ["status_changed", "status_changed"]
+
+
+def test_a_permission_prompt_whose_pane_shows_the_plan_dialog_is_a_plan_approval(machine: Machine) -> None:
+    planner = machine.session("work", "planner", status="busy", tmux="main:@14.%14")
+    asker = machine.session("work", "asker", status="busy", tmux="main:@15.%15")
+    outside = machine.session("work", "outside", status="busy")
+    screens = {planner: ["unknown", "plan_approval"], asker: ["permission_prompt"]}
+    captured: list[int] = []
+    slept: list[float] = []
+
+    def read_screen(session: ActiveSession) -> str | None:
+        captured.append(session.pid)
+        return screens[session.pid].pop(0)
+
+    plan = machine.home / "elsewhere" / ".claude" / "plans" / "a-quiet-otter.md"
+    t = SessionTracker(
+        Selection(),
+        Thresholds(),
+        tmux_interval=0,
+        read_screen=read_screen,
+        find_plan=lambda session: plan,
+        sleep=slept.append,
+    )
+    t.start(NOW)
+
+    for pid in (planner, asker, outside):
+        machine.update(pid, status="waiting", waitingFor="permission prompt")
+    events = t.poll(NOW + 1)
+
+    waiting = {e.data["session"]: e.data for e in events if e.kind == "waiting"}
+    assert waiting == {
+        "work/planner": {"session": "work/planner", "waiting_for": "plan approval", "plan_file": str(plan)},
+        "work/asker": {"session": "work/asker", "waiting_for": "permission prompt"},
+        "work/outside": {"session": "work/outside", "waiting_for": "permission prompt"},
+    }
+    changes = {e.data["session"]: e.data["waiting_for"] for e in events if e.kind == "status_changed"}
+    assert changes["work/planner"] == "plan approval"
+    # The screen that read unknown, not yet drawn, was captured once more after a second; outside tmux nothing was.
+    assert sorted(captured) == sorted([planner, planner, asker])
+    assert slept == [1.0]
+
+
+def test_watch_started_tells_a_plan_approval_from_a_permission_prompt(machine: Machine) -> None:
+    machine.session("work", "planner", status="waiting", waitingFor="permission prompt", tmux="main:@14.%14")
+    t = SessionTracker(Selection(), Thresholds(), tmux_interval=0, read_screen=lambda session: "plan_approval")
+    t.start(NOW)
+    assert [t.summary(m) for m in t.matched()] == [
+        {"session": "work/planner", "status": "waiting", "waiting_for": "plan approval"}
+    ]
 
 
 def test_an_unchanged_record_reports_nothing(machine: Machine) -> None:

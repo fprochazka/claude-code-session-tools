@@ -140,7 +140,8 @@ def inspect(
         False,
         "--screen",
         help="Also capture the session's tmux pane and say what it shows: prompt_empty, prompt_has_input, dialog, "
-        "permission_prompt, busy or unknown, with its last lines. Typing into the pane is safe only at prompt_empty.",
+        "permission_prompt, plan_approval, busy or unknown, with the choices of a dialog and the last lines. Typing "
+        "into the pane is safe only at prompt_empty.",
     ),
     as_json: bool = typer.Option(False, "--json", help="Print every field as one JSON object."),
 ) -> None:

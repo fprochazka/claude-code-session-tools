@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from cc_session_tools.screen import Classification, classify, parse, plain_lines
+from cc_session_tools.screen import Classification, Option, classify, parse, plain_lines
 
 FIXTURES = Path(__file__).parent / "fixtures" / "screen"
 
@@ -20,6 +20,11 @@ EXPECTED = {
     "dialog-model-picker": Classification("dialog", "Select model"),
     "dialog-trust": Classification("dialog", "Accessing workspace:"),
     "permission-bash": Classification("permission_prompt", "Bash command"),
+    "plan-approval": Classification("plan_approval", "Ready to code?"),
+    # A plan longer than the pane: the dialog clips the plan and keeps its title.
+    "plan-approval-long-plan": Classification("plan_approval", "Ready to code?"),
+    # A pane of 16 lines: the title line ends with the scroll arrow.
+    "plan-approval-scroll-arrow": Classification("plan_approval", "Ready to code?"),
     "prompt-empty-after-interrupt": Classification("prompt_empty"),
     "prompt-empty-after-interrupt-cursor": Classification("prompt_empty"),
     "prompt-empty-after-turn": Classification("prompt_empty"),
@@ -38,6 +43,8 @@ EXPECTED = {
     "prompt-has-input-slash-menu": Classification("prompt_has_input"),
     "prompt-multiline": Classification("prompt_has_input"),
     "unknown-bash-mode": Classification("unknown"),
+    # A pane of 12 lines: the title is gone, and of the choices only the selected one is drawn.
+    "unknown-plan-approval-no-title": Classification("unknown"),
     "unknown-transcript-view": Classification("unknown"),
     "unknown-typed-spaces": Classification("unknown"),
 }
@@ -110,9 +117,100 @@ def test_a_prompt_box_captured_without_escape_sequences_is_unknown(name: str) ->
     assert classify("\n".join(plain_lines(fixture(name))), CURSORS.get(name)).state == "unknown"
 
 
-@pytest.mark.parametrize("name", ["dialog-trust", "dialog-mcp", "dialog-imports", "permission-bash"])
+@pytest.mark.parametrize("name", ["dialog-trust", "dialog-mcp", "dialog-imports", "permission-bash", "plan-approval"])
 def test_dialogs_are_recognised_without_escape_sequences(name: str) -> None:
     assert classify("\n".join(plain_lines(fixture(name)))) == EXPECTED[name]
+
+
+PLAN_OPTIONS: list[tuple[str | None, str, bool]] = [
+    ("1", "Yes, and use auto mode", True),
+    ("2", "Yes, manually approve edits", False),
+    ("3", "Tell Claude what to change", False),
+]
+OPTIONS: dict[str, list[tuple[str | None, str, bool]]] = {
+    "dialog-trust": [(None, "No, exit", True), (None, "Yes, I trust this folder", False)],
+    "dialog-mcp": [
+        (None, "Use this MCP server", False),
+        (None, "Use this and all future MCP servers in this project", False),
+        (None, "Continue without using this MCP server", True),
+    ],
+    "dialog-imports": [(None, "No, disable external imports", True), (None, "Yes, allow external imports", False)],
+    "dialog-model-picker": [
+        ("1", "Default (recommended)  Opus 5.5 · Best for everyday, complex tasks", False),
+        ("2", "Opus 5.5               For complex work and everyday tasks", False),
+        ("3", "Fable 5.2              For your toughest challenges", False),
+        ("4", "Sonnet 5.5             Most efficient for simpler tasks", False),
+        ("5", "Haiku 5.5 ✔            Fastest for quick answers", True),
+    ],
+    "permission-bash": [
+        ("1", "Yes", True),
+        ("2", "Yes, and don’t ask again for: chmod 600 *", False),
+        ("3", "Yes, and switch to auto mode · auto mode handles these prompts for you", False),
+        ("4", "No", False),
+    ],
+    "plan-approval": PLAN_OPTIONS,
+    "plan-approval-long-plan": PLAN_OPTIONS,
+    "plan-approval-scroll-arrow": PLAN_OPTIONS,
+}
+
+
+def test_every_dialog_fixture_has_its_options() -> None:
+    dialogs = [name for name, c in EXPECTED.items() if c.state in ("dialog", "permission_prompt", "plan_approval")]
+    assert sorted(OPTIONS) == sorted(dialogs)
+
+
+@pytest.mark.parametrize("name", sorted(OPTIONS))
+def test_a_dialog_lists_its_options(name: str) -> None:
+    expected = tuple(Option(key, label, selected) for key, label, selected in OPTIONS[name])
+    assert classify(fixture(name)).options == expected
+    assert classify("\n".join(plain_lines(fixture(name)))).options == expected
+
+
+@pytest.mark.parametrize("name", [name for name, c in EXPECTED.items() if c.title is None])
+def test_a_screen_that_is_no_dialog_has_no_options(name: str) -> None:
+    assert classify(fixture(name), CURSORS.get(name)).options is None
+
+
+def plan_dialog(
+    *, title: str = "Ready to code?", footer: str = "ctrl+g to edit in Vim · .claude/plans/a-plan.md"
+) -> str:
+    return (
+        f"{'▔' * 40}\n"
+        f"   {title}\n"
+        "   Here is Claude's plan:\n"
+        "   ❯ 1. Not an option: a line of the plan that looks like one\n"
+        "     2. Another line of the plan\n"
+        "   Claude has written up a plan and is ready to execute. Would you like to proceed?\n"
+        "\n"
+        "   ❯ 1. Yes, auto-accept edits\n"
+        "     2. Yes, manually approve edits\n"
+        "\n"
+        f"   {footer}\n"
+    )
+
+
+def test_the_options_of_a_plan_approval_come_after_its_question() -> None:
+    found = classify(plan_dialog())
+    assert found == Classification("plan_approval", "Ready to code?")
+    assert found.options == (
+        Option("1", "Yes, auto-accept edits", True),
+        Option("2", "Yes, manually approve edits", False),
+    )
+
+
+@pytest.mark.parametrize(
+    "screen",
+    [
+        plan_dialog(title="Ready to ship?"),
+        plan_dialog(title="Ready to code? →"),
+        plan_dialog(footer="Esc to go back"),
+        plan_dialog().replace("Would you like to proceed?", "Proceed?"),
+        plan_dialog().replace("▔" * 40, ""),
+        plan_dialog().replace("   ❯ 1. Yes", "     1. Yes"),
+    ],
+)
+def test_a_plan_approval_that_lacks_any_part_is_unknown(screen: str) -> None:
+    assert classify(screen).state == "unknown"
 
 
 def box(prompt_line: str, *, above: str = "", footer: str = "  ⏸ manual mode on") -> str:

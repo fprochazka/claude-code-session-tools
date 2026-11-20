@@ -29,24 +29,32 @@ Known gaps:
   mode, and tmux 3.4 reports no cursor shape. Whether a session has vim mode on is in its settings, not on its screen.
 - Only a Bash permission prompt was captured. Edit and WebFetch permission prompts should match the same ``Do you want
   to …?`` rule, untested.
+- The plan approval dialog clips a plan too long for the pane and keeps its title on screen, with a ``↓`` at the end of
+  the title line when the plan scrolls. Only in a pane of about 12 lines or fewer does the title go, and the choices
+  with it but the selected one; the screen then reads ``unknown``.
 """
 
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
-ScreenState = Literal["prompt_empty", "prompt_has_input", "dialog", "permission_prompt", "busy", "unknown"]
+ScreenState = Literal[
+    "prompt_empty", "prompt_has_input", "dialog", "permission_prompt", "plan_approval", "busy", "unknown"
+]
 
 SCREEN_STATES: tuple[ScreenState, ...] = (
     "prompt_empty",
     "prompt_has_input",
     "dialog",
     "permission_prompt",
+    "plan_approval",
     "busy",
     "unknown",
 )
+
+PLAN_APPROVAL_TITLE = "Ready to code?"
 
 _PROMPT_GLYPH = "❯"
 _NBSP = " "
@@ -71,6 +79,11 @@ _DIALOG_SELECTION = re.compile(r"^\s+❯ \S")
 _NUMBERED_SELECTION = re.compile(r"^\s+❯ \d+\. \S")
 _PERMISSION_QUESTION = re.compile(r"^\s*Do you want to .+\?$")
 _DIALOG_FOOTER = "Esc to cancel"
+_PLAN_QUESTION = "Would you like to proceed?"
+_PLAN_FOOTER = "ctrl+g to edit in"
+_PLAN_TITLE = re.compile(r"^Ready to code\?(?:\s+[↑↓]{1,2})?$")
+"""The title line of the plan approval dialog, with the scroll arrows it shows when the plan does not fit."""
+_NUMBERED_OPTION = re.compile(r"^(\s*)(?:❯ )?(\d+)\.\s+(\S.*)$")
 
 _ESCAPE = re.compile(r"\x1b(?:\[([0-9;:?]*)([@-~])|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
 
@@ -84,10 +97,25 @@ class Cell:
 
 
 @dataclass(frozen=True)
+class Option:
+    """One choice of a dialog, as its line on the screen shows it."""
+
+    key: str | None
+    """The number to press, such as ``1``; ``None`` for a dialog whose choices have no numbers, chosen with the arrow
+    keys and Enter."""
+    label: str
+    selected: bool
+    """Whether the ``❯`` selection is on it, so Enter picks it."""
+
+
+@dataclass(frozen=True)
 class Classification:
     state: ScreenState
     title: str | None = None
-    """The title line of a ``dialog`` or ``permission_prompt``, ``None`` for every other state."""
+    """The title line of a ``dialog``, ``permission_prompt`` or ``plan_approval``, ``None`` for every other state."""
+    options: tuple[Option, ...] | None = field(default=None, compare=False)
+    """The choices of a ``dialog``, ``permission_prompt`` or ``plan_approval``, top to bottom, ``None`` for every other
+    state. Left out of comparisons, so a classification compares by what the screen is, not by every choice on it."""
 
 
 def _apply_sgr(params: str, fg: str | None, dim: bool) -> tuple[str | None, bool]:
@@ -208,6 +236,50 @@ def _classify_prompt(
     return Classification("unknown")
 
 
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _options(block: list[str]) -> tuple[Option, ...]:
+    """The choices around the ``❯`` selection: its line and the lines next to it that are drawn the same way.
+
+    Numbered choices have their number in the selection's number column; a line indented deeper under one, such as a
+    hint, is skipped. Choices without numbers start their text in the selection's text column. A blank line or any
+    other line ends the list.
+    """
+    selected = next(i for i, line in enumerate(block) if _DIALOG_SELECTION.match(line))
+    numbered = _NUMBERED_OPTION.match(block[selected])
+    options: dict[int, Option] = {}
+    if numbered is not None:
+        column = len(numbered.group(1)) + len(_PROMPT_GLYPH) + 1
+
+        def option(index: int) -> Option | None:
+            match = _NUMBERED_OPTION.match(block[index])
+            if match is None or index != selected and len(match.group(1)) != column:
+                return None
+            return Option(match.group(2), match.group(3).strip(), index == selected)
+
+    else:
+        column = block[selected].index(_PROMPT_GLYPH) + len(_PROMPT_GLYPH) + 1
+
+        def option(index: int) -> Option | None:
+            line = block[index]
+            if index == selected:
+                return Option(None, line.strip()[len(_PROMPT_GLYPH) :].strip(), True)
+            return Option(None, line.strip(), False) if line.strip() and _indent(line) == column else None
+
+    for step in (-1, 1):
+        index = selected
+        while 0 <= index < len(block):
+            found = option(index)
+            if found is not None:
+                options[index] = found
+            elif step < 0 or not block[index].strip() or _indent(block[index]) <= column:
+                break
+            index += step
+    return tuple(options[index] for index in sorted(options))
+
+
 def _classify_dialog(texts: list[str]) -> Classification:
     filled = [index for index, line in enumerate(texts) if line.strip()]
     footer = next((i for i in reversed(filled[-_FOOTER_LOOKBACK:]) if _DIALOG_FOOTER in texts[i]), None)
@@ -224,8 +296,30 @@ def _classify_dialog(texts: list[str]) -> Classification:
         return Classification("unknown")
     numbered = any(_NUMBERED_SELECTION.match(line) for line in block)
     if numbered and any(_PERMISSION_QUESTION.match(line) for line in block):
-        return Classification("permission_prompt", title)
-    return Classification("dialog", title)
+        return Classification("permission_prompt", title, _options(block))
+    return Classification("dialog", title, _options(block))
+
+
+def _classify_plan_approval(texts: list[str]) -> Classification:
+    """The dialog of ``ExitPlanMode``: ``Ready to code?``, the plan, the question, numbered choices, and a
+    ``ctrl+g to edit in …`` footer instead of ``Esc to cancel``. Only the choices after the question count, because
+    the plan above them can hold numbered lines too."""
+    filled = [index for index, line in enumerate(texts) if line.strip()]
+    footer = next((i for i in reversed(filled[-_FOOTER_LOOKBACK:]) if texts[i].strip().startswith(_PLAN_FOOTER)), None)
+    if footer is None:
+        return Classification("unknown")
+    top = next((i for i in range(footer - 1, -1, -1) if _is_border(texts[i])), None)
+    if top is None:
+        return Classification("unknown")
+    block = texts[top + 1 : footer]
+    title = next((i for i, line in enumerate(block) if _PLAN_TITLE.match(line.strip())), None)
+    question = next((i for i in range(len(block) - 1, -1, -1) if block[i].rstrip().endswith(_PLAN_QUESTION)), None)
+    if title is None or question is None or question < title:
+        return Classification("unknown")
+    choices = block[question + 1 :]
+    if not any(_NUMBERED_SELECTION.match(line) for line in choices):
+        return Classification("unknown")
+    return Classification("plan_approval", PLAN_APPROVAL_TITLE, _options(choices))
 
 
 def classify(captured: str, cursor: tuple[int, int] | None = None) -> Classification:
@@ -237,6 +331,8 @@ def classify(captured: str, cursor: tuple[int, int] | None = None) -> Classifica
     - ``busy``: the prompt box shows the spinner above it or the greyed glyph, whatever the box holds.
     - ``dialog``: a bordered box with a ``❯`` selection and an ``Esc to cancel`` footer, such as a startup dialog.
     - ``permission_prompt``: such a box that asks ``Do you want to …?`` with numbered options.
+    - ``plan_approval``: the plan approval dialog of ``ExitPlanMode``, a bordered box titled ``Ready to code?`` that
+      asks ``Would you like to proceed?`` with numbered options and ends with a ``ctrl+g to edit in …`` line.
     - ``unknown``: anything else, including a prompt box captured without ``-e`` and a screen that matches both the
       prompt box and the dialog rules.
     """
@@ -244,6 +340,8 @@ def classify(captured: str, cursor: tuple[int, int] | None = None) -> Classifica
     texts = ["".join(cell.char for cell in line).rstrip() for line in cells]
     box = _prompt_box(texts)
     dialog = _classify_dialog(texts)
+    if dialog.state == "unknown":
+        dialog = _classify_plan_approval(texts)
     if box is None:
         return dialog
     if dialog.state != "unknown" or "\x1b[" not in captured:

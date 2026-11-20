@@ -364,12 +364,14 @@ def screen_json(data: dict[str, Any]) -> dict[str, Any]:
     ``not_in_tmux``, ``tmux_unavailable``, ``pane_gone``, ``pane_not_owned`` (the pane id now belongs to another
     process, as after a tmux server restart), ``pane_in_mode`` (copy mode or another tmux mode would take the keys) or
     ``capture_failed``. When the pane was captured, ``reason`` is ``null`` and an unrecognised screen is ``unknown``
-    too.
+    too. ``options`` lists the choices of a ``dialog``, ``permission_prompt`` or ``plan_approval``, and is ``null`` for
+    every other state.
     """
     pane = data["tmux_pane"]
     result: dict[str, Any] = {
         "state": "unknown",
         "title": None,
+        "options": None,
         "reason": None,
         "pane": pane,
         "captured_at": None,
@@ -396,6 +398,10 @@ def screen_json(data: dict[str, Any]) -> dict[str, Any]:
             classification = classify(captured, cursor)
             result["state"] = classification.state
             result["title"] = classification.title
+            if classification.options is not None:
+                result["options"] = [
+                    {"key": o.key, "label": o.label, "selected": o.selected} for o in classification.options
+                ]
             result["captured_at"] = _iso(datetime.now(UTC))
             result["lines"] = _collapse_blank(plain_lines(captured))[-SCREEN_LINES:]
     return result

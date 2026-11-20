@@ -170,8 +170,9 @@ Options:
                       transcript.  [default: 14; x>=1]
   --screen            Also capture the session's tmux pane and say what it
                       shows: prompt_empty, prompt_has_input, dialog,
-                      permission_prompt, busy or unknown, with its last lines.
-                      Typing into the pane is safe only at prompt_empty.
+                      permission_prompt, plan_approval, busy or unknown, with
+                      the choices of a dialog and the last lines. Typing into
+                      the pane is safe only at prompt_empty.
   --json              Print every field as one JSON object.
   --help              Show this message and exit.
 ```
@@ -187,8 +188,9 @@ Options:
 
 `--screen` captures the session's tmux pane and adds a `screen` object as the last key of `--json`, and a `screen` row plus the last lines in text:
 
-- `state`: `prompt_empty`, `prompt_has_input`, `dialog`, `permission_prompt`, `busy` or `unknown`.
-- `title`: the title line of a `dialog` or `permission_prompt`, such as `Accessing workspace:` (workspace trust), `New MCP server found in this project: <name>`, `Allow external CLAUDE.md file imports?` or `Bash command`. `null` for the other states.
+- `state`: `prompt_empty`, `prompt_has_input`, `dialog`, `permission_prompt`, `plan_approval` (the `Ready to code?` dialog of plan mode), `busy` or `unknown`.
+- `title`: the title line of a `dialog` or `permission_prompt`, such as `Accessing workspace:` (workspace trust), `New MCP server found in this project: <name>`, `Allow external CLAUDE.md file imports?` or `Bash command`, and `Ready to code?` for `plan_approval`. `null` for the other states.
+- `options`: the choices of a `dialog`, `permission_prompt` or `plan_approval`, top to bottom, as `{key, label, selected}`; `null` for the other states. `key` is the number to press, or `null` when the choices have no numbers and the arrow keys and Enter pick one. Labels and numbers vary between sessions (`Yes, and use auto mode` or `Yes, auto-accept edits`, an extra first choice from a setting), so find a choice by its exact label and press its `key`, never a fixed number.
 - `reason`: why nothing was captured, else `null`: `ended`, `not_in_tmux`, `tmux_unavailable`, `pane_gone`, `pane_not_owned` (the pane id now belongs to another process, as after a tmux server restart), `pane_in_mode` (the pane is in copy mode or another tmux mode, which would take the keys instead of Claude Code) or `capture_failed`. With a reason, `state` is `unknown` and `lines` is `null`.
 - `pane`, `captured_at`, and `lines`: the last 20 lines of the pane as plain text, with runs of empty lines collapsed to one.
 

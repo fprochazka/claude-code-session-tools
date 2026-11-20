@@ -405,6 +405,10 @@ def test_screen_classifies_the_pane_and_keeps_the_other_keys(machine: Machine, f
         "%14",
     )
     assert screen["captured_at"] is not None
+    assert screen["options"] == [
+        {"key": None, "label": "No, exit", "selected": True},
+        {"key": None, "label": "Yes, I trust this folder", "selected": False},
+    ]
     assert screen["lines"][-1] == " Enter to confirm · Esc to cancel"
     assert len(screen["lines"]) <= 20
     assert "" not in [a or b for a, b in zip(screen["lines"], screen["lines"][1:], strict=False)]
@@ -506,6 +510,7 @@ def test_screen_of_an_ended_session(machine: Machine) -> None:
     assert screen == {
         "state": "unknown",
         "title": None,
+        "options": None,
         "reason": "ended",
         "pane": None,
         "captured_at": None,

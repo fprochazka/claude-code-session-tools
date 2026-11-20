@@ -197,14 +197,15 @@ A session that has no name and was not started through an auth-switch wrapper ca
 
 **`--screen`** captures the session's tmux pane with `tmux capture-pane -p -e` and says what it shows, for a coordinating session that types into other panes (`/compact`, a brief as `@<file>`, the answer to a startup dialog) and must know when that is safe. The registry status cannot tell: startup dialogs come before the session has a usable record, and text someone has half typed is in no record. `--json` gets one more key, `screen`, after all the others:
 
-- `state`: `prompt_empty` (nothing typed, or only the dimmed `Try "…"` placeholder or a dimmed suggestion, which typing replaces, and the cursor right after `❯`), `prompt_has_input` (typed text, or a `[Pasted text #1 +40 lines]` or `[Image #1]` marker), `dialog` (such as workspace trust, MCP server approval or external `CLAUDE.md` imports), `permission_prompt`, `busy` (the spinner, or the greyed `❯` Claude Code draws while it works), or `unknown`.
-- `title`: the title line of a `dialog` or `permission_prompt`, else `null`.
+- `state`: `prompt_empty` (nothing typed, or only the dimmed `Try "…"` placeholder or a dimmed suggestion, which typing replaces, and the cursor right after `❯`), `prompt_has_input` (typed text, or a `[Pasted text #1 +40 lines]` or `[Image #1]` marker), `dialog` (such as workspace trust, MCP server approval or external `CLAUDE.md` imports), `permission_prompt`, `plan_approval` (the `Ready to code?` dialog of plan mode), `busy` (the spinner, or the greyed `❯` Claude Code draws while it works), or `unknown`.
+- `title`: the title line of a `dialog` or `permission_prompt`, `Ready to code?` for `plan_approval`, else `null`.
+- `options`: the choices of a `dialog`, `permission_prompt` or `plan_approval`, top to bottom, each as `{"key": "1", "label": "Yes, and use auto mode", "selected": true}`, else `null`. `key` is the number to press, or `null` for a dialog whose choices have no numbers, such as workspace trust, where the arrow keys move `selected` and Enter picks it. The labels differ between sessions: the first choice of a plan approval reads `Yes, auto-accept edits` when auto mode is not available, and a setting can add a choice above it, which moves every number. Pick a choice by its label, not by a fixed number. Only the choices after the plan's question count, since the plan itself can hold numbered lines.
 - `reason`: why nothing was captured, else `null`: `ended`, `not_in_tmux`, `tmux_unavailable`, `pane_gone`, `pane_not_owned` (the pane id now belongs to another process, as after a tmux server restart), `pane_in_mode` (the pane is in copy mode or another tmux mode, which would take the keys instead of Claude Code) or `capture_failed`. Then `state` is `unknown` and `lines` is `null`.
 - `pane`, `captured_at`, and `lines`: the last 20 lines of the pane as plain text, with runs of empty lines collapsed to one.
 
 The text output adds a `screen` row and prints the lines under the table.
 
-The classification is a heuristic over Claude Code's screen text, box drawing and colors, checked against captures of Claude Code 2.1.325, and it breaks when the UI changes. It answers `unknown` whenever the match is not certain, because a wrong `prompt_empty` makes a coordinator type into a dialog or over someone's half-typed text. The placeholder and typed text differ only in the dim attribute, so a capture without escape sequences never yields a prompt state. A capture also drops trailing spaces, so typed spaces look like an empty prompt; only the cursor shows them, and `prompt_empty` needs it right after `❯`. Known gaps: busy detection without a spinner relies on the dark theme's grey prompt glyph, and any other glyph color gives `unknown`; there are no light-theme captures; Edit and WebFetch permission prompts were not captured; a session in vim mode's NORMAL mode reads as `prompt_empty`, although it takes typed keys as commands, because its screen looks like that of a session without vim mode. Run the opt-in live contract test, `tests/test_live_screen.py`, after a Claude Code update.
+The classification is a heuristic over Claude Code's screen text, box drawing and colors, checked against captures of Claude Code 2.1.325, and it breaks when the UI changes. It answers `unknown` whenever the match is not certain, because a wrong `prompt_empty` makes a coordinator type into a dialog or over someone's half-typed text. The placeholder and typed text differ only in the dim attribute, so a capture without escape sequences never yields a prompt state. A capture also drops trailing spaces, so typed spaces look like an empty prompt; only the cursor shows them, and `prompt_empty` needs it right after `❯`. Known gaps: in a pane of about 12 lines or fewer, the plan approval dialog loses its `Ready to code?` title and all choices but the selected one, and reads `unknown`; a longer plan does not matter, because the dialog clips the plan and keeps the title; busy detection without a spinner relies on the dark theme's grey prompt glyph, and any other glyph color gives `unknown`; there are no light-theme captures; Edit and WebFetch permission prompts were not captured; a session in vim mode's NORMAL mode reads as `prompt_empty`, although it takes typed keys as commands, because its screen looks like that of a session without vim mode. Run the opt-in live contract test, `tests/test_live_screen.py`, after a Claude Code update.
 
 Exit codes: `0` when one session is shown. `1` when SESSION matches nothing or more than one session in a step.
 
@@ -332,7 +333,7 @@ src/cc_session_tools/
 ├── list_active_cmd.py # the `list-active` command
 ├── inspect_cmd.py     # the `inspect` command
 ├── inspection.py      # one session, running or ended: the lookup and its fields
-├── screen.py          # what a captured tmux pane shows: empty prompt, input, dialog, permission prompt, busy
+├── screen.py          # what a captured tmux pane shows: empty prompt, input, dialog, permission prompt, plan approval, busy
 ├── watch_cmd.py       # the `watch` command: options, header, stream and changelog
 ├── watcher.py         # the polling loop: registry records in, session events out
 ├── watch_events.py    # event kinds and groups, the --events filter, durations
@@ -396,7 +397,7 @@ The file holds one extended regex per line, matched case-insensitively; blank li
 uv run pytest -m live -s
 ```
 
-It starts the session in a temporary tmux session and drives it through its startup dialogs, typed input, a busy turn and a permission prompt. It runs against a real, logged-in profile and spends a few model calls. These variables change it:
+It starts the session in a temporary tmux session and drives it through its startup dialogs, typed input, a busy turn and a permission prompt. A second session runs in plan mode, writes a short plan and shows the plan approval dialog, which the test rejects with Esc. It runs against a real, logged-in profile and spends a few model calls. These variables change it:
 
 - `CC_SESSION_TOOLS_LIVE_CLAUDE`: the command that starts Claude Code, `claude` by default. An auth-switch wrapper such as `claude-personal` picks the profile.
 - `CC_SESSION_TOOLS_LIVE_MODEL`: the model, `haiku` by default.

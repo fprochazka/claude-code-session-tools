@@ -1,0 +1,84 @@
+
+[38;5;241m  ⎿  /plan to preview[39m
+[38;5;105m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+[39m  [38;5;30m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[39m
+   [1m[38;5;105mReady to code?[0m
+
+   Here is Claude's plan:
+  [38;5;248m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌[39m
+   [1;3;4mPlan: append the line "world" to hello.txt[0m
+
+   [1mContext[0m
+
+   The user wants the line [38;5;105mworld[39m appended to [38;5;105mhello.txt[39m in the project directory. The plan is intentionally long, with separate checks before and after the change. Nothing is edited until this plan is approved.
+
+   [1mSteps[0m
+
+   1. Confirm the working directory is the project directory.
+   2. List the directory contents.
+   3. Check that [38;5;105mhello.txt[39m exists.
+   4. Check that [38;5;105mhello.txt[39m is a regular file, not a symlink or directory.
+   5. Check that [38;5;105mhello.txt[39m is readable.
+   6. Check that [38;5;105mhello.txt[39m is writable.
+   7. Check that the parent directory is writable.
+   8. Check that free disk space is available.
+   9. Record the file size in bytes before the change.
+   10. Record the line count before the change.
+   11. Record the word count before the change.
+   12. Record the checksum before the change.
+   13. Record the modification time before the change.
+   14. Read the full current contents of [38;5;105mhello.txt[39m.
+   15. Note the first line of the file.
+   16. Note the last line of the file.
+   17. Check whether the file is empty.
+   18. Check whether the file ends with a trailing newline.
+   19. Check the line-ending style (LF or CRLF).
+   20. Check the file encoding.
+   21. Check whether the file already contains the line [38;5;105mworld[39m.
+   22. Decide whether appending is still needed if [38;5;105mworld[39m is already present.
+   23. Check whether the file is tracked by a version control system.
+   24. Check whether the file is open in another process.
+   25. Make a backup copy of [38;5;105mhello.txt[39m outside the project directory.
+   26. Verify the backup has the same checksum as the original.
+   27. Decide the append method: the Edit tool, or a shell append.
+   28. If the file lacks a trailing newline, add one first so [38;5;105mworld[39m lands on its own line.
+   29. Prepare the exact text to append: [38;5;105mworld[39m followed by a newline.
+   30. Confirm the text has no stray whitespace.
+   31. Confirm the text has no tab characters.
+   32. Confirm the text has no carriage return.
+   33. Confirm that nothing else will be changed.
+   34. Read the file again immediately before editing, to catch concurrent changes.
+   35. Confirm the checksum still matches the recorded one.
+   36. Append the line [38;5;105mworld[39m to the end of the file.
+   37. Make sure the existing content is not overwritten.
+   38. Make sure no other file is touched.
+   39. Check the exit status of the append.
+   40. Check that no error output was produced.
+   41. Read the full contents of [38;5;105mhello.txt[39m after the change.
+   42. Check that the last line is exactly [38;5;105mworld[39m.
+   43. Check that the file ends with a single trailing newline.
+   44. Check that the previous last line is unchanged.
+   45. Check that all earlier lines are unchanged.
+   46. Check that the line count increased by exactly one.
+   47. Check that the word count increased by exactly one.
+   48. Check that the byte size increased by exactly 6 ([38;5;105mworld[39m plus newline).
+   49. Check that [38;5;105mworld[39m appears exactly once as a full line.
+   50. Check that there are no blank lines added by accident.
+   51. Check that the line endings are consistent with the original.
+   52. Check that the encoding is unchanged.
+   53. Compare the new file against the backup with a diff.
+   54. Confirm the diff shows only the added [38;5;105mworld[39m line.
+   55. Check that the file permissions are unchanged.
+   56. Check that the file owner is unchanged.
+   57. Check that the modification time was updated.                                                                                                                                                                                                                                                                                                                                                  [38;5;241m↓[39m
+  [38;5;30m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[39m
+   [38;5;241mClaude has written up a plan and is ready to execute. Would you like to proceed?[39m
+
+   [38;5;105m❯[39m [38;5;241m1. [38;5;105mYes, and use auto mode[39m
+     [38;5;241m2. [39mYes, manually approve edits
+     [38;5;241m3. Tell Claude what to change[39m
+        [38;5;241mshift+tab to approve with this feedback[39m
+
+   [38;5;241mctrl+g to edit in Vim · .claude/plans/make-a-plan-to-foamy-nygaard.md[39m
+[38;5;245m─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── ccst-plan-live ─

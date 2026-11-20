@@ -16,11 +16,14 @@ cover the dialogs through fixtures either way. Every run, in either mode, leaves
 profile's ``projects/`` dir; the test does not delete it.
 
 The session runs with hooks disabled and in the default permission mode, so the Bash command it is asked to run waits
-for approval; the test declines it. It never touches a tmux session it did not start.
+for approval; the test declines it. A second session runs in plan mode, is asked for a short plan, and shows the plan
+approval dialog; the test rejects the plan with Esc, so nothing is edited. It never touches a tmux session it did not
+start.
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
 import subprocess
@@ -91,9 +94,9 @@ class Pane:
             time.sleep(POLL)
         pytest.fail(f"the pane never showed the line {line!r}")
 
-    def _poll(self, done: Callable[[Classification], bool], what: str) -> Classification:
+    def _poll(self, done: Callable[[Classification], bool], what: str, timeout: float = TIMEOUT) -> Classification:
         """Poll until ``done`` holds for the pane's classification, recording every state seen on the way."""
-        deadline = time.monotonic() + TIMEOUT
+        deadline = time.monotonic() + timeout
         captured, cursor = "", None
         while time.monotonic() < deadline:
             captured, cursor = self.capture()
@@ -107,8 +110,8 @@ class Pane:
         screen = "\n".join(plain_lines(captured)[-40:])
         pytest.fail(f"the pane never showed {what}; last seen {classify(captured, cursor)} at {cursor}:\n{screen}")
 
-    def wait_for(self, expected: Classification) -> Classification:
-        return self._poll(lambda found: found == expected, str(expected))
+    def wait_for(self, expected: Classification, timeout: float = TIMEOUT) -> Classification:
+        return self._poll(lambda found: found == expected, str(expected), timeout)
 
     def wait_for_any(self, *states: str) -> Classification:
         return self._poll(lambda found: found.state in states, " or ".join(states))
@@ -136,15 +139,16 @@ def _prepare(root: Path) -> tuple[Path, Path]:
     return project, settings
 
 
-@pytest.fixture
-def pane() -> Iterator[Pane]:
+@contextlib.contextmanager
+def _session(permission_mode: str) -> Iterator[Pane]:
     if shutil.which("tmux") is None or shutil.which(CLAUDE) is None:
         pytest.skip(f"needs tmux and {CLAUDE} on PATH")
     root = Path(tempfile.mkdtemp(prefix="ccst-live-", dir="/tmp")) if FRESH else STABLE_DIR
     project, settings = _prepare(root)
     name = f"ccst-live-{uuid.uuid4().hex[:8]}"
     unset = [arg for var in _SESSION_ENV for arg in ("-u", var)]
-    command = ["env", *unset, CLAUDE, "--model", MODEL, "--settings", str(settings), "--permission-mode", "default"]
+    mode = ["--permission-mode", permission_mode]
+    command = ["env", *unset, CLAUDE, "--model", MODEL, "--settings", str(settings), *mode]
     subprocess.run(
         ["tmux", "new-session", "-d", "-s", name, "-x", "200", "-y", "50", "-c", str(project), "--", *command],
         check=True,
@@ -155,6 +159,18 @@ def pane() -> Iterator[Pane]:
         subprocess.run(["tmux", "kill-session", "-t", f"={name}"], check=False, capture_output=True)
         if FRESH:
             shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.fixture
+def pane() -> Iterator[Pane]:
+    with _session("default") as started:
+        yield started
+
+
+@pytest.fixture
+def plan_pane() -> Iterator[Pane]:
+    with _session("plan") as started:
+        yield started
 
 
 def _answer(pane: Pane, title: str) -> None:
@@ -206,3 +222,21 @@ def test_the_classifier_reads_a_real_session(pane: Pane) -> None:
     assert "busy" in pane.seen, pane.seen
     pane.keys("Escape")
     pane.wait_for(Classification("prompt_empty"))
+
+
+PLAN_TIMEOUT = 180.0
+"""Planning reads the project and writes the plan file before the dialog shows, which takes longer than one answer."""
+
+
+def test_the_classifier_reads_a_real_plan_approval(plan_pane: Pane) -> None:
+    _pass_startup(plan_pane)
+    prompt = "Make a short plan to append the line world to target.txt. Do not ask questions; present the plan."
+    plan_pane.keys(prompt, literal=True)
+    plan_pane.keys("Enter")
+    found = plan_pane.wait_for(Classification("plan_approval", "Ready to code?"), PLAN_TIMEOUT)
+    assert found.options is not None
+    assert [option.key for option in found.options] == [str(n) for n in range(1, len(found.options) + 1)]
+    assert found.options[0].selected
+    assert "Yes, manually approve edits" in [option.label for option in found.options], found.options
+    plan_pane.keys("Escape")  # rejects the plan; the session stays in plan mode at an empty prompt
+    plan_pane.wait_for(Classification("prompt_empty"))

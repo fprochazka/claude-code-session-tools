@@ -43,6 +43,7 @@ from .active import (
     SessionLookupError,
     build_views,
     capture_pane,
+    find_transcript_path,
     list_tmux_panes,
     lookup_session,
     pane_state,
@@ -51,6 +52,7 @@ from .active import (
     to_json,
     transcript_json,
 )
+from .plan import plan_json, read_plan_file
 from .screen import classify, plain_lines
 from .search import search_session_ids
 
@@ -327,10 +329,11 @@ INSPECT_KEYS = (
     "alive",
     "profile_starts",
     "resume_command",
+    "plan",
     "raw",
 )
 """The keys of ``inspect --json``, a stable contract: every key of ``list-active --json``, plus ``state``, the title,
-the auth-switch starts and the resume command."""
+the auth-switch starts, the resume command and the plan file."""
 
 
 SCREEN_LINES = 20
@@ -448,6 +451,10 @@ def to_inspect_json(found: Found, *, screen: bool = False) -> dict[str, Any]:
     data["title_source"] = transcript.title_source if transcript is not None else None
     data["profile_starts"] = _starts(transcript.profile_starts()) if transcript is not None else []
     data["resume_command"] = resume_command(profile, session_id)
+    path = find_transcript_path(found.live) if found.live is not None else None
+    if path is None and transcript is not None:
+        path = transcript.path
+    data["plan"] = plan_json(read_plan_file(path)) if path is not None else None
     result = {key: data.get(key) for key in INSPECT_KEYS}
     if screen:
         result["screen"] = screen_json(result)

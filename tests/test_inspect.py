@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -145,6 +146,7 @@ def test_the_json_keys_are_list_active_plus_the_ended_session_fields() -> None:
         "title_source",
         "profile_starts",
         "resume_command",
+        "plan",
     }
 
 
@@ -532,3 +534,54 @@ def test_an_ended_session_reports_its_context_window_and_a_compaction(machine: M
     window = json_of("compacted")["context_window"]
     assert (window["used"], window["compacted"], window["measured_at"]) == (0, True, f"{stamp(now - 60)[:19]}+00:00")
     assert "0k/1M compacted  claude-opus-5-5" in invoke("compacted").stdout
+
+
+# --- plan approval ---
+
+
+def plan_attachment(kind: str, path: Path, epoch_seconds: float) -> dict[str, Any]:
+    return {
+        "type": "attachment",
+        "slug": path.stem,
+        "timestamp": stamp(epoch_seconds),
+        "attachment": {"type": kind, "planFilePath": str(path), "planExists": kind != "plan_mode"},
+    }
+
+
+def test_the_plan_file_of_a_running_session_comes_from_the_newest_plan_attachment(machine: Machine) -> None:
+    machine.session("work", "planner")
+    plans = machine.home / "elsewhere" / ".claude" / "plans"
+    plans.mkdir(parents=True)
+    old, new = plans / "an-old-plan.md", plans / "a-quiet-otter.md"
+    new.write_text("1. Do the thing.\n")
+    now = time.time()
+    records = [
+        plan_attachment("plan_mode", old, now - 600),
+        plan_attachment("plan_mode_exit", old, now - 500),
+        response(now - 400),
+        plan_attachment("plan_mode", new, now - 300),
+    ]
+    write_records(machine.project_dir("work") / f"{sid('planner')}.jsonl", records)
+    plan = json_of("planner")["plan"]
+    assert plan["file"] == str(new)
+    assert plan["slug"] == "a-quiet-otter"
+    assert plan["exists"] is True
+    assert plan["sha256"] == hashlib.sha256(b"1. Do the thing.\n").hexdigest()
+    assert plan["modified_at"] is not None
+
+
+def test_the_plan_file_of_an_ended_session_and_a_missing_file(machine: Machine) -> None:
+    gone = machine.home / "proj" / ".claude" / "plans" / "a-missing-plan.md"
+    ended(machine, "work", "planned", names=["planned"], tail=[plan_attachment("plan_mode", gone, time.time() - 60)])
+    assert json_of("planned")["plan"] == {
+        "file": str(gone),
+        "slug": "a-missing-plan",
+        "exists": False,
+        "sha256": None,
+        "modified_at": None,
+    }
+
+
+def test_a_session_that_never_planned_has_no_plan(machine: Machine) -> None:
+    ended(machine, "work", "plain", names=["plain"])
+    assert json_of("plain")["plan"] is None

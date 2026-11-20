@@ -136,6 +136,9 @@ cc-session-tools list-active --tmux --json | jq -r '.[] | "\(.tmux_pane)\t\(.tmu
 
 # What a session's pane shows, and whether its prompt is empty
 cc-session-tools inspect w1-order-planner --screen --json | jq '.screen | {state, title, reason}'
+
+# A plan approval: the choices on screen and the plan file
+cc-session-tools inspect w1-order-planner --screen --json | jq '{options: .screen.options, plan: .plan.file, sha256: .plan.sha256}'
 ```
 
 ## inspect
@@ -180,7 +183,7 @@ Options:
 - **Running first.** SESSION is looked up among the running sessions: session id, name, `<profile>/<name>`, `<profile>/pid:<pid>`, pid, or a unique session id prefix. The `session` strings of `cc-session-tools watch` events are of these forms.
 - **Then ended sessions**, in this order: by session id or id prefix in every transcript; by the session's name or any earlier name or title, compared without case, among transcripts active in the last `--days` days (14 by default); by its pid from the auth-switch start log in the same window. `<profile>/` in front keeps sessions that profile ran last. A renamed session is found under an old name, and shown as running if it still runs.
 - **Several matches** in a step exit with `1` and list the candidates. Narrow with `<profile>/`, a longer id prefix, or the full session id.
-- **`--json` keys:** `state` (`running` or `ended`), every key above, `title`, `title_source`, `profile_starts` (`ts`, `pid`, `source`, `profile`, `role`, `role_prompt`, `role_prompt_mode` per start or resume), and `resume_command`. For an ended session the live-only fields (`pid`, `status`, tmux, messaging, `record_path`, `raw` …) are `null`, `cwd` is the last cwd its transcript recorded, `launch_cwd` the first, and `git_branch` the last.
+- **`--json` keys:** `state` (`running` or `ended`), every key above, `title`, `title_source`, `profile_starts` (`ts`, `pid`, `source`, `profile`, `role`, `role_prompt`, `role_prompt_mode` per start or resume), `resume_command`, and `plan`: the plan file of a session that entered plan mode, as `file`, `slug`, `exists`, `sha256` and `modified_at`, from the newest `plan_mode` or `plan_mode_exit` attachment of its transcript, or `null` when it never did. A rejected plan is revised in the same file; compare `sha256` to tell whether it changed. For an ended session the live-only fields (`pid`, `status`, tmux, messaging, `record_path`, `raw` …) are `null`, `cwd` is the last cwd its transcript recorded, `launch_cwd` the first, and `git_branch` the last.
 - **Resume an ended session** with its `resume_command` — tell the user the command rather than run it; it starts an interactive session.
 - A name lookup among ended sessions reads every transcript of the window; expect about a second.
 

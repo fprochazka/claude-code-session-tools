@@ -191,7 +191,9 @@ cc-session-tools inspect w1-order-planner --screen    # also what its tmux pane 
 
 The text output prints the cost as one line of totals and one line per model, and says whether the current run is left out, so a running session's cost does not read as its current cost.
 
-**`--json`** prints one object whose keys are a stable contract, the same for a running and an ended session: `state`, every key of `list-active --json`, `title`, `title_source`, `profile_starts` and `resume_command`. Fields only a running session has, such as `pid`, `status`, the tmux and messaging fields, `record_path` and `raw`, are `null` for an ended one.
+**`--json`** prints one object whose keys are a stable contract, the same for a running and an ended session: `state`, every key of `list-active --json`, `title`, `title_source`, `profile_starts`, `resume_command` and `plan`. Fields only a running session has, such as `pid`, `status`, the tmux and messaging fields, `record_path` and `raw`, are `null` for an ended one.
+
+**`plan`** is the plan file of a session that entered plan mode, the same for a running and an ended session, and `null` for a session that never did. In plan mode the model writes its plan into a file, and the plan approval dialog shows that file; the file's name is random and its dir depends on the `plansDirectory` setting. Claude Code records the path in the transcript, in the `plan_mode` attachment when the session enters plan mode and in the `plan_mode_exit` attachment after an approval, and `plan` comes from the newest of them. The object has `file` (the absolute path), `slug` (the file's base name), `exists`, `sha256` of the content and `modified_at`; the last two are `null` when the file does not exist, as before the model writes it. A rejected plan is revised in the same file, so compare `sha256` to tell whether it changed. Finding it reads the whole transcript, about 0.3 seconds for 170 MB.
 
 A session that has no name and was not started through an auth-switch wrapper can be found after it ended only by its session id.
 
@@ -333,6 +335,7 @@ src/cc_session_tools/
 ├── list_active_cmd.py # the `list-active` command
 ├── inspect_cmd.py     # the `inspect` command
 ├── inspection.py      # one session, running or ended: the lookup and its fields
+├── plan.py            # the plan file of a session in plan mode, from its transcript
 ├── screen.py          # what a captured tmux pane shows: empty prompt, input, dialog, permission prompt, plan approval, busy
 ├── watch_cmd.py       # the `watch` command: options, header, stream and changelog
 ├── watcher.py         # the polling loop: registry records in, session events out

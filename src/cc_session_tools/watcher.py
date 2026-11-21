@@ -41,6 +41,7 @@ from .active import (
     find_transcript_path,
     list_tmux_panes,
     pane_id_of,
+    place_pane,
     process_role,
     read_context_window,
     read_last_response,
@@ -619,14 +620,9 @@ class SessionTracker:
         return events
 
     def _place(self, tracked: Tracked) -> None:
-        pane = pane_id_of(tracked.session.tmux)
-        if pane is None:
-            tracked.tmux_state, tracked.tmux_live = None, None
-        elif self._panes is None:
-            tracked.tmux_state, tracked.tmux_live = "unknown", None
-        else:
-            tracked.tmux_live = self._panes.get(pane)
-            tracked.tmux_state = "present" if tracked.tmux_live is not None else "gone"
+        # A pane that is not the session's own counts as gone: it never places the session in a tmux session.
+        placement = place_pane(tracked.session, self._panes)
+        tracked.tmux_state, tracked.tmux_live = placement.state, placement.live
 
     def _refresh_tmux(self, now: float, *, report: bool, observed: str = "", force: bool = False) -> list[WatchEvent]:
         """Ask the tmux server where every pane is. A move is ``tmux_moved``; under ``--tmux-session`` it can also

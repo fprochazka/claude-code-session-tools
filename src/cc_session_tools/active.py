@@ -46,12 +46,23 @@ from .gitrepo import GitLocation, git_location
 from .screen import Classification, classify
 
 TmuxState = Literal["present", "gone", "unknown"]
-"""``present``: the pane exists. ``gone``: the tmux server runs and has no such pane. ``unknown``: tmux is not
-installed, or ``tmux list-panes`` failed, for example because no server runs on the default socket."""
+"""``present``: the pane exists and runs the session's process. ``gone``: the tmux server runs and has no such pane, or
+the pane id belongs to a pane whose process is not the session's process or one of its ancestors. ``unknown``: tmux is
+not installed, or ``tmux list-panes`` failed, for example because no server runs on the default socket."""
 
 _FIELD_SEPARATOR = "\t"
 _LIST_PANES_FORMAT = _FIELD_SEPARATOR.join(
-    ("#{pane_id}", "#{session_name}", "#{window_index}", "#{window_id}", "#{session_id}", "#{pane_title}")
+    (
+        "#{pane_id}",
+        "#{session_name}",
+        "#{window_index}",
+        "#{window_id}",
+        "#{session_id}",
+        "#{pane_pid}",
+        "#{pid}",
+        "#{socket_path}",
+        "#{pane_title}",
+    )
 )
 
 
@@ -65,6 +76,12 @@ class TmuxPane:
     window_id: str
     session_id: str
     """The tmux session's ``$N`` id, which stays when the session is renamed."""
+    pane_pid: int | None
+    """The process the pane runs, which the session's process must be or descend from for the pane to be its own."""
+    server_pid: int | None
+    """The pid of the tmux server that has the pane."""
+    socket_path: str
+    """The socket of the tmux server that has the pane."""
     pane_title: str
 
     def to_json(self) -> dict[str, Any]:
@@ -104,16 +121,19 @@ def list_tmux_panes() -> dict[str, TmuxPane] | None:
     panes: dict[str, TmuxPane] = {}
     for line in result.stdout.splitlines():
         # The pane title comes last and may itself hold the separator.
-        fields = line.split(_FIELD_SEPARATOR, 5)
-        if len(fields) != 6 or not fields[0].startswith("%"):
+        fields = line.split(_FIELD_SEPARATOR, 8)
+        if len(fields) != 9 or not fields[0].startswith("%"):
             continue
-        pane_id, session, window_index, window_id, session_id, title = fields
+        pane_id, session, window_index, window_id, session_id, pane_pid, server_pid, socket_path, title = fields
         panes[pane_id] = TmuxPane(
             pane_id=pane_id,
             session=session,
             window_index=int(window_index) if window_index.isdecimal() else None,
             window_id=window_id,
             session_id=session_id,
+            pane_pid=int(pane_pid) if pane_pid.isdecimal() else None,
+            server_pid=int(server_pid) if server_pid.isdecimal() else None,
+            socket_path=socket_path,
             pane_title=title,
         )
     return panes
@@ -240,7 +260,10 @@ class SessionView:
     tmux_state: TmuxState | None
     """``None`` when the session does not run in tmux."""
     tmux_live: TmuxPane | None
+    """The session's pane where the tmux server has it now; ``None`` unless :attr:`tmux_state` is ``present``."""
     git: GitLocation | None
+    tmux_not_owned: bool = False
+    """``True`` when :attr:`tmux_state` is ``gone`` because the pane exists but runs another process."""
     waiting_for: str | None = None
     """What the session waits for, with ``plan approval`` told apart from a permission prompt: see
     :func:`derive_waiting_for`."""
@@ -296,10 +319,43 @@ def resolve_tmux_session(value: str, panes: Mapping[str, TmuxPane] | None) -> Tm
     return TmuxSession(ids[value], value)
 
 
-def live_pane(session: ActiveSession, panes: Mapping[str, TmuxPane] | None) -> TmuxPane | None:
-    """The pane the session runs in, where the tmux server has it now, or ``None``."""
+@dataclass(frozen=True)
+class PanePlacement:
+    """Where a session's recorded pane is now, and whether it is the session's own."""
+
+    state: TmuxState | None
+    """``None`` when the session does not run in tmux."""
+    live: TmuxPane | None
+    """The pane, only when :attr:`state` is ``present``."""
+    not_owned: bool = False
+    """The listing has the pane id, but the pane runs another process: :attr:`state` is ``gone``."""
+
+
+def place_pane(session: ActiveSession, panes: Mapping[str, TmuxPane] | None) -> PanePlacement:
+    """Look the session's recorded pane up in a listing of the tmux server, and hand it out only when it is the
+    session's own.
+
+    The pane id alone does not say that: pane ids restart at ``%0`` with every tmux server, so the id a session
+    recorded can name another program's pane after a server restart, or on a server other than the one the session
+    runs on. The pane counts only when its process is the session's process or one of its ancestors, which costs a few
+    reads of ``/proc/<pid>/stat`` and no tmux call.
+    """
     pane_id = pane_id_of(session.tmux)
-    return panes.get(pane_id) if pane_id is not None and panes is not None else None
+    if pane_id is None:
+        return PanePlacement(None, None)
+    if panes is None:
+        return PanePlacement("unknown", None)
+    live = panes.get(pane_id)
+    if live is None:
+        return PanePlacement("gone", None)
+    if live.pane_pid is None or not runs_in_pane(live.pane_pid, session.pid):
+        return PanePlacement("gone", None, not_owned=True)
+    return PanePlacement("present", live)
+
+
+def live_pane(session: ActiveSession, panes: Mapping[str, TmuxPane] | None) -> TmuxPane | None:
+    """The pane the session runs in, where the tmux server has it now, or ``None``; see :func:`place_pane`."""
+    return place_pane(session, panes).live
 
 
 def build_views(
@@ -309,6 +365,8 @@ def build_views(
     panes: Mapping[str, TmuxPane] | None = None,
 ) -> list[SessionView]:
     """Resolve the tmux pane of every session with one tmux call, and the git location of each distinct cwd once.
+
+    A pane counts only when the session runs in it; see :func:`place_pane`.
 
     A session whose record waits for a permission prompt and that runs in a pane also costs a capture of that pane,
     to tell a plan approval from it; see :func:`derive_waiting_for`.
@@ -321,24 +379,22 @@ def build_views(
     git_cache: dict[Path, GitLocation | None] = {}
     views = []
     for session in sessions:
-        pane_id = pane_id_of(session.tmux)
-        state: TmuxState | None = None
-        live: TmuxPane | None = None
-        if pane_id is not None:
-            if panes is None:
-                state = "unknown"
-            else:
-                live = panes.get(pane_id)
-                state = "present" if live is not None else "gone"
+        placement = place_pane(session, panes)
         git: GitLocation | None = None
         if with_git and session.cwd is not None:
             if session.cwd not in git_cache:
                 git_cache[session.cwd] = git_location(session.cwd)
             git = git_cache[session.cwd]
-        waits = derive_waiting_for(session) if state == "present" else waiting_for(session)
+        waits = derive_waiting_for(session) if placement.state == "present" else waiting_for(session)
         views.append(
             SessionView(
-                session=session, tmux_pane=pane_id, tmux_state=state, tmux_live=live, git=git, waiting_for=waits
+                session=session,
+                tmux_pane=pane_id_of(session.tmux),
+                tmux_state=placement.state,
+                tmux_live=placement.live,
+                git=git,
+                tmux_not_owned=placement.not_owned,
+                waiting_for=waits,
             )
         )
     return views
@@ -379,7 +435,8 @@ class Filters:
     """Matched case-insensitively against the whole name. A session without a name never matches."""
     tmux_session_id: str | None = None
     """The ``$N`` id of the tmux session the session's pane must be in now, by the live tmux server. The id, not the
-    name, so a tmux session renamed during a watch keeps its panes."""
+    name, so a tmux session renamed during a watch keeps its panes. A pane that is not the session's own never
+    matches: callers pass only what :func:`place_pane` hands out."""
     role_globs: tuple[str, ...] = ()
     """The auth-switch role must match one of these, case-sensitively. A session without a role never matches."""
 

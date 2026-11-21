@@ -27,7 +27,7 @@ cc-session-tools watch --name 'w*-order-planner' --events=turns,context_high --c
 ```
 
 - **The default stream, `auto`,** sends each batch of events to this session as a message. With `--events-stream=stdout` nothing tells you that an event arrived; that mode is for scripts and terminals.
-- **Pick the sessions with the filters of `list-active`**: `--profile` and `--name` take globs, plus `--status`, `--here`, `--tmux/--no-tmux`, `--tmux-session <name>|current` and `--role <glob>`. The filters are evaluated again on every change, so a worker started later, renamed into the glob, or whose window was moved into the tmux session, joins the watch. `--tmux-session current` is the tmux session this command runs in, resolved once at the start. Renaming that tmux session keeps its sessions in the watch. A session whose role is not known yet when it starts joins with `session_matched` once its role is read, usually within seconds, at the latest at its first turn.
+- **Pick the sessions with the filters of `list-active`**: `--profile` and `--name` take globs, plus `--status`, `--here`, `--tmux/--no-tmux`, `--tmux-session <name>|current` and `--role <glob>`. The filters are evaluated again on every change, so a worker started later, renamed into the glob, or whose window was moved into the tmux session, joins the watch. A session counts as in a tmux session only when its process runs in the pane it recorded. `--tmux-session current` is the tmux session this command runs in, resolved once at the start. Renaming that tmux session keeps its sessions in the watch. A session whose role is not known yet when it starts joins with `session_matched` once its role is read, usually within seconds, at the latest at its first turn.
 - **Or name the sessions**: `watch w1-order-planner w2-order-planner` follows exactly those, by id, prefix, name or pid, and ends with reason `sessions_ended` when they all have ended.
 - **One watch per purpose.** A second watch with the same selection sends every event twice.
 - **Start it from the main session.** A watch started from a subagent messages the main session anyway; Claude Code has no route to a subagent. Forward the events a subagent needs with SendMessage.
@@ -69,9 +69,11 @@ Options:
                                   case-insensitively.
   --tmux-session <name|current>   Only sessions whose tmux pane is now in this
                                   tmux session, by the running tmux server, so
-                                  a window moved with move-window counts.
-                                  'current' is the tmux session this command
-                                  runs in. It is resolved once, at the start.
+                                  a window moved with move-window counts. A
+                                  pane counts only when the session's process
+                                  runs in it. 'current' is the tmux session
+                                  this command runs in. It is resolved once,
+                                  at the start.
   --role <str>                    Only sessions whose auth-switch role matches
                                   this glob, case-sensitively, for example
                                   'worker-*'. The role is the one its running

@@ -341,12 +341,13 @@ def _collapse_blank(lines: list[str]) -> list[str]:
     return [line for index, line in enumerate(lines) if line or index == 0 or lines[index - 1]]
 
 
-def screen_json(data: dict[str, Any]) -> dict[str, Any]:
+def screen_json(data: dict[str, Any], *, not_owned: bool = False) -> dict[str, Any]:
     """The ``screen`` object of ``inspect --screen``: what the session's tmux pane shows now, classified.
 
     ``reason`` says why nothing was captured, with ``state`` ``unknown`` and ``lines`` ``null``: ``ended``,
     ``not_in_tmux``, ``tmux_unavailable``, ``pane_gone``, ``pane_not_owned`` (the pane id now belongs to another
-    process, as after a tmux server restart), ``pane_in_mode`` (copy mode or another tmux mode would take the keys) or
+    process, as after a tmux server restart; ``not_owned`` says the listing already showed that, which ``tmux_state``
+    reports as ``gone``), ``pane_in_mode`` (copy mode or another tmux mode would take the keys) or
     ``capture_failed``. When the pane was captured, ``reason`` is ``null`` and an unrecognised screen is ``unknown``
     too. ``options`` lists the choices of a ``dialog``, ``permission_prompt`` or ``plan_approval``, and is ``null`` for
     every other state.
@@ -365,6 +366,8 @@ def screen_json(data: dict[str, Any]) -> dict[str, Any]:
         result["reason"] = "ended"
     elif pane is None:
         result["reason"] = "not_in_tmux"
+    elif not_owned:
+        result["reason"] = "pane_not_owned"
     elif data["tmux_state"] != "present":
         result["reason"] = "pane_gone" if data["tmux_state"] == "gone" else "tmux_unavailable"
     else:
@@ -387,8 +390,10 @@ def to_inspect_json(found: Found, *, screen: bool = False) -> dict[str, Any]:
     """The object ``inspect --json`` prints: ``state``, every key of ``list-active --json``, then what the transcript
     adds. The keys are the same for a running and an ended session. ``screen`` adds the ``screen`` key last."""
     transcript = found.transcript
+    not_owned = False
     if found.live is not None:
         view = build_views([found.live])[0]
+        not_owned = view.tmux_not_owned
         data: dict[str, Any] = {"state": "running", **to_json(view)}
         if transcript is None:
             transcript = found.live.transcript
@@ -430,5 +435,5 @@ def to_inspect_json(found: Found, *, screen: bool = False) -> dict[str, Any]:
     data["plan"] = plan_json(read_plan_file(path)) if path is not None else None
     result = {key: data.get(key) for key in INSPECT_KEYS}
     if screen:
-        result["screen"] = screen_json(result)
+        result["screen"] = screen_json(result, not_owned=not_owned)
     return result

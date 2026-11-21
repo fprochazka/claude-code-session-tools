@@ -251,9 +251,9 @@ def test_tmux_session_follows_a_window_moved_to_another_tmux_session(
     home_pane = real_tmux.new_session("alpha")
     other_pane = real_tmux.new_session("beta")
     moved_pane = real_tmux.new_window("alpha")
-    machine.session("work", "stays", tmux=real_tmux.recorded(home_pane))
-    machine.session("work", "moved", tmux=real_tmux.recorded(moved_pane))
-    machine.session("work", "other", tmux=real_tmux.recorded(other_pane))
+    machine.session_of(real_tmux.pane_pid(home_pane), "work", "stays", tmux=real_tmux.recorded(home_pane))
+    machine.session_of(real_tmux.pane_pid(moved_pane), "work", "moved", tmux=real_tmux.recorded(moved_pane))
+    machine.session_of(real_tmux.pane_pid(other_pane), "work", "other", tmux=real_tmux.recorded(other_pane))
     machine.session("work", "outside")
     real_tmux.move_window(moved_pane, "beta")
 
@@ -265,6 +265,19 @@ def test_tmux_session_follows_a_window_moved_to_another_tmux_session(
     result = invoke("--tmux-session", "current")
     assert result.exit_code == 0, result.output
     assert f"{moved_pane} beta:" in result.stdout
+
+
+def test_a_pane_the_session_does_not_run_in_is_gone(machine: Machine, real_tmux: RealTmux) -> None:
+    # Pane ids restart at %0 on every tmux server, so a recorded id can name another program's pane.
+    pane = real_tmux.new_session("alpha")
+    machine.session_of(real_tmux.pane_pid(pane), "work", "owner", tmux=real_tmux.recorded(pane))
+    machine.session("work", "stranger", tmux=real_tmux.recorded(pane))
+
+    stranger = one("stranger")
+    assert (stranger["tmux_state"], stranger["tmux_live"], stranger["tmux_pane"]) == ("gone", None, pane)
+    assert one("owner")["tmux_live"]["session"] == "alpha"
+    assert [s["name"] for s in json_of("--tmux-session", "alpha")] == ["owner"]
+    assert f"{pane} (gone)" in invoke("--name", "stranger").stdout
 
 
 @pytest.mark.parametrize(
@@ -545,12 +558,17 @@ def test_a_pane_that_no_longer_exists_is_gone(machine: Machine, fake_bin: Path) 
 
 
 def test_list_tmux_panes_parses_one_call(fake_bin: Path) -> None:
-    fake_tmux(fake_bin, ["%1\ta/b\t0\t@1\t$3\ttitle\twith tab", "garbage", "%7\tc\tx\t@7\t"])
+    fake_tmux(
+        fake_bin,
+        ["%1\ta/b\t0\t@1\t$3\t501\t42\t/tmp/tmux-1000/default\ttitle\twith tab", "garbage", "%7\tc\tx\t@7\t"],
+    )
     panes = list_tmux_panes()
     assert panes is not None
     assert set(panes) == {"%1", "%7"}
     assert panes["%1"].pane_title == "title\twith tab"
     assert panes["%1"].session_id == "$3"
+    first = panes["%1"]
+    assert (first.pane_pid, first.server_pid, first.socket_path) == (501, 42, "/tmp/tmux-1000/default")
     assert panes["%7"].window_index is None
 
 

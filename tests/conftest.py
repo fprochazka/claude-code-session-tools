@@ -105,13 +105,17 @@ class Machine:
 
     def session(self, profile: str, name: str | None, **fields: Any) -> int:
         process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
-        pid = process.pid
-        self.processes[pid] = process
+        self.processes[process.pid] = process
+        return self.session_of(process.pid, profile, name, **fields)
+
+    def session_of(self, pid: int, profile: str, name: str | None, **fields: Any) -> int:
+        """Write the record of a session whose process already runs, such as the process of a tmux pane. The test that
+        started the process stops it."""
         record: dict[str, Any] = {
             "pid": pid,
             "sessionId": sid(name or str(pid)),
             "cwd": str(self.home / "elsewhere"),
-            "startedAt": STARTED_AT + len(self.processes) * 1000,
+            "startedAt": STARTED_AT + (len(self.records) + 1) * 1000,
             "procStart": _proc_start(pid),
             "version": "2.1.319",
             "peerProtocol": 1,
@@ -235,19 +239,33 @@ def cost_state(total: float) -> dict[str, Any]:
     }
 
 
-def fake_tmux(bin_dir: Path, panes: list[str] | None, *, exit_code: int = 0) -> None:
-    """Install a ``tmux`` that prints ``panes`` (tab-separated list-panes lines) and exits with ``exit_code``.
+FAKE_TMUX_SERVER_PID = 4242
+FAKE_TMUX_SOCKET = "/tmp/tmux-1000/default"
+
+
+def pane_line(line: str, *, pane_pid: int | None = None) -> str:
+    """A full ``list-panes`` line from a short one.
 
     A line of five fields, ``pane, session name, window index, window id, title``, gets the tmux session id ``$<name>``
-    inserted before the title; a line of six gives it itself. Calling it again changes what the installed ``tmux``
-    prints from then on.
+    inserted before the title; a line of six gives it itself. Then ``pane_pid``, the server pid and the socket go in
+    before the title. ``pane_pid`` defaults to the test process, which every session process of :class:`Machine`
+    descends from, so the pane counts as the session's own.
     """
+    fields = line.split("\t")
+    if len(fields) == 5:
+        fields = [*fields[:4], f"${fields[1]}", fields[4]]
+    if len(fields) == 6:
+        pid = os.getpid() if pane_pid is None else pane_pid
+        fields = [*fields[:5], str(pid), str(FAKE_TMUX_SERVER_PID), FAKE_TMUX_SOCKET, fields[5]]
+    return "\t".join(fields)
 
-    def with_session_id(line: str) -> str:
-        fields = line.split("\t")
-        return "\t".join([*fields[:4], f"${fields[1]}", *fields[4:]]) if len(fields) == 5 else line
 
-    output = "".join(f"{with_session_id(line)}\n" for line in panes or [])
+def fake_tmux(bin_dir: Path, panes: list[str] | None, *, exit_code: int = 0, pane_pid: int | None = None) -> None:
+    """Install a ``tmux`` that prints ``panes`` (list-panes lines, see :func:`pane_line`) and exits with ``exit_code``.
+
+    Calling it again changes what the installed ``tmux`` prints from then on.
+    """
+    output = "".join(f"{pane_line(line, pane_pid=pane_pid)}\n" for line in panes or [])
     data = bin_dir / "tmux-panes.txt"
     data.write_text(output)
     script = bin_dir / "tmux"
@@ -277,6 +295,10 @@ class RealTmux:
 
     def rename_session(self, old: str, new: str) -> None:
         self.run("rename-session", "-t", old, new)
+
+    def pane_pid(self, pane: str) -> int:
+        """The process the pane runs."""
+        return int(self.run("display-message", "-p", "-t", pane, "#{pane_pid}"))
 
     def recorded(self, pane: str) -> str:
         """The pane as Claude Code records it at startup: ``<session>:@<window>.%<pane>``."""
@@ -334,7 +356,7 @@ def screen_tmux(
     ``vanish`` closes the pane when ``display-message`` asks about it, as if it closed after the listing.
     """
     panes_file = bin_dir / "tmux-panes.txt"
-    panes_file.write_text("".join(f"{line}\n" for line in panes))
+    panes_file.write_text("".join(f"{pane_line(line, pane_pid=pane_pid)}\n" for line in panes))
     capture_file = bin_dir / "tmux-capture.txt"
     capture_file.write_text(capture or "")
     captured = bin_dir / "tmux-captured"

@@ -13,6 +13,7 @@ import pytest
 from cc_blackbox import project_slug
 from conftest import (
     Machine,
+    RealTmux,
     compact_boundary,
     cost_state,
     fake_tmux,
@@ -441,6 +442,16 @@ def test_screen_says_why_nothing_was_captured(
         None,
         None,
     )
+    # Only a capture that failed was tried; every other reason is known before capturing.
+    assert (fake_bin / "tmux-captured").exists() == (reason == "capture_failed")
+
+
+def test_screen_of_a_pane_the_session_does_not_run_in(machine: Machine, real_tmux: RealTmux) -> None:
+    pane = real_tmux.new_session("alpha")
+    machine.session("work", "stranger", tmux=real_tmux.recorded(pane))
+    data = json_of("stranger", "--screen")
+    assert (data["tmux_state"], data["tmux_live"]) == ("gone", None)
+    assert (data["screen"]["reason"], data["screen"]["lines"]) == ("pane_not_owned", None)
 
 
 # In copy mode tmux captures the screen under it, an empty prompt, while the keys sent to the pane go to copy mode.

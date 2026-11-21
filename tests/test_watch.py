@@ -356,12 +356,26 @@ def test_move_window_on_a_real_tmux_server_joins_the_watch(machine: Machine, rea
     real_tmux.new_session("alpha")
     real_tmux.new_session("beta")
     pane = real_tmux.new_window("alpha")
-    machine.session("work", "worker", tmux=real_tmux.recorded(pane))
+    machine.session_of(real_tmux.pane_pid(pane), "work", "worker", tmux=real_tmux.recorded(pane))
     t = tracker(Selection(Filters(tmux_session_id=resolve_tmux_session("beta", list_tmux_panes()).id)))
     assert t.matched() == []
 
     real_tmux.move_window(pane, "beta")
     assert kinds(t.poll(NOW + 1)) == ["session_matched"]
+
+
+def test_a_pane_the_session_does_not_run_in_never_joins_the_watch(machine: Machine, real_tmux: RealTmux) -> None:
+    real_tmux.new_session("alpha")
+    real_tmux.new_session("beta")
+    pane = real_tmux.new_window("alpha")
+    machine.session("work", "stranger", tmux=real_tmux.recorded(pane))
+    t = tracker(Selection(Filters(tmux_session_id=resolve_tmux_session("beta", list_tmux_panes()).id)))
+    assert t.matched() == []
+
+    real_tmux.move_window(pane, "beta")
+    assert t.poll(NOW + 1) == []
+    assert t.matched() == []
+    assert [(x.tmux_state, x.tmux_live) for x in t.tracked.values()] == [("gone", None)]
 
 
 def test_a_renamed_tmux_session_keeps_its_sessions(machine: Machine, no_tmux: Path) -> None:
@@ -378,7 +392,7 @@ def test_a_renamed_tmux_session_keeps_its_sessions(machine: Machine, no_tmux: Pa
 def test_a_renamed_tmux_session_on_a_real_tmux_server_keeps_its_sessions(machine: Machine, real_tmux: RealTmux) -> None:
     real_tmux.new_session("beta")
     pane = real_tmux.new_window("beta")
-    machine.session("work", "worker", tmux=real_tmux.recorded(pane))
+    machine.session_of(real_tmux.pane_pid(pane), "work", "worker", tmux=real_tmux.recorded(pane))
     t = tracker(Selection(Filters(tmux_session_id=resolve_tmux_session("beta", list_tmux_panes()).id)))
     assert len(t.matched()) == 1
 

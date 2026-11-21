@@ -63,7 +63,8 @@ ROLE_HELP = (
 
 TMUX_SESSION_HELP = (
     "Only sessions whose tmux pane is now in this tmux session, by the running tmux server, so a window moved with "
-    "move-window counts. 'current' is the tmux session this command runs in."
+    "move-window counts. A pane counts only when the session's process runs in it. 'current' is the tmux session this "
+    "command runs in."
 )
 
 

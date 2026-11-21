@@ -69,6 +69,8 @@ def isolated_home(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: p
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    # Bare tmux then reaches a server in the test's own dir, never the user's default one.
+    monkeypatch.setenv("TMUX_TMPDIR", str(tmp_path))
     return home
 
 
@@ -103,8 +105,9 @@ class Machine:
     def config_dir(self, profile: str) -> Path:
         return self.home / ".claude" if profile == "default" else self.home / ".claude-profiles" / profile
 
-    def session(self, profile: str, name: str | None, **fields: Any) -> int:
-        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    def session(self, profile: str, name: str | None, *, env: dict[str, str] | None = None, **fields: Any) -> int:
+        """Start a sleeping process and write the record of a session it runs. ``env`` is its whole environment."""
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"], env=env)
         self.processes[process.pid] = process
         return self.session_of(process.pid, profile, name, **fields)
 
@@ -274,17 +277,31 @@ def fake_tmux(bin_dir: Path, panes: list[str] | None, *, exit_code: int = 0, pan
 
 
 class RealTmux:
-    """A private tmux server of its own, which every ``tmux`` call of the test reaches through ``$TMUX_TMPDIR``."""
+    """A private tmux server of its own, which every ``tmux`` call of the test reaches through ``$TMUX_TMPDIR``.
+
+    Without ``label`` it is the server bare ``tmux`` reaches, the caller's server; with it, a second server started with
+    ``tmux -L <label>`` in the same private dir.
+    """
+
+    def __init__(self, label: str | None = None) -> None:
+        self.label = label
 
     def run(self, *args: str) -> str:
+        server = ["-L", self.label] if self.label is not None else []
         result = subprocess.run(
-            ["tmux", "-f", os.devnull, *args], capture_output=True, text=True, check=True, timeout=10
+            ["tmux", *server, "-f", os.devnull, *args], capture_output=True, text=True, check=True, timeout=10
         )
         return result.stdout.strip()
 
-    def new_session(self, name: str) -> str:
-        """Start a tmux session; return the pane id of its first window."""
-        return self.run("new-session", "-d", "-s", name, "-P", "-F", "#{pane_id}", "sleep 600")
+    @property
+    def socket(self) -> str:
+        """The server's socket, as ``#{socket_path}`` gives it; the server must run."""
+        return self.run("display-message", "-p", "#{socket_path}")
+
+    def new_session(self, name: str, command: str = "sleep 600") -> str:
+        """Start a tmux session; return the pane id of its first window. ``command`` runs in the pane, under the
+        ``TMUX`` and ``TMUX_PANE`` tmux sets for it."""
+        return self.run("new-session", "-d", "-s", name, "-P", "-F", "#{pane_id}", command)
 
     def new_window(self, session: str) -> str:
         return self.run("new-window", "-d", "-t", f"{session}:", "-P", "-F", "#{pane_id}", "sleep 600")
@@ -296,9 +313,22 @@ class RealTmux:
     def rename_session(self, old: str, new: str) -> None:
         self.run("rename-session", "-t", old, new)
 
-    def pane_pid(self, pane: str) -> int:
-        """The process the pane runs."""
-        return int(self.run("display-message", "-p", "-t", pane, "#{pane_pid}"))
+    def pane_pid(self, pane: str, program: str | None = None) -> int:
+        """The process the pane runs.
+
+        With ``program``, wait until that process runs ``program``: the environment a pane command such as
+        ``exec env TMUX=… sleep 600`` sets shows in ``/proc/<pid>/environ`` only after the last exec.
+        """
+        pid = int(self.run("display-message", "-p", "-t", pane, "#{pane_pid}"))
+        if program is None:
+            return pid
+        comm = Path(f"/proc/{pid}/comm")
+        deadline = time.monotonic() + 5
+        while (current := comm.read_text(encoding="utf-8").strip()) != program:
+            if time.monotonic() > deadline:
+                raise AssertionError(f"the process {pid} of pane {pane} runs {current!r}, not {program!r}")
+            time.sleep(0.02)
+        return pid
 
     def recorded(self, pane: str) -> str:
         """The pane as Claude Code records it at startup: ``<session>:@<window>.%<pane>``."""
@@ -318,8 +348,19 @@ def real_tmux(fake_bin: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[RealT
     try:
         yield tmux
     finally:
-        subprocess.run(["tmux", "kill-server"], capture_output=True, check=False, timeout=10)
+        for server in ([], ["-L", OTHER_TMUX_SERVER]):
+            subprocess.run(["tmux", *server, "kill-server"], capture_output=True, check=False, timeout=10)
         shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+OTHER_TMUX_SERVER = "other"
+"""The label of the second private server :func:`other_tmux` starts, next to :func:`real_tmux`'s."""
+
+
+@pytest.fixture
+def other_tmux(real_tmux: RealTmux) -> RealTmux:
+    """A second private tmux server, ``tmux -L other`` in the same temp dir; :func:`real_tmux` kills it too."""
+    return RealTmux(OTHER_TMUX_SERVER)
 
 
 def log_start(project_dir: Path, session_id: str, ts_ms: int, **fields: Any) -> Path:
@@ -370,6 +411,8 @@ def screen_tmux(
     script = bin_dir / "tmux"
     script.write_text(
         "#!/bin/sh\n"
+        # Every tmux server answers the same; -S and -L pick one before the command.
+        'case "$1" in -S|-L) shift 2 ;; esac\n'
         'case "$1" in\n'
         f"  list-panes) cat '{panes_file}' ;;\n"
         f"  display-message) {display} ;;\n"

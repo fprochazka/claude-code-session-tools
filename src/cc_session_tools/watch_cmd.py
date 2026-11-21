@@ -361,6 +361,7 @@ def watch(
         in_tmux=tmux,
         name_glob=name,
         tmux_session_id=selected_tmux.id if selected_tmux is not None else None,
+        tmux_socket=selected_tmux.socket if selected_tmux is not None else None,
         role_globs=tuple(role or ()),
     )
     own = current_session_or_none()

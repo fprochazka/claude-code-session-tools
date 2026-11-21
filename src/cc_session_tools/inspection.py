@@ -262,6 +262,7 @@ LIVE_ONLY_KEYS = (
     "git_worktree_root",
     "git_repo_root",
     "tmux_pane",
+    "tmux_socket",
     "tmux_state",
     "tmux_live",
     "tmux_recorded",
@@ -307,6 +308,7 @@ INSPECT_KEYS = (
     "git_worktree_root",
     "git_repo_root",
     "tmux_pane",
+    "tmux_socket",
     "tmux_state",
     "tmux_live",
     "tmux_recorded",
@@ -371,7 +373,7 @@ def screen_json(data: dict[str, Any], *, not_owned: bool = False) -> dict[str, A
     elif data["tmux_state"] != "present":
         result["reason"] = "pane_gone" if data["tmux_state"] == "gone" else "tmux_unavailable"
     else:
-        capture = capture_screen(pane, data["pid"])
+        capture = capture_screen(pane, data["pid"], data["tmux_socket"])
         result["reason"] = capture.reason
         if capture.text is not None:
             classification = capture.classification

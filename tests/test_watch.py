@@ -8,13 +8,24 @@ from typing import Any
 
 import pytest
 from cc_blackbox import ActiveSession, project_slug
-from conftest import Machine, RealTmux, compact_boundary, fake_tmux, log_start, response, sid, write_records
+from conftest import (
+    FAKE_TMUX_SOCKET,
+    Machine,
+    RealTmux,
+    compact_boundary,
+    fake_tmux,
+    log_start,
+    response,
+    sid,
+    write_records,
+)
 from typer.testing import CliRunner
 
 from cc_session_tools.active import (
     Filters,
     list_tmux_panes,
     read_context_window,
+    real_socket,
     resolve_profile_globs,
     resolve_tmux_session,
 )
@@ -89,6 +100,12 @@ def tracker(selection: Selection | None = None, thresholds: Thresholds | None = 
     t = SessionTracker(selection or Selection(), thresholds or Thresholds(), tmux_interval=0)
     t.start(NOW)
     return t
+
+
+def tmux_session_filters(name: str) -> Filters:
+    """The filters of ``--tmux-session <name>``, resolved on the caller's tmux server."""
+    selected = resolve_tmux_session(name, list_tmux_panes())
+    return Filters(tmux_session_id=selected.id, tmux_socket=selected.socket)
 
 
 def kinds(events: list[WatchEvent]) -> list[str]:
@@ -222,7 +239,10 @@ def test_status_transitions_with_derived_events(machine: Machine) -> None:
     assert kinds(machine_events + t.poll(NOW + 5)) == ["status_changed", "status_changed"]
 
 
-def test_a_permission_prompt_whose_pane_shows_the_plan_dialog_is_a_plan_approval(machine: Machine) -> None:
+def test_a_permission_prompt_whose_pane_shows_the_plan_dialog_is_a_plan_approval(
+    machine: Machine, fake_bin: Path
+) -> None:
+    fake_tmux(fake_bin, ["%14\tmain\t3\t@14\t", "%15\tmain\t4\t@15\t"])
     planner = machine.session("work", "planner", status="busy", tmux="main:@14.%14")
     asker = machine.session("work", "asker", status="busy", tmux="main:@15.%15")
     outside = machine.session("work", "outside", status="busy")
@@ -262,13 +282,31 @@ def test_a_permission_prompt_whose_pane_shows_the_plan_dialog_is_a_plan_approval
     assert slept == [1.0]
 
 
-def test_watch_started_tells_a_plan_approval_from_a_permission_prompt(machine: Machine) -> None:
+def test_watch_started_tells_a_plan_approval_from_a_permission_prompt(machine: Machine, no_tmux: Path) -> None:
+    fake_tmux(no_tmux, ["%14\tmain\t3\t@14\t"])
     machine.session("work", "planner", status="waiting", waitingFor="permission prompt", tmux="main:@14.%14")
     t = SessionTracker(Selection(), Thresholds(), tmux_interval=0, read_screen=lambda session: "plan_approval")
     t.start(NOW)
     assert [t.summary(m) for m in t.matched()] == [
         {"session": "work/planner", "status": "waiting", "waiting_for": "plan approval"}
     ]
+
+
+def test_a_pane_that_is_not_the_sessions_own_is_never_captured(machine: Machine, no_tmux: Path) -> None:
+    fake_tmux(no_tmux, ["%14\tmain\t3\t@14\t"], pane_pid=1)
+    machine.session("work", "planner", status="waiting", waitingFor="permission prompt", tmux="main:@14.%14")
+    captured: list[int] = []
+
+    def read_screen(session: ActiveSession) -> str | None:
+        captured.append(session.pid)
+        return "plan_approval"
+
+    t = SessionTracker(Selection(), Thresholds(), tmux_interval=0, read_screen=read_screen)
+    t.start(NOW)
+    assert [t.summary(m) for m in t.matched()] == [
+        {"session": "work/planner", "status": "waiting", "waiting_for": "permission prompt"}
+    ]
+    assert captured == []
 
 
 def test_an_unchanged_record_reports_nothing(machine: Machine) -> None:
@@ -323,7 +361,7 @@ def test_a_new_session_in_a_new_pane_is_placed_at_once(machine: Machine, no_tmux
 def test_a_window_moved_into_or_out_of_the_tmux_session_joins_or_leaves(machine: Machine, no_tmux: Path) -> None:
     fake_tmux(no_tmux, ["%14\talpha\t3\t@14\t"])
     machine.session("work", "worker", tmux="alpha:@14.%14")
-    t = tracker(Selection(Filters(tmux_session_id="$beta")))
+    t = tracker(Selection(Filters(tmux_session_id="$beta", tmux_socket=real_socket(FAKE_TMUX_SOCKET))))
     assert t.matched() == []
 
     fake_tmux(no_tmux, ["%14\tbeta\t1\t@14\t"])
@@ -345,7 +383,7 @@ def test_a_window_moved_into_or_out_of_the_tmux_session_joins_or_leaves(machine:
 
 
 def test_a_new_session_in_the_tmux_session_joins_at_once(machine: Machine, no_tmux: Path) -> None:
-    t = tracker(Selection(Filters(tmux_session_id="$beta")))
+    t = tracker(Selection(Filters(tmux_session_id="$beta", tmux_socket=real_socket(FAKE_TMUX_SOCKET))))
     fake_tmux(no_tmux, ["%20\tbeta\t1\t@20\t", "%21\talpha\t1\t@21\t"])
     machine.session("work", "inside", tmux="beta:@20.%20")
     machine.session("work", "outside", tmux="alpha:@21.%21")
@@ -357,7 +395,7 @@ def test_move_window_on_a_real_tmux_server_joins_the_watch(machine: Machine, rea
     real_tmux.new_session("beta")
     pane = real_tmux.new_window("alpha")
     machine.session_of(real_tmux.pane_pid(pane), "work", "worker", tmux=real_tmux.recorded(pane))
-    t = tracker(Selection(Filters(tmux_session_id=resolve_tmux_session("beta", list_tmux_panes()).id)))
+    t = tracker(Selection(tmux_session_filters("beta")))
     assert t.matched() == []
 
     real_tmux.move_window(pane, "beta")
@@ -369,7 +407,7 @@ def test_a_pane_the_session_does_not_run_in_never_joins_the_watch(machine: Machi
     real_tmux.new_session("beta")
     pane = real_tmux.new_window("alpha")
     machine.session("work", "stranger", tmux=real_tmux.recorded(pane))
-    t = tracker(Selection(Filters(tmux_session_id=resolve_tmux_session("beta", list_tmux_panes()).id)))
+    t = tracker(Selection(tmux_session_filters("beta")))
     assert t.matched() == []
 
     real_tmux.move_window(pane, "beta")
@@ -378,10 +416,26 @@ def test_a_pane_the_session_does_not_run_in_never_joins_the_watch(machine: Machi
     assert [(x.tmux_state, x.tmux_live) for x in t.tracked.values()] == [("gone", None)]
 
 
+def test_a_session_on_another_tmux_server_never_joins_the_watch(
+    machine: Machine, real_tmux: RealTmux, other_tmux: RealTmux
+) -> None:
+    real_tmux.new_session("alpha")
+    live = other_tmux.new_session("live")
+    machine.session_of(other_tmux.pane_pid(live), "work", "worker", tmux=other_tmux.recorded(live))
+    t = tracker(Selection(tmux_session_filters("alpha")))
+    assert t.matched() == []
+    assert [(x.tmux_state, x.tmux_live and x.tmux_live.session) for x in t.tracked.values()] == [("present", "live")]
+
+    later = other_tmux.new_window("live")
+    machine.session_of(other_tmux.pane_pid(later), "work", "later", tmux=other_tmux.recorded(later))
+    assert t.poll(NOW + 1) == []
+    assert t.matched() == []
+
+
 def test_a_renamed_tmux_session_keeps_its_sessions(machine: Machine, no_tmux: Path) -> None:
     fake_tmux(no_tmux, ["%14\tbeta\t1\t@14\t$7\t"])
     machine.session("work", "worker", tmux="beta:@14.%14")
-    t = tracker(Selection(Filters(tmux_session_id="$7")))
+    t = tracker(Selection(Filters(tmux_session_id="$7", tmux_socket=real_socket(FAKE_TMUX_SOCKET))))
     assert len(t.matched()) == 1
 
     fake_tmux(no_tmux, ["%14\tgamma\t1\t@14\t$7\t"])
@@ -393,7 +447,7 @@ def test_a_renamed_tmux_session_on_a_real_tmux_server_keeps_its_sessions(machine
     real_tmux.new_session("beta")
     pane = real_tmux.new_window("beta")
     machine.session_of(real_tmux.pane_pid(pane), "work", "worker", tmux=real_tmux.recorded(pane))
-    t = tracker(Selection(Filters(tmux_session_id=resolve_tmux_session("beta", list_tmux_panes()).id)))
+    t = tracker(Selection(tmux_session_filters("beta")))
     assert len(t.matched()) == 1
 
     real_tmux.rename_session("beta", "gamma")

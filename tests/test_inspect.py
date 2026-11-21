@@ -58,6 +58,7 @@ LIST_ACTIVE_KEYS = [
     "git_worktree_root",
     "git_repo_root",
     "tmux_pane",
+    "tmux_socket",
     "tmux_state",
     "tmux_live",
     "tmux_recorded",
@@ -444,6 +445,23 @@ def test_screen_says_why_nothing_was_captured(
     )
     # Only a capture that failed was tried; every other reason is known before capturing.
     assert (fake_bin / "tmux-captured").exists() == (reason == "capture_failed")
+
+
+def test_inspect_resolves_a_pane_on_another_tmux_server(
+    machine: Machine, real_tmux: RealTmux, other_tmux: RealTmux
+) -> None:
+    real_tmux.new_session("alpha", "printf 'on the caller server'; sleep 600")
+    live = other_tmux.new_session("live", "printf 'on the other server'; sleep 600")
+    for _ in range(50):
+        if "on the other server" in other_tmux.run("capture-pane", "-p", "-t", live):
+            break
+        time.sleep(0.1)
+    machine.session_of(other_tmux.pane_pid(live), "work", "worker", tmux=other_tmux.recorded(live))
+
+    data = json_of("worker", "--screen")
+    assert (data["tmux_pane"], data["tmux_socket"], data["tmux_live"]["session"]) == ("%0", other_tmux.socket, "live")
+    assert data["screen"]["reason"] is None
+    assert "on the other server" in "\n".join(data["screen"]["lines"])
 
 
 def test_screen_of_a_pane_the_session_does_not_run_in(machine: Machine, real_tmux: RealTmux) -> None:

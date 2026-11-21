@@ -44,8 +44,9 @@ Options:
                                   tmux session, by the running tmux server, so
                                   a window moved with move-window counts. A
                                   pane counts only when the session's process
-                                  runs in it. 'current' is the tmux session
-                                  this command runs in.
+                                  runs in it, and sessions on other tmux
+                                  servers never match. 'current' is the tmux
+                                  session this command runs in.
   --role <str>                    Only sessions whose auth-switch role matches
                                   this glob, case-sensitively, for example
                                   'worker-*'. The role is the one its running
@@ -66,7 +67,7 @@ Options:
 - **`--profile` and `--name` take globs.** `--profile 'work*'` covers every profile whose name starts with `work`; a plain name matches only that profile. A `--profile` glob that matches no profile exits with `1` and lists the known profiles.
 - **Filters combine with AND.**
 - **`--role <glob>`** keeps the sessions whose role matches, case-sensitively; repeatable. A session without a role never matches. The table shows a Role column only when a listed session has a role.
-- **`--tmux-session <name>`** keeps the sessions whose pane is in that tmux session now, by the tmux server, so a window moved there with `move-window` counts. A session whose recorded pane id now names a pane it does not run in never matches. `--tmux-session current` is the tmux session this command runs in, from `$TMUX_PANE`: the sessions next to you. A name that no tmux session has, or `current` outside tmux, exits with `1` and lists the tmux sessions.
+- **`--tmux-session <name>`** keeps the sessions whose pane is in that tmux session now, by the tmux server, so a window moved there with `move-window` counts. A session whose recorded pane id now names a pane it does not run in never matches, and neither does a session on another tmux server: the name is resolved on the server bare `tmux` reaches. `--tmux-session current` is the tmux session this command runs in, from `$TMUX_PANE`: the sessions next to you. A name that no tmux session has, or `current` outside tmux, exits with `1` and lists the tmux sessions.
 - **`list-active` only lists.** For one session run `inspect`; `list-active <SESSION>` exits with `2` and prints the `inspect` command.
 - **"Active in the last hour" is `--active-within 1h`**, never a filter on `updated_at`. The record's `updated_at` changes with the status, but a local command such as `/login` moves it without the model, so a session idle for days can have a fresh `updated_at`. It can also lag behind a session that answered later. `--active-within` reads the transcript: the newest model response in it or in any subagent's, else the session's start when it has no response yet.
 - **`--here`** uses the scope of `search`: the main checkout, every worktree, and the legacy `<repo>-worktrees/` sibling dir. It matches the session's current `cwd`, which changes when the session moves into a worktree.
@@ -88,7 +89,8 @@ Options:
 - `last_record_at`: the newest timestamp of any transcript record. Records without the model, such as `/login`, attachments and rename notices, count too, so it can be days after `last_activity_at`.
 - `cwd`: the session's current dir. `launch_cwd`: the dir its process started in, or `null` before the first transcript record.
 - `git_branch`: the short branch of `cwd`, `null` when detached, unborn or outside git. `git_worktree_root`: the checkout that holds `cwd`. `git_repo_root`: the main checkout, the same for every worktree of a repo.
-- `tmux_pane`: the pane id such as `%14`, or `null` outside tmux. It is the address to use with tmux.
+- `tmux_pane`: the pane id such as `%14`, or `null` outside tmux. It is the address to use with tmux, on the server of `tmux_socket`.
+- `tmux_socket`: the socket of the tmux server the session runs on, such as `/tmp/tmux-1000/default`: the one `TMUX` in its process environment names, else the caller's server when the pane was found and owned there, else `null`. Pane ids repeat on every server, so pass it as `tmux -S <tmux_socket>`.
 - `tmux_state`: `present`, `gone` (the tmux server has no such pane, or the pane with that id runs another process), `unknown` (tmux is missing or has no server), or `null` outside tmux.
 - `tmux_live`: `{session, window_index, window_id, pane_title}` from the running tmux server, or `null` when the pane is not `present`. A pane is `present` only when the session's process runs in it.
 - `tmux_recorded`: the record's own `<session>:@<window>.%<pane>`. Claude Code writes it once at startup, so its session part goes stale when a window moves to another tmux session. **Trust `tmux_live`, never the session part of `tmux_recorded`.**
@@ -105,8 +107,8 @@ Options:
 # Names and status of the busy sessions
 cc-session-tools list-active --status busy --json | jq -r '.[] | "\(.address)\t\(.status)"'
 
-# Pane id of a session by name
-cc-session-tools inspect w1-order-planner --json | jq -r '.tmux_pane'
+# Tmux server and pane id of a session by name
+cc-session-tools inspect w1-order-planner --json | jq -r '"\(.tmux_socket)\t\(.tmux_pane)"'
 
 # Sessions of one profile working in this repo, with their branch and pane
 cc-session-tools list-active --here --profile work-team --json | jq -r '.[] | "\(.name)\t\(.git_branch)\t\(.tmux_pane)"'
@@ -208,13 +210,13 @@ The classification reads Claude Code's screen layout and answers `unknown` whene
 
 ## Acting on a pane
 
-Every tmux command accepts the pane id as a target, wherever the window has moved:
+Every tmux command accepts the pane id as a target, wherever the window has moved. Pane ids are numbered per tmux server, so always add `-S <tmux_socket>` to reach the session's own server; bare `tmux` reaches only yours. Act on a pane only when `tmux_state` is `present`. When `tmux_socket` is `null`, there is no pane to act on: the session is outside tmux, or its pane was not found and owned.
 
-- `tmux capture-pane -p -t %14 | tail -40` shows what the session shows now, without touching it. Use it to peek.
-- `tmux switch-client -t %14` moves the user's tmux client to the session. Run it only when the user asks to go there.
-- `tmux send-keys -t %14 …` types into the session. Never do this without the user's explicit request; to talk to another session, send it a message at its `messaging_address` instead. When you do type, run `cc-session-tools inspect <session> --screen --json` first and type only when `.screen.state` is `prompt_empty`.
+- `tmux -S <tmux_socket> capture-pane -p -t %14 | tail -40` shows what the session shows now, without touching it. Use it to peek.
+- `tmux switch-client -t %14` moves the user's tmux client to the session. Run it only when the user asks to go there. It works only within the client's own server: a session on another tmux server is reached by attaching to that server.
+- `tmux -S <tmux_socket> send-keys -t %14 …` types into the session. Never do this without the user's explicit request; to talk to another session, send it a message at its `messaging_address` instead. When you do type, run `cc-session-tools inspect <session> --screen --json` first and type only when `.screen.state` is `prompt_empty`.
 
-When `tmux_state` is `gone`, the session no longer runs in the pane it started in: the tmux server has no pane with that id, or that pane runs another process. Never act on `tmux_pane` then. When it is `unknown`, this process cannot reach the tmux server the session runs in.
+When `tmux_state` is `gone`, the session no longer runs in the pane it started in: its tmux server has no pane with that id, the server was restarted, or that pane runs another process. Never act on `tmux_pane` then. When it is `unknown`, this process cannot reach the tmux server the session runs in.
 
 ## limits
 

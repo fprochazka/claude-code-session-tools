@@ -5,7 +5,9 @@ so this module looks them up again:
 
 - ``tmux``: Claude Code writes ``<session>:@<window>.%<pane>`` once, at startup. Moving a window to another tmux
   session leaves the record stale. Only the pane id ``%N`` stays valid for the life of the pane, so the session and
-  window are read from the running tmux server, with one ``tmux list-panes -a`` call for all sessions.
+  window are read from the running tmux server, with one ``tmux list-panes -a`` call per tmux server. Pane ids are
+  numbered per server, so each pane is looked up on the server the session runs on: cc-blackbox reads its socket
+  from ``TMUX`` in the session's process environment.
 - the git branch: the record has none. It comes from ``git rev-parse`` in the session's current directory.
 
 The record's ``updatedAt`` changes with the status and with local commands such as ``/login``, and can lag behind
@@ -16,10 +18,11 @@ from the transcript: the newest model response in it or in any of its subagents'
 from __future__ import annotations
 
 import fnmatch
+import functools
 import os
 import subprocess
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -81,7 +84,7 @@ class TmuxPane:
     server_pid: int | None
     """The pid of the tmux server that has the pane."""
     socket_path: str
-    """The socket of the tmux server that has the pane."""
+    """The socket of the tmux server that has the pane, with symlinks resolved."""
     pane_title: str
 
     def to_json(self) -> dict[str, Any]:
@@ -104,15 +107,30 @@ def pane_id_of(recorded: str | None) -> str | None:
     return pane if pane.startswith("%") and pane[1:].isdecimal() else None
 
 
-def list_tmux_panes() -> dict[str, TmuxPane] | None:
-    """Every pane of the tmux server by pane id, or ``None`` when tmux is not installed or the call fails."""
+@functools.lru_cache(maxsize=256)
+def real_socket(path: str) -> str:
+    """``path`` with symlinks resolved, so two spellings of one tmux socket compare equal."""
+    return os.path.realpath(path)
+
+
+def _server_args(socket: str | Path | None) -> list[str]:
+    """``-S <socket>`` for a tmux server other than the caller's, nothing for the one bare ``tmux`` reaches."""
+    return ["-S", os.fspath(socket)] if socket is not None else []
+
+
+def list_tmux_panes(socket: str | Path | None = None) -> dict[str, TmuxPane] | None:
+    """Every pane of a tmux server by pane id, or ``None`` when tmux is not installed or the call fails.
+
+    ``socket`` picks the server; without it, the server bare ``tmux`` reaches: the one of ``$TMUX``, else the default.
+    Another server gets a shorter timeout, so a hung server of one session cannot hold up a watch's poll for long.
+    """
     try:
         result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", _LIST_PANES_FORMAT],
+            ["tmux", *_server_args(socket), "list-panes", "-a", "-F", _LIST_PANES_FORMAT],
             capture_output=True,
             text=True,
             check=False,
-            timeout=10,
+            timeout=10 if socket is None else 2,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -133,23 +151,25 @@ def list_tmux_panes() -> dict[str, TmuxPane] | None:
             session_id=session_id,
             pane_pid=int(pane_pid) if pane_pid.isdecimal() else None,
             server_pid=int(server_pid) if server_pid.isdecimal() else None,
-            socket_path=socket_path,
+            socket_path=real_socket(socket_path),
             pane_title=title,
         )
     return panes
 
 
-def _tmux(*args: str) -> str | None:
+def _tmux(*args: str, socket: str | Path | None = None) -> str | None:
     try:
-        result = subprocess.run(["tmux", *args], capture_output=True, text=True, check=False, timeout=10)
+        result = subprocess.run(
+            ["tmux", *_server_args(socket), *args], capture_output=True, text=True, check=False, timeout=10
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     return result.stdout if result.returncode == 0 else None
 
 
-def capture_pane(pane_id: str) -> str | None:
+def capture_pane(pane_id: str, socket: str | Path | None = None) -> str | None:
     """What the pane shows now, with its colors and attributes as escape sequences, or ``None`` when tmux fails."""
-    return _tmux("capture-pane", "-p", "-e", "-t", pane_id)
+    return _tmux("capture-pane", "-p", "-e", "-t", pane_id, socket=socket)
 
 
 def _parent_pid(pid: int) -> int | None:
@@ -178,9 +198,11 @@ class PaneState:
     """The cursor's column and line in the pane, counted from 0 at the top left."""
 
 
-def pane_state(pane_id: str) -> PaneState | None:
+def pane_state(pane_id: str, socket: str | Path | None = None) -> PaneState | None:
     """The pane's process, mode and cursor, or ``None`` when tmux has no such pane or does not answer."""
-    output = _tmux("display-message", "-p", "-t", pane_id, "#{pane_pid} #{pane_in_mode} #{cursor_x} #{cursor_y}")
+    output = _tmux(
+        "display-message", "-p", "-t", pane_id, "#{pane_pid} #{pane_in_mode} #{cursor_x} #{cursor_y}", socket=socket
+    )
     fields = output.split() if output is not None else []
     if len(fields) != 4 or not fields[0].isdecimal():
         return None
@@ -218,11 +240,11 @@ class ScreenCapture:
     captured_at: datetime | None = None
 
 
-def _check_pane(pane: str, pid: int) -> tuple[str | None, PaneState | None]:
+def _check_pane(pane: str, pid: int, socket: str | Path | None) -> tuple[str | None, PaneState | None]:
     """Why the pane cannot be captured for the session ``pid`` now, or ``None`` and the pane's state when it can."""
-    state = pane_state(pane)
+    state = pane_state(pane, socket)
     if state is None:
-        panes = list_tmux_panes()
+        panes = list_tmux_panes(socket)
         if panes is None:
             return "tmux_unavailable", None
         return ("pane_gone" if pane not in panes else "capture_failed"), None
@@ -233,18 +255,18 @@ def _check_pane(pane: str, pid: int) -> tuple[str | None, PaneState | None]:
     return None, state
 
 
-def capture_screen(pane: str, pid: int) -> ScreenCapture:
-    """Capture the pane of the session ``pid`` and classify what it shows.
+def capture_screen(pane: str, pid: int, socket: str | Path | None = None) -> ScreenCapture:
+    """Capture the pane of the session ``pid`` on the tmux server of ``socket`` and classify what it shows.
 
     The pane must run the session's process and be in no tmux mode, before and after the capture: a pane can enter
     copy mode, or close, while it is captured, and then the capture does not count. The cursor counts only when it did
     not move during the capture. Costs three or four tmux calls.
     """
-    reason, before = _check_pane(pane, pid)
+    reason, before = _check_pane(pane, pid, socket)
     if reason is not None or before is None:
         return ScreenCapture(reason, Classification("unknown"))
-    captured = capture_pane(pane)
-    reason, after = _check_pane(pane, pid)
+    captured = capture_pane(pane, socket)
+    reason, after = _check_pane(pane, pid, socket)
     if captured is None or after is None:
         return ScreenCapture(reason or "capture_failed", Classification("unknown"))
     cursor = after.cursor if before.cursor == after.cursor else None
@@ -264,6 +286,11 @@ class SessionView:
     git: GitLocation | None
     tmux_not_owned: bool = False
     """``True`` when :attr:`tmux_state` is ``gone`` because the pane exists but runs another process."""
+    tmux_socket: str | None = None
+    """The socket of the tmux server the session runs on: the one its environment names, else the caller's server
+    when the pane was found and owned there, else ``None``."""
+    tmux_other_server: bool = False
+    """``True`` when the pane is on a tmux server other than the one bare ``tmux`` reaches."""
     waiting_for: str | None = None
     """What the session waits for, with ``plan approval`` told apart from a permission prompt: see
     :func:`derive_waiting_for`."""
@@ -286,6 +313,8 @@ class TmuxSession:
     """The ``$N`` id, which the selection matches, so that renaming the tmux session keeps its panes selected."""
     name: str
     """The name at the moment it was resolved."""
+    socket: str
+    """The socket of the caller's tmux server, which has the tmux session; ``$N`` ids repeat on every server."""
 
 
 class TmuxSessionNotFound(LookupError):
@@ -297,7 +326,8 @@ def resolve_tmux_session(value: str, panes: Mapping[str, TmuxPane] | None) -> Tm
 
     ``current`` is the session of the pane in ``$TMUX_PANE``, the pane this command runs in, where that pane is now.
     Any other value must be the exact name of a session of the tmux server, so a typo is an error instead of an empty
-    selection.
+    selection. ``panes`` is the listing of the caller's tmux server, the one bare ``tmux`` reaches; sessions on other
+    servers cannot be selected.
 
     Raises:
         TmuxSessionNotFound: the message says why.
@@ -310,13 +340,70 @@ def resolve_tmux_session(value: str, panes: Mapping[str, TmuxPane] | None) -> Tm
             raise TmuxSessionNotFound("--tmux-session current: this command does not run in tmux ($TMUX_PANE is unset)")
         if pane not in panes:
             raise TmuxSessionNotFound(f"--tmux-session current: the tmux server has no pane {pane} ($TMUX_PANE)")
-        return TmuxSession(panes[pane].session_id, panes[pane].session)
-    ids = {p.session: p.session_id for p in panes.values()}
-    if value not in ids:
+        return TmuxSession(panes[pane].session_id, panes[pane].session, panes[pane].socket_path)
+    found = {p.session: p for p in panes.values()}
+    if value not in found:
         raise TmuxSessionNotFound(
-            f"--tmux-session: no tmux session is named {value!r}. tmux sessions: {', '.join(sorted(ids)) or 'none'}."
+            f"--tmux-session: no tmux session is named {value!r}. tmux sessions: {', '.join(sorted(found)) or 'none'}."
         )
-    return TmuxSession(ids[value], value)
+    return TmuxSession(found[value].session_id, value, found[value].socket_path)
+
+
+@dataclass(frozen=True)
+class TmuxServers:
+    """The pane listings of the caller's tmux server and of the other servers the sessions run on.
+
+    A listing is ``None`` when its server did not answer: tmux is missing, or no server runs on that socket.
+    """
+
+    caller: Mapping[str, TmuxPane] | None
+    """The listing of the server bare ``tmux`` reaches."""
+    others: Mapping[str, Mapping[str, TmuxPane] | None] = field(default_factory=dict)
+    """The listings of the other servers, by socket with symlinks resolved."""
+
+    @property
+    def caller_socket(self) -> str | None:
+        """The socket of the caller's server, from its listing; ``None`` when it did not answer."""
+        return next((p.socket_path for p in self.caller.values()), None) if self.caller else None
+
+    def socket_key(self, session: ActiveSession) -> str | None:
+        """The socket whose listing holds the session's pane, or ``None`` for the caller's server.
+
+        A session whose socket is unknown, because its environment could not be read, has no ``TMUX`` or names a
+        relative socket, is looked up on the caller's server; the ownership check keeps a foreign pane out.
+        """
+        if session.tmux_socket is None:
+            return None
+        real = real_socket(os.fspath(session.tmux_socket))
+        return None if real == self.caller_socket else real
+
+    def listing(self, session: ActiveSession) -> Mapping[str, TmuxPane] | None:
+        """The listing of the server the session runs on, or ``None`` when that server was not listed or did not
+        answer."""
+        key = self.socket_key(session)
+        return self.caller if key is None else self.others.get(key)
+
+    def has(self, session: ActiveSession) -> bool:
+        """Whether the listing of the session's server holds its recorded pane id."""
+        pane_id = pane_id_of(session.tmux)
+        listing = self.listing(session)
+        return pane_id is not None and listing is not None and pane_id in listing
+
+
+def list_tmux_servers(sessions: Iterable[ActiveSession], caller: Mapping[str, TmuxPane] | None = None) -> TmuxServers:
+    """List the caller's tmux server, and each other server a session in tmux runs on, once.
+
+    ``caller`` is a listing of the caller's server the caller already has. A dead socket gives ``None`` for its own
+    listing only, so the sessions of the other servers keep their panes.
+    """
+    in_tmux = [s for s in sessions if pane_id_of(s.tmux) is not None]
+    servers = TmuxServers(list_tmux_panes() if caller is None else caller)
+    others: dict[str, Mapping[str, TmuxPane] | None] = {}
+    for session in in_tmux:
+        key = servers.socket_key(session)
+        if key is not None and key not in others:
+            others[key] = list_tmux_panes(key)
+    return replace(servers, others=others)
 
 
 @dataclass(frozen=True)
@@ -331,55 +418,100 @@ class PanePlacement:
     """The listing has the pane id, but the pane runs another process: :attr:`state` is ``gone``."""
 
 
-def place_pane(session: ActiveSession, panes: Mapping[str, TmuxPane] | None) -> PanePlacement:
-    """Look the session's recorded pane up in a listing of the tmux server, and hand it out only when it is the
+_OWNERSHIP_CACHE_SIZE = 4096
+_owned: set[tuple[object, ...]] = set()
+
+
+def owns_pane(session: ActiveSession, live: TmuxPane) -> bool:
+    """Whether the session's process runs in the pane: it is the pane's process or descends from it.
+
+    A yes is kept per session process, pane and tmux server, so a watch walks the parents of a session once per pane
+    rather than every few seconds; off Linux each step spawns ``ps``. A no is not kept, so a ``ps`` call that failed
+    once does not lose the pane for the rest of a watch. A pid that another process reuses has another ``procStart``,
+    and a restarted server another pid, so neither reuses an old answer. A kept yes can be stale only for a record
+    without ``procStart`` whose pid is reused by another process in the same pane, or for a dead pane that
+    ``remain-on-exit`` keeps while its session was reparented; it never decides a capture, which checks again
+    without the cache.
+    """
+    if live.pane_pid is None:
+        return False
+    key = (
+        session.pid,
+        session.raw.get("procStart"),
+        live.socket_path,
+        live.server_pid,
+        live.pane_id,
+        live.pane_pid,
+    )
+    if key in _owned:
+        return True
+    if not runs_in_pane(live.pane_pid, session.pid):
+        return False
+    if len(_owned) >= _OWNERSHIP_CACHE_SIZE:
+        _owned.clear()
+    _owned.add(key)
+    return True
+
+
+def place_pane(session: ActiveSession, servers: TmuxServers | None) -> PanePlacement:
+    """Look the session's recorded pane up on the tmux server the session runs on, and hand it out only when it is the
     session's own.
 
     The pane id alone does not say that: pane ids restart at ``%0`` with every tmux server, so the id a session
     recorded can name another program's pane after a server restart, or on a server other than the one the session
-    runs on. The pane counts only when its process is the session's process or one of its ancestors, which costs a few
-    reads of ``/proc/<pid>/stat`` and no tmux call.
+    runs on. The pane is ``gone`` when its server has another pid than the session's ``TMUX`` names, and it counts
+    only when its process is the session's process or one of its ancestors; see :func:`owns_pane`.
     """
     pane_id = pane_id_of(session.tmux)
     if pane_id is None:
         return PanePlacement(None, None)
-    if panes is None:
+    listing = servers.listing(session) if servers is not None else None
+    if listing is None:
         return PanePlacement("unknown", None)
-    live = panes.get(pane_id)
+    live = listing.get(pane_id)
     if live is None:
         return PanePlacement("gone", None)
-    if live.pane_pid is None or not runs_in_pane(live.pane_pid, session.pid):
+    restarted = session.tmux_server_pid is not None and live.server_pid != session.tmux_server_pid
+    if restarted or not owns_pane(session, live):
         return PanePlacement("gone", None, not_owned=True)
     return PanePlacement("present", live)
 
 
-def live_pane(session: ActiveSession, panes: Mapping[str, TmuxPane] | None) -> TmuxPane | None:
-    """The pane the session runs in, where the tmux server has it now, or ``None``; see :func:`place_pane`."""
-    return place_pane(session, panes).live
+def live_pane(session: ActiveSession, servers: TmuxServers | None) -> TmuxPane | None:
+    """The pane the session runs in, where its tmux server has it now, or ``None``; see :func:`place_pane`."""
+    return place_pane(session, servers).live
+
+
+def session_socket(session: ActiveSession, placement: PanePlacement) -> str | None:
+    """The ``tmux_socket`` of ``--json``: the socket the session's environment names, else the caller's server's
+    socket when the pane was found and owned there, else ``None``."""
+    if session.tmux_socket is not None:
+        return os.fspath(session.tmux_socket)
+    return placement.live.socket_path if placement.live is not None else None
 
 
 def build_views(
     sessions: Sequence[ActiveSession],
     *,
     with_git: bool = True,
-    panes: Mapping[str, TmuxPane] | None = None,
+    servers: TmuxServers | None = None,
 ) -> list[SessionView]:
-    """Resolve the tmux pane of every session with one tmux call, and the git location of each distinct cwd once.
+    """Resolve the tmux pane of every session with one tmux call per tmux server, and the git location of each
+    distinct cwd once.
 
     A pane counts only when the session runs in it; see :func:`place_pane`.
 
     A session whose record waits for a permission prompt and that runs in a pane also costs a capture of that pane,
     to tell a plan approval from it; see :func:`derive_waiting_for`.
 
-    ``panes`` is a listing of the tmux server the caller already has; without it, tmux is asked when a session runs
-    in tmux.
+    ``servers`` holds listings the caller already has; without it, tmux is asked when a session runs in tmux.
     """
-    if panes is None and any(pane_id_of(s.tmux) is not None for s in sessions):
-        panes = list_tmux_panes()
+    if servers is None and any(pane_id_of(s.tmux) is not None for s in sessions):
+        servers = list_tmux_servers(sessions)
     git_cache: dict[Path, GitLocation | None] = {}
     views = []
     for session in sessions:
-        placement = place_pane(session, panes)
+        placement = place_pane(session, servers)
         git: GitLocation | None = None
         if with_git and session.cwd is not None:
             if session.cwd not in git_cache:
@@ -394,6 +526,10 @@ def build_views(
                 tmux_live=placement.live,
                 git=git,
                 tmux_not_owned=placement.not_owned,
+                tmux_socket=session_socket(session, placement),
+                tmux_other_server=placement.live is not None
+                and servers is not None
+                and placement.live.socket_path != servers.caller_socket,
                 waiting_for=waits,
             )
         )
@@ -437,6 +573,9 @@ class Filters:
     """The ``$N`` id of the tmux session the session's pane must be in now, by the live tmux server. The id, not the
     name, so a tmux session renamed during a watch keeps its panes. A pane that is not the session's own never
     matches: callers pass only what :func:`place_pane` hands out."""
+    tmux_socket: str | None = None
+    """The socket of the server that has :attr:`tmux_session_id`, with symlinks resolved; ``$N`` ids repeat on every
+    server, so a pane on another server never matches."""
     role_globs: tuple[str, ...] = ()
     """The auth-switch role must match one of these, case-sensitively. A session without a role never matches."""
 
@@ -451,7 +590,11 @@ class Filters:
             return False
         if self.in_tmux is not None and (pane_id_of(session.tmux) is not None) != self.in_tmux:
             return False
-        if self.tmux_session_id is not None and (tmux_live is None or tmux_live.session_id != self.tmux_session_id):
+        if self.tmux_session_id is not None and (
+            tmux_live is None
+            or tmux_live.session_id != self.tmux_session_id
+            or tmux_live.socket_path != self.tmux_socket
+        ):
             return False
         if self.role_globs and (role is None or not any(fnmatch.fnmatchcase(role, g) for g in self.role_globs)):
             return False
@@ -461,12 +604,14 @@ class Filters:
 
 
 def apply_filters(
-    sessions: Iterable[ActiveSession], filters: Filters, panes: Mapping[str, TmuxPane] | None = None
+    sessions: Iterable[ActiveSession], filters: Filters, servers: TmuxServers | None = None
 ) -> list[ActiveSession]:
-    """``panes`` is the listing of the tmux server, needed only by :attr:`Filters.tmux_session_id`. The role is read
-    only for :attr:`Filters.role_globs`."""
+    """``servers`` holds the tmux listings, needed only by :attr:`Filters.tmux_session_id`. The role is read only for
+    :attr:`Filters.role_globs`."""
     return [
-        s for s in sessions if filters.matches(s, live_pane(s, panes), process_role(s) if filters.role_globs else None)
+        s
+        for s in sessions
+        if filters.matches(s, live_pane(s, servers), process_role(s) if filters.role_globs else None)
     ]
 
 
@@ -634,7 +779,7 @@ def screen_state(session: ActiveSession) -> str | None:
     pane = pane_id_of(session.tmux)
     if pane is None:
         return None
-    capture = capture_screen(pane, session.pid)
+    capture = capture_screen(pane, session.pid, session.tmux_socket)
     return capture.classification.state if capture.reason is None else None
 
 
@@ -781,6 +926,7 @@ def to_json(view: SessionView) -> dict[str, Any]:
         "git_worktree_root": _path(view.git.worktree_root) if view.git else None,
         "git_repo_root": _path(view.git.repo_root) if view.git else None,
         "tmux_pane": view.tmux_pane,
+        "tmux_socket": view.tmux_socket,
         "tmux_state": view.tmux_state,
         "tmux_live": view.tmux_live.to_json() if view.tmux_live else None,
         "tmux_recorded": s.tmux,

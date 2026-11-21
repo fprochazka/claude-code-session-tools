@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -280,6 +281,63 @@ def test_a_pane_the_session_does_not_run_in_is_gone(machine: Machine, real_tmux:
     assert f"{pane} (gone)" in invoke("--name", "stranger").stdout
 
 
+def test_a_session_on_another_tmux_server_keeps_its_own_pane(
+    machine: Machine, real_tmux: RealTmux, other_tmux: RealTmux
+) -> None:
+    # Every tmux server numbers its first pane %0, so the caller's server has a %0 of another session.
+    alpha = real_tmux.new_session("alpha")
+    live = other_tmux.new_session("live")
+    assert alpha == live == "%0"
+    machine.session_of(other_tmux.pane_pid(live), "work", "worker", tmux=other_tmux.recorded(live))
+
+    worker = one("worker")
+    assert (worker["tmux_state"], worker["tmux_pane"], worker["tmux_socket"]) == ("present", "%0", other_tmux.socket)
+    assert worker["tmux_live"]["session"] == "live"
+    assert json_of("--tmux-session", "alpha") == []
+    assert "%0 live:0 (server other)" in invoke("--name", "worker").stdout
+
+
+def test_a_session_without_tmux_in_its_environment_is_looked_up_on_the_callers_server(
+    machine: Machine, real_tmux: RealTmux
+) -> None:
+    pane = real_tmux.new_session("alpha", "exec env -u TMUX sleep 600")
+    machine.session_of(real_tmux.pane_pid(pane, program="sleep"), "work", "owner", tmux=real_tmux.recorded(pane))
+    machine.session("work", "stranger", tmux=real_tmux.recorded(pane))
+
+    owner = one("owner")
+    assert (owner["tmux_state"], owner["tmux_socket"], owner["tmux_live"]["session"]) == (
+        "present",
+        real_tmux.socket,
+        "alpha",
+    )
+    stranger = one("stranger")
+    assert (stranger["tmux_state"], stranger["tmux_socket"], stranger["tmux_live"]) == ("gone", None, None)
+    assert "(server" not in invoke("--name", "owner").stdout
+
+
+def test_a_pane_on_a_restarted_tmux_server_is_gone(machine: Machine, real_tmux: RealTmux) -> None:
+    real_tmux.new_session("first")
+    # The session's TMUX names another server pid than the one that has its pane now.
+    pane = real_tmux.new_session("alpha", f"exec env TMUX={real_tmux.socket},1,0 sleep 600")
+    machine.session_of(real_tmux.pane_pid(pane, program="sleep"), "work", "worker", tmux=real_tmux.recorded(pane))
+    worker = one("worker")
+    assert (worker["tmux_state"], worker["tmux_live"]) == ("gone", None)
+    assert json_of("--tmux-session", "alpha") == []
+
+
+def test_a_dead_tmux_socket_makes_only_its_own_sessions_unknown(
+    machine: Machine, real_tmux: RealTmux, tmp_path: Path
+) -> None:
+    pane = real_tmux.new_session("alpha")
+    machine.session_of(real_tmux.pane_pid(pane), "work", "owner", tmux=real_tmux.recorded(pane))
+    dead = {**os.environ, "TMUX": f"{tmp_path}/dead,4242,0"}
+    machine.session("work", "orphan", env=dead, tmux="gone:@0.%0")
+
+    assert one("orphan")["tmux_state"] == "unknown"
+    assert one("owner")["tmux_state"] == "present"
+    assert [s["name"] for s in json_of("--tmux-session", "alpha")] == ["owner"]
+
+
 @pytest.mark.parametrize(
     ("args", "env_pane", "code", "message"),
     [
@@ -458,6 +516,7 @@ JSON_KEYS = [
     "git_worktree_root",
     "git_repo_root",
     "tmux_pane",
+    "tmux_socket",
     "tmux_state",
     "tmux_live",
     "tmux_recorded",

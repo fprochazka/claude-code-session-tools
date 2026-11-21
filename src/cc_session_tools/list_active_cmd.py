@@ -31,6 +31,7 @@ from .active import (
     context_window_json,
     context_window_text,
     list_tmux_panes,
+    list_tmux_servers,
     process_role,
     resolve_profile_globs,
     resolve_tmux_session,
@@ -63,15 +64,15 @@ ROLE_HELP = (
 
 TMUX_SESSION_HELP = (
     "Only sessions whose tmux pane is now in this tmux session, by the running tmux server, so a window moved with "
-    "move-window counts. A pane counts only when the session's process runs in it. 'current' is the tmux session this "
-    "command runs in."
+    "move-window counts. A pane counts only when the session's process runs in it, and sessions on other tmux servers "
+    "never match. 'current' is the tmux session this command runs in."
 )
 
 
 def tmux_session_filter(
     value: str | None, in_tmux: bool | None
 ) -> tuple[TmuxSession | None, dict[str, TmuxPane] | None]:
-    """The tmux session ``--tmux-session`` selects, and the listing of the tmux server it was resolved from.
+    """The tmux session ``--tmux-session`` selects, and the listing of the caller's tmux server it was resolved from.
 
     Raises:
         TmuxSessionNotFound: the value names no tmux session, or tmux cannot tell.
@@ -122,7 +123,10 @@ def _pane(view: SessionView) -> Text:
         return Text("")
     if view.tmux_live is not None:
         live = view.tmux_live
-        return Text(f"{view.tmux_pane} {_middle_ellipsis(live.session, MAX_TMUX_SESSION_WIDTH)}:{live.window_index}")
+        text = Text(f"{view.tmux_pane} {_middle_ellipsis(live.session, MAX_TMUX_SESSION_WIDTH)}:{live.window_index}")
+        if view.tmux_other_server:
+            text.append(f" (server {os.path.basename(live.socket_path)})", style="dim")
+        return text
     label = "gone" if view.tmux_state == "gone" else "tmux unknown"
     return Text(f"{view.tmux_pane} ({label})", style="dim")
 
@@ -236,14 +240,17 @@ def list_active(
         in_tmux=tmux,
         name_glob=name,
         tmux_session_id=selected_tmux.id if selected_tmux is not None else None,
+        tmux_socket=selected_tmux.socket if selected_tmux is not None else None,
         role_globs=tuple(role or ()),
     )
-    sessions = sort_sessions(apply_filters(_sessions(profile), filters, panes))
+    found = _sessions(profile)
+    servers = list_tmux_servers(found, caller=panes) if selected_tmux is not None else None
+    sessions = sort_sessions(apply_filters(found, filters, servers))
     if since is not None:
         # After the registry filters: only this one reads transcripts.
         sessions = active_since(sessions, since)
 
-    views = build_views(sessions, panes=panes)
+    views = build_views(sessions, servers=servers)
     if as_json:
         array = [to_json(view) for view in views]
         sys.stdout.write(json.dumps(array, indent=2, ensure_ascii=False) + "\n")

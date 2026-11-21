@@ -27,7 +27,7 @@ cc-session-tools watch --name 'w*-order-planner' --events=turns,context_high --c
 ```
 
 - **The default stream, `auto`,** sends each batch of events to this session as a message. With `--events-stream=stdout` nothing tells you that an event arrived; that mode is for scripts and terminals.
-- **Pick the sessions with the filters of `list-active`**: `--profile` and `--name` take globs, plus `--status`, `--here`, `--tmux/--no-tmux`, `--tmux-session <name>|current` and `--role <glob>`. The filters are evaluated again on every change, so a worker started later, renamed into the glob, or whose window was moved into the tmux session, joins the watch. A session counts as in a tmux session only when its process runs in the pane it recorded. `--tmux-session current` is the tmux session this command runs in, resolved once at the start. Renaming that tmux session keeps its sessions in the watch. A session whose role is not known yet when it starts joins with `session_matched` once its role is read, usually within seconds, at the latest at its first turn.
+- **Pick the sessions with the filters of `list-active`**: `--profile` and `--name` take globs, plus `--status`, `--here`, `--tmux/--no-tmux`, `--tmux-session <name>|current` and `--role <glob>`. The filters are evaluated again on every change, so a worker started later, renamed into the glob, or whose window was moved into the tmux session, joins the watch. A session counts as in a tmux session only when its process runs in the pane it recorded, and a session on another tmux server is never in one of yours. `--tmux-session current` is the tmux session this command runs in, resolved once at the start. Renaming that tmux session keeps its sessions in the watch. A session whose role is not known yet when it starts joins with `session_matched` once its role is read, usually within seconds, at the latest at its first turn.
 - **Or name the sessions**: `watch w1-order-planner w2-order-planner` follows exactly those, by id, prefix, name or pid, and ends with reason `sessions_ended` when they all have ended.
 - **One watch per purpose.** A second watch with the same selection sends every event twice.
 - **Start it from the main session.** A watch started from a subagent messages the main session anyway; Claude Code has no route to a subagent. Forward the events a subagent needs with SendMessage.
@@ -71,9 +71,10 @@ Options:
                                   tmux session, by the running tmux server, so
                                   a window moved with move-window counts. A
                                   pane counts only when the session's process
-                                  runs in it. 'current' is the tmux session
-                                  this command runs in. It is resolved once,
-                                  at the start.
+                                  runs in it, and sessions on other tmux
+                                  servers never match. 'current' is the tmux
+                                  session this command runs in. It is resolved
+                                  once, at the start.
   --role <str>                    Only sessions whose auth-switch role matches
                                   this glob, case-sensitively, for example
                                   'worker-*'. The role is the one its running
@@ -140,7 +141,7 @@ Events are small on purpose: `{"kind", "seq", "observed_at", "data"}`, where a s
 - `status`: `status_changed` (`session`, `from`, `to`, and `waiting_for` when `to` is `waiting`).
 - `turns`, derived from the same transition: `turn_finished` (`session`, `from`: `busy` or `waiting`), `waiting` (`session`, `waiting_for`, and `plan_file` when `waiting_for` is `plan approval`). `waiting_for` is `plan approval` when the session's pane shows the plan approval dialog of plan mode, which the record calls `permission prompt` like any permission prompt; `plan_file` is the plan's path, or `null` when the transcript names none.
 - `thresholds`: `busy_long` with `--busy-after`, `waiting_long` with `--waiting-after`, each once per stretch (`session`, `after`). `idle_long` (`session`, `threshold`) with `--idle-after`, repeatable, once per threshold, and with `--idle-every` at every multiple of its duration. They count from the session's last model response, and a new response ends the idle stretch, so a message that makes the session answer starts the count again. A resumed session counts from no earlier than its process start, and a `/clear` starts the count again; one made before the watch counts only when the session was started through auth-switch. Past several thresholds at once, only the longest is reported. `context_high` (`session`, `used`, `size`, `percent`, `mark`, `mark_tokens`, `model`) with `--context-above`, repeatable: once when the session's context fill reaches the mark, and again only after the fill dropped below it, as after a compaction or a `/clear`. Write a mark as a percentage of the session's window, `75%`, which needs no quotes in bash or zsh, or as tokens, `150000`, `150k` or `1M`; a bare number below 100 is a percentage. Past several marks at once, only the highest is reported. The fill is read from the transcript at most every 3 seconds.
-- `changes`: `renamed` (`session` with the new name, `from`: the old `session`), `cwd_changed` (`session`, `to`), `tmux_moved` (`session`, `to`: `<tmux session>:<window index>` or `null`).
+- `changes`: `renamed` (`session` with the new name, `from`: the old `session`), `cwd_changed` (`session`, `to`), `tmux_moved` (`session`, `to`: `<tmux session>:<window index>`, or `null` when the pane is gone or no longer runs the session).
 
 One transition can yield two events: `busy` to `idle` is `status_changed` plus `turn_finished`. Subscribe with `--events=turns` when the derived events are all you need. A typo, or a kind this watch never produces, is a start-up error.
 
@@ -167,7 +168,7 @@ Stop a watch by stopping its background task.
 
 ## Reacting
 
-- **`turn_finished`**: the worker is idle. Get its `tmux_pane` and `messaging_address` with `cc-session-tools inspect <session> --json`, read what it did (`tmux capture-pane -p -t <tmux_pane> | tail -40`, or its transcript), then give it the next task by messaging its `messaging_address`.
+- **`turn_finished`**: the worker is idle. Get its `tmux_pane` and `messaging_address` with `cc-session-tools inspect <session> --json`, read what it did (`tmux -S <tmux_socket> capture-pane -p -t <tmux_pane> | tail -40` when its `tmux_state` is `present`, else its transcript), then give it the next task by messaging its `messaging_address`.
 - **`waiting`**, **`waiting_long`**: the session waits for its user, usually a permission prompt or a plan approval (`waiting_for`). Tell the user which session and what it waits for. Never answer the prompt by sending keys to its pane.
 - **`idle_long`**: a session has had nothing to do for `threshold` since its last model response. Give it work, or tell the user it is idle; whether to keep its cache warm or let it go is their decision.
 - **`context_high`**: a session's context is `percent` full, past `mark`. Do what your instructions say for that mark, such as compacting the session at its next idle moment; without such instructions, tell the user which session and how full it is. Before you type `/compact` into its pane, check with `cc-session-tools inspect <session> --screen --json` that its prompt is empty (see the `active-sessions` skill).

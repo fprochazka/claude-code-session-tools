@@ -37,9 +37,10 @@ from .active import (
     PLAN_APPROVAL,
     Filters,
     TmuxPane,
+    TmuxServers,
     TmuxState,
     find_transcript_path,
-    list_tmux_panes,
+    list_tmux_servers,
     pane_id_of,
     place_pane,
     process_role,
@@ -321,7 +322,7 @@ class Thresholds:
 
 
 ListSessions = Callable[[], list[ActiveSession]]
-ListPanes = Callable[[], dict[str, TmuxPane] | None]
+ListServers = Callable[[Sequence[ActiveSession]], TmuxServers]
 ReadLastResponse = Callable[[ActiveSession], datetime | None]
 ReadRole = Callable[[ActiveSession], str | None]
 FindTranscript = Callable[[ActiveSession], Path | None]
@@ -355,7 +356,7 @@ class SessionTracker:
         *,
         dirs: Sequence[Path] | None = None,
         list_sessions: ListSessions = list_active_sessions,
-        list_panes: ListPanes = list_tmux_panes,
+        list_servers: ListServers = list_tmux_servers,
         is_running: Callable[[int], bool] = process_running,
         last_response: ReadLastResponse = read_last_response,
         role_of_session: ReadRole = process_role,
@@ -372,7 +373,7 @@ class SessionTracker:
         self.thresholds = thresholds
         self.dirs = list(dirs) if dirs is not None else sessions_dirs()
         self._list_sessions = list_sessions
-        self._list_panes = list_panes
+        self._list_servers = list_servers
         self._is_running = is_running
         self._last_response = last_response
         self._read_role_of = role_of_session
@@ -386,7 +387,7 @@ class SessionTracker:
         self.context_interval = context_interval
         self.tracked: dict[int, Tracked] = {}
         self._stamps: dict[Path, Stamp] = {}
-        self._panes: dict[str, TmuxPane] | None = None
+        self._servers: TmuxServers | None = None
         self._last_tmux: float | None = None
         self._last_roles: float | None = None
 
@@ -449,14 +450,16 @@ class SessionTracker:
                 return f"{session.profile.name}/{session.name}"
         return f"{session.profile.name}/pid:{session.pid}"
 
-    def waiting_for(self, session: ActiveSession) -> str | None:
+    def waiting_for(self, tracked: Tracked) -> str | None:
         """What the session waits for, with ``plan approval`` when its pane shows the plan approval dialog.
 
-        The record says ``permission prompt`` for that dialog too, so the pane of a session in that state is captured.
-        A screen that reads ``unknown`` may not be drawn yet, and is captured once more after :attr:`screen_retry`.
+        The record says ``permission prompt`` for that dialog too, so the pane of a session in that state is captured,
+        when the last tmux listing showed the pane as the session's own. A screen that reads ``unknown`` may not be
+        drawn yet, and is captured once more after :attr:`screen_retry`.
         """
+        session = tracked.session
         value = waiting_for(session)
-        if value != PERMISSION_PROMPT or pane_id_of(session.tmux) is None:
+        if value != PERMISSION_PROMPT or tracked.tmux_state != "present":
             return value
         state = self._read_screen(session)
         if state == "unknown":
@@ -467,7 +470,7 @@ class SessionTracker:
     def summary(self, tracked: Tracked) -> dict[str, Any]:
         """A session in ``watch_started``: who it is and its status, with ``waiting_for`` when it waits."""
         data: dict[str, Any] = {"session": self.identify(tracked), "status": tracked.session.status}
-        reason = self.waiting_for(tracked.session)
+        reason = self.waiting_for(tracked)
         if reason is not None:
             data["waiting_for"] = reason
         return data
@@ -542,11 +545,11 @@ class SessionTracker:
         for pid in [pid for pid in self.tracked if pid not in sessions]:
             # cc-blackbox judged the process not running, for example a pid that another process reuses.
             events += self._end(pid, "process_gone", observed)
-        known_panes = self._panes or {}
-        if any(pane not in known_panes for pane in (pane_id_of(s.tmux) for s in new) if pane is not None):
+        servers = self._servers
+        if any(pane_id_of(s.tmux) is not None and (servers is None or not servers.has(s)) for s in new):
             # A new session usually runs in a new pane: look it up now, rather than call it gone until the next call.
             # The new sessions are placed after this, so their placement reports nothing.
-            events += self._refresh_tmux(now, report=True, observed=observed, force=True)
+            events += self._refresh_tmux(now, report=True, observed=observed, force=True, joining=new)
         added = []
         for session in new:
             tracked = self._new_tracked(session, now)
@@ -594,7 +597,7 @@ class SessionTracker:
             tracked.status_since = _status_since(new, now)
             tracked.threshold_sent = False
             tracked.idle_checked = False
-            reason = self.waiting_for(new) if was_matched else waiting_for(new)
+            reason = self.waiting_for(tracked) if was_matched else waiting_for(new)
             change: dict[str, Any] = {"from": old.status, "to": new.status}
             if reason is not None:
                 change["waiting_for"] = reason
@@ -621,18 +624,28 @@ class SessionTracker:
 
     def _place(self, tracked: Tracked) -> None:
         # A pane that is not the session's own counts as gone: it never places the session in a tmux session.
-        placement = place_pane(tracked.session, self._panes)
+        placement = place_pane(tracked.session, self._servers)
         tracked.tmux_state, tracked.tmux_live = placement.state, placement.live
 
-    def _refresh_tmux(self, now: float, *, report: bool, observed: str = "", force: bool = False) -> list[WatchEvent]:
-        """Ask the tmux server where every pane is. A move is ``tmux_moved``; under ``--tmux-session`` it can also
-        make a session join or leave the watch."""
+    def _refresh_tmux(
+        self,
+        now: float,
+        *,
+        report: bool,
+        observed: str = "",
+        force: bool = False,
+        joining: Sequence[ActiveSession] = (),
+    ) -> list[WatchEvent]:
+        """Ask the caller's tmux server and each other server a tracked session runs on where every pane is, one call
+        per server. A move is ``tmux_moved``; under ``--tmux-session`` it can also make a session join or leave the
+        watch."""
         if not force and self._last_tmux is not None and now - self._last_tmux < self.tmux_interval:
             return []
         if not force and not any(pane_id_of(t.session.tmux) is not None for t in self.tracked.values()):
             return []
         self._last_tmux = now
-        self._panes = self._list_panes()
+        # The sessions about to join are listed too, so that their own tmux servers are asked.
+        self._servers = self._list_servers([*(t.session for t in self.tracked.values()), *joining])
         events: list[WatchEvent] = []
         for tracked in self.ordered():
             before_state, before = tracked.tmux_state, _location(tracked.tmux_live)

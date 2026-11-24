@@ -180,3 +180,4 @@ Stop a watch by stopping its background task.
 
 - The watcher polls once a second, so a status that lasts less than that can be missed.
 - Delivery is best effort: the session may drop a message under its rate limit, or hold it until its user approves it. The changelog has every event.
+- A session in bypass-permissions mode holds the messages of a watcher it cannot verify as its own child until the user lets them in; the changelog still has every event. Start `cc-session-tools watch` from this session's own Bash tool so Claude Code can verify it. If the messages are still held, tell the user rather than suggesting `"crossSessionInbound": "accept"` in their settings: that lets every local sender, other sessions included, drive a session that runs commands without asking. One run with `claude --settings '{"crossSessionInbound":"accept"}'`, or auto mode, is the narrower choice.

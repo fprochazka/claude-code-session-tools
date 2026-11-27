@@ -151,3 +151,22 @@ def test_scope_outside_a_repo_covers_only_the_exact_cwd(tmp_path: Path) -> None:
     scope = discovery.Scope(root=None, legacy_base=None, cwd=tmp_path)
     assert scope.covers(tmp_path)
     assert not scope.covers(tmp_path / "sub")
+
+
+def test_a_session_id_prefix_finds_its_transcripts_by_file_name(tmp_path: Path) -> None:
+    projects = tmp_path / "projects"
+    ids = ["aaaa1111-0000-4000-8000-000000000000", "aaaa2222-0000-4000-8000-000000000000"]
+    ids.append("bbbb1111-0000-4000-8000-000000000000")
+    for n, session_id in enumerate(ids):
+        project = projects / f"-home-u-p{n}"
+        project.mkdir(parents=True)
+        record = {"type": "user", "sessionId": session_id, "timestamp": "2026-02-13T10:00:00.000Z", "cwd": "/home/u"}
+        (project / f"{session_id}.jsonl").write_text(json.dumps(record) + "\n")
+    (projects / "-home-u-p0" / "aaaa-notes.txt").write_text("not a transcript\n")
+
+    def found(prefix: str) -> list[str]:
+        return sorted(t.session_id for t in discovery.find_by_id_prefix(prefix, projects_dirs=[projects]))
+
+    assert found("aaaa") == ids[:2]
+    assert found("bbbb1111") == found(ids[2]) == ids[2:]
+    assert found("aaa") == found("AAAA") == found("cccc") == []

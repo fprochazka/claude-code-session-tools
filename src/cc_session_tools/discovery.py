@@ -10,6 +10,7 @@ only sessions launched in the exact current directory belong to it.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -19,7 +20,9 @@ from cc_blackbox import (
     SessionTranscript,
     TranscriptNotFound,
     find_session_transcript,
+    is_session_file_name,
     is_session_id,
+    list_projects_dirs,
     list_session_transcripts,
     read_session_transcript,
 )
@@ -160,6 +163,37 @@ def build_session_rows(scope: Scope, *, projects_dirs: Sequence[Path] | None = N
     rows = [_row(t, scope) for t in transcripts if scope.contains(t)]
     rows.sort(key=lambda row: row.last_ts, reverse=True)
     return rows
+
+
+_ID_PREFIX = re.compile(r"^[0-9a-f][0-9a-f-]{3,}$")
+
+
+def find_by_id_prefix(prefix: str, *, projects_dirs: Sequence[Path] | None = None) -> list[SessionTranscript]:
+    """The main transcripts whose session id starts with ``prefix``, a full id included, from every profile or from
+    ``projects_dirs``.
+
+    It reads file names only, one directory listing per project, and opens nothing but the matches. A ``prefix`` that
+    is not at least 4 characters of a session id finds nothing.
+    """
+    if not _ID_PREFIX.match(prefix):
+        return []
+    found: list[SessionTranscript] = []
+    for projects_dir in list_projects_dirs() if projects_dirs is None else list_projects_dirs(paths=projects_dirs):
+        try:
+            projects = [p for p in projects_dir.path.iterdir() if p.is_dir()]
+        except OSError:
+            continue
+        for project in projects:
+            try:
+                names = [n for n in os.listdir(project) if n.startswith(prefix) and is_session_file_name(n)]
+            except OSError:
+                continue
+            for file_name in names:
+                try:
+                    found.append(read_session_transcript(project / file_name, projects_dir))
+                except OSError:
+                    continue
+    return found
 
 
 def resolve_target(target: str, *, cwd: str, projects_dirs: Sequence[Path] | None = None) -> SessionTranscript | None:

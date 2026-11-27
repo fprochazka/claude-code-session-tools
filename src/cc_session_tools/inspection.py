@@ -16,8 +16,6 @@ error that lists them; a step that finds none hands over to the next.
 from __future__ import annotations
 
 import json
-import os
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -30,12 +28,9 @@ from cc_blackbox import (
     ProfileStart,
     SessionTranscript,
     active_session_for,
-    is_session_file_name,
     list_active_sessions,
     list_profiles,
-    list_projects_dirs,
     list_session_transcripts,
-    read_session_transcript,
 )
 
 from .active import (
@@ -48,13 +43,13 @@ from .active import (
     to_json,
     transcript_json,
 )
+from .discovery import find_by_id_prefix
 from .plan import plan_json, read_plan_file
 from .screen import plain_lines
 from .search import search_session_ids
 
 DEFAULT_DAYS = 14
 MAX_LISTED = 20
-_ID_PREFIX = re.compile(r"^[0-9a-f][0-9a-f-]{3,}$")
 _TITLE_RECORDS = {"custom-title": "customTitle", "agent-name": "agentName", "ai-title": "aiTitle"}
 
 
@@ -105,26 +100,9 @@ class _Ended:
         return kept
 
     def by_id(self, query: str) -> list[SessionTranscript]:
-        if not _ID_PREFIX.match(query):
-            return []
-        exact: list[SessionTranscript] = []
-        prefixed: list[SessionTranscript] = []
-        for projects_dir in list_projects_dirs():
-            try:
-                projects = [p for p in projects_dir.path.iterdir() if p.is_dir()]
-            except OSError:
-                continue
-            for project in projects:
-                try:
-                    names = [n for n in os.listdir(project) if n.startswith(query) and is_session_file_name(n)]
-                except OSError:
-                    continue
-                for file_name in names:
-                    try:
-                        transcript = read_session_transcript(project / file_name, projects_dir)
-                    except OSError:
-                        continue
-                    (exact if transcript.session_id == query else prefixed).append(transcript)
+        found = find_by_id_prefix(query)
+        exact = [t for t in found if t.session_id == query]
+        prefixed = [t for t in found if t.session_id != query]
         return self._owned(exact) or self._owned(prefixed)
 
     def by_name(self, query: str) -> list[SessionTranscript]:

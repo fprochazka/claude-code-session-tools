@@ -108,7 +108,7 @@ Operational notes:
 Reading the `timeline` header:
 
 - **wall** is first to last record; **active** is main turns ∪ subagent activity; **away** is idle gaps over 2 h ended by a human or cron prompt. **✖ stalls** are the stretches in which the context was full and every prompt was refused (`Prompt is too long`) until a compaction; they count apart from away and idle, so a loop that kept firing into a full context doesn't look like the user was away. A loop session (`kind` from the start log, or guessed from what opened the turns) idles by design.
-- **main agent busy** splits into model, tools, foreground subagents, waiting on the user and blocking compactions. The parts overlap and don't add up to busy.
+- **main agent busy** splits into model, tools, foreground subagents, waiting on the user and blocking compactions. The parts overlap and don't add up to busy. **busy by what opened the turn** says which trigger kept the main agent working, and **crons by prompt** which cron did, by its prompt's first line.
 - **idle between turns** is split by what ended it: `human`, `peer`, `handback` (its own subagent reporting), `task-notification`, `cron`. Idle time with subagents active is background work, not lost time.
 - **subagents** line: counts, fg/bg, **subagent active** as the union of their activity (as the clock ran), **lane time** when it differs (each subagent's own active time added up, a parent counting its wait on nested ones), and tokens. The last line counts the **⌛ suspected waits** and how much busy and active time lies inside them.
 

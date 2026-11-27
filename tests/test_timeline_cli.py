@@ -332,6 +332,23 @@ def test_a_session_across_a_dst_change_names_both_zones(
     assert "(local time, CET) ·" in lines_of(one_zone, tmp_path / "one")[2]
 
 
+def test_the_header_gives_busy_time_by_trigger_and_crons_by_prompt(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    tx.request(1).text(60)
+    tx.turn_end(60)
+    for n, t in enumerate((1000, 2000)):
+        tx.scheduled(t, f"Run pass {n + 12} of the index.")
+        tx.request(t + 1).text(t + 30)
+        tx.turn_end(t + 30)
+    out = lines_of(tx, tmp_path)
+    assert "- busy by what opened the turn: cron 2 turns 1m00s · human 1 turn 1m00s" in out
+    assert '- crons by prompt: "Run pass N of the index." ×2 1m00s' in out
+    t = json.loads(invoke(tx, tmp_path / "json", "--json").stdout)["totals"]
+    assert t["busy_by_trigger"] == {"human": {"turns": 1, "seconds": 60.0}, "cron": {"turns": 2, "seconds": 60.0}}
+    assert t["crons"] == [{"prompt": "Run pass N of the index.", "turns": 2, "seconds": 60.0}]
+
+
 def test_the_json_of_a_window_keeps_only_its_records(tmp_path: Path, isolated_home: Path) -> None:
     data = json.loads(invoke(session(), tmp_path, "--json", "--from", "09:08", "--to", "09:12").stdout)
     assert [t["index"] for t in data["turns"]] == [1, 2, 3]

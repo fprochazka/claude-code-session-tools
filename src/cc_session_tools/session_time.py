@@ -457,6 +457,44 @@ class CompactionEvent:
 
 
 @dataclass(frozen=True)
+class TriggerBusy:
+    """The main agent's turns that one trigger opened, or one cron prompt, and their busy time."""
+
+    turns: int
+    seconds: float
+
+
+@dataclass(frozen=True)
+class CronPrompt:
+    """The turns that the crons with one prompt opened."""
+
+    prompt: str
+    """The prompt's first line, with runs of digits as ``N``, so the fires of one cron share a row."""
+    turns: int
+    seconds: float
+
+
+_DIGIT_RUN = re.compile(r"\d+")
+_MARKUP = re.compile(r"<[^>]+>")
+
+
+def cron_key(prompt: str) -> str:
+    """The row a cron prompt counts in: its first non-empty line, without markup, digit runs as ``N``."""
+    line = next((line.strip() for line in _MARKUP.sub(" ", prompt).splitlines() if line.strip()), "")
+    return _DIGIT_RUN.sub("N", " ".join(line.split()))
+
+
+def crons_by_prompt(turns: Iterable[Turn]) -> list[CronPrompt]:
+    """The main agent's cron turns grouped by :func:`cron_key`, most busy first."""
+    rows: dict[str, list[float]] = {}
+    for turn in turns:
+        if turn.trigger == "cron":
+            rows.setdefault(cron_key(turn.prompt), []).append(turn.seconds)
+    found = [CronPrompt(key, len(seconds), sum(seconds)) for key, seconds in rows.items()]
+    return sorted(found, key=lambda row: (-row.seconds, -row.turns))
+
+
+@dataclass(frozen=True)
 class Totals:
     wall: float
     """First to last user, assistant or subagent record, or turn end. Bookkeeping that lands days later is left out."""
@@ -497,6 +535,8 @@ class Totals:
     """The subagents' compactions, never added to :attr:`compactions`."""
     subagents_compacted: int = 0
     """How many subagents compacted at least once."""
+    busy_by_trigger: Mapping[str, TriggerBusy] = field(default_factory=dict)
+    """The main agent's turns and busy time by what opened them, most busy first."""
 
 
 @dataclass
@@ -1302,6 +1342,13 @@ def _totals(
     interruptions: int,
 ) -> Totals:
     main_busy = sum(t.seconds for t in turns)
+    by_trigger: dict[str, list[float]] = {}
+    for turn in turns:
+        by_trigger.setdefault(turn.trigger, []).append(turn.seconds)
+    busy_by_trigger = {
+        trigger: TriggerBusy(len(seconds), sum(seconds))
+        for trigger, seconds in sorted(by_trigger.items(), key=lambda kv: (-sum(kv[1]), -len(kv[1])))
+    }
     idle_by_trigger: dict[str, float] = {}
     idle_background = 0.0
     away = 0.0
@@ -1348,6 +1395,7 @@ def _totals(
         compactions_auto=sum(1 for c in main_compactions if c.trigger == "auto"),
         subagent_compactions=len(compaction_events) - len(main_compactions),
         subagents_compacted=sum(1 for s in subagents if s.compactions),
+        busy_by_trigger=busy_by_trigger,
     )
 
 

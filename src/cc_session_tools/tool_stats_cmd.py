@@ -26,7 +26,17 @@ import typer
 
 from .discovery import AmbiguousTarget, projects_dirs_override, resolve_target
 from .redact import count, redact, redacting_session, span, tokens
-from .session_time import AGENT_TOOLS, HANDBACK_TOOL, MOVE_REASONS, SessionTime, Subagent, TimedCall, analyze, union
+from .session_time import (
+    AGENT_TOOLS,
+    HANDBACK_TOOL,
+    MOVE_REASONS,
+    SessionTime,
+    Subagent,
+    TimedCall,
+    analyze,
+    crons_by_prompt,
+    union,
+)
 from .timeline_cmd import SUSPECT_WAIT, suspected
 
 if TYPE_CHECKING:
@@ -167,6 +177,17 @@ def _lane_type(sub: Subagent | None) -> str:
     return "main" if sub is None else (sub.agent_type or "?").split(":")[-1]
 
 
+def _add_busy(rows: dict[str, list[float]], key: str, turns: float, seconds: float) -> None:
+    row = rows.setdefault(key, [0, 0.0])
+    row[0] += turns
+    row[1] += seconds
+
+
+def _by_busy(rows: dict[str, list[float]]) -> list[tuple[str, int, float]]:
+    """``rows`` of ``[turns, seconds]`` as ``(key, turns, seconds)``, most busy first."""
+    return sorted(((k, int(n), s) for k, (n, s) in rows.items()), key=lambda row: (-row[2], -row[1]))
+
+
 def _summary(walls: Sequence[float]) -> dict[str, Any]:
     return {
         "n": len(walls),
@@ -292,6 +313,9 @@ class ToolStats:
         self._user_waits: list[dict[str, Any]] = []
         self._denials: Counter[str] = Counter()
         self._moved_reasons: Counter[str] = Counter()
+        # [turns, seconds]; plain dicts, so the stats pickle back from a child process
+        self._busy_by_trigger: dict[str, list[float]] = {}
+        self._crons: dict[str, list[float]] = {}
         self._roles: defaultdict[tuple[str, str, bool], _Role] = defaultdict(_Role)
         self._nested: defaultdict[str, _Nested] = defaultdict(_Nested)
 
@@ -393,6 +417,10 @@ class ToolStats:
         ]
         self._denials.update(c.call.denial for c in calls if c.call.denial)
         self._moved_reasons.update(c.call.moved_reason for c in moved if c.call.moved_reason)
+        for trigger, busy in st.totals.busy_by_trigger.items():
+            _add_busy(self._busy_by_trigger, trigger, busy.turns, busy.seconds)
+        for cron in crons_by_prompt(st.turns):
+            _add_busy(self._crons, redact(cron.prompt, limit=200), cron.turns, cron.seconds)
 
         for s in st.subagents:
             role = self._roles[(s.role, _lane_type(s), s.parent_id is not None)]
@@ -552,7 +580,12 @@ class ToolStats:
             for role, row in self._nested.items()
         ]
         return {
-            "totals": {**t, "moved_bash_by_reason": {r: n for r in MOVE_REASONS if (n := self._moved_reasons[r])}},
+            "totals": {
+                **t,
+                "moved_bash_by_reason": {r: n for r in MOVE_REASONS if (n := self._moved_reasons[r])},
+                "busy_by_trigger": {k: {"turns": n, "seconds": s} for k, n, s in _by_busy(self._busy_by_trigger)},
+                "crons": [{"prompt": k, "turns": n, "seconds": s} for k, n, s in _by_busy(self._crons)],
+            },
             "tools": sorted(tools, key=lambda r: (-r["total"], -r["n"])),
             "bash_groups": sorted(groups, key=lambda r: (-r["total"], -r["n"])),
             "slowest": [{**row, "similar": max(self._similar[key] - 1, 0)} for key, row in slowest],
@@ -597,6 +630,9 @@ class ToolStats:
         self._user_waits += other._user_waits
         self._denials.update(other._denials)
         self._moved_reasons.update(other._moved_reasons)
+        for mine_rows, their_rows in ((self._busy_by_trigger, other._busy_by_trigger), (self._crons, other._crons)):
+            for key, (turns, seconds) in their_rows.items():
+                _add_busy(mine_rows, key, turns, seconds)
         for role_key, role in other._roles.items():
             self._roles[role_key].merge(role)
         for nested_key, nested in other._nested.items():
@@ -709,6 +745,15 @@ def _sections(data: dict[str, Any], *, many: bool) -> list[str]:
         f" shares of the clock. `%` is the share of all non-Agent tool wall ({span(t['tool_wall'])}). Main agent busy"
         f" {span(t['main_busy'])}.",
     ]
+    if t["busy_by_trigger"]:
+        busy = " · ".join(
+            f"{k} {count(v['turns'], 'turn')} {span(v['seconds'])}" for k, v in t["busy_by_trigger"].items()
+        )
+        out += ["", f"Main agent busy by what opened the turn: {busy}."]
+    if t["crons"]:
+        crons = " · ".join(f'"{_cut(c["prompt"], 60)}" ×{c["turns"]} {span(c["seconds"])}' for c in t["crons"][:5])
+        more = f" · {len(t['crons']) - 5} more" if len(t["crons"]) > 5 else ""
+        out += ["", f"Cron turns by prompt: {crons}{more}."]
     if t["user_wait_calls"]:
         out += [
             "",

@@ -36,6 +36,7 @@ from .session_time import (
     Turn,
     analyze,
     clip,
+    crons_by_prompt,
     union,
 )
 from .watch_events import parse_duration
@@ -274,6 +275,19 @@ def _subagent_line(st: SessionTime, sub: Subagent, indent: str = "    └ ") -> 
     )
 
 
+CRONS_SHOWN = 5
+
+
+def _cron_line(st: SessionTime) -> list[str]:
+    """The header line of the cron turns by prompt, the busiest :data:`CRONS_SHOWN`; none without cron turns."""
+    rows = crons_by_prompt(st.turns)
+    if not rows:
+        return []
+    shown = " · ".join(f'"{redact(r.prompt, limit=60)}" ×{r.turns} {span(r.seconds)}' for r in rows[:CRONS_SHOWN])
+    more = f" · {len(rows) - CRONS_SHOWN} more" if len(rows) > CRONS_SHOWN else ""
+    return [f"- crons by prompt: {shown}{more}"]
+
+
 def _compaction_counts(t: Totals) -> str:
     """``38 main (21 manual, 17 auto) · 14 in 13 subagents``: the main agent's first, the subagents' beside them."""
     kinds = ", ".join(
@@ -313,6 +327,7 @@ def _header(st: SessionTime, title: str | None) -> list[str]:
     foreground = sum(1 for s in top if s.shape == "foreground")
     sub_model = [s.lane.model_seconds for s in st.subagents if s.lane.model_seconds is not None]
     idle = " · ".join(f"{k} {span(v)}" for k, v in sorted(t.idle_by_trigger.items(), key=lambda kv: -kv[1]))
+    busy = " · ".join(f"{k} {count(v.turns, 'turn')} {span(v.seconds)}" for k, v in t.busy_by_trigger.items())
     suspects, busy_in, active_in = _suspect_busy(st)
     api_errors = t.api_errors + sum(len(s.lane.api_errors) for s in st.subagents)
     elapsed, lane_time = subagent_active(st)
@@ -330,6 +345,8 @@ def _header(st: SessionTime, title: str | None) -> list[str]:
         f" · foreground subagents {span(t.foreground_subagents)} · waiting on the user {span(t.user_waits)}"
         + ("" if st.has_permission_decisions else " (dialogs only: no permission decisions recorded)")
         + f" · blocking compactions {span(t.compaction_waits)}",
+        f"- busy by what opened the turn: {busy or 'none'}",
+        *_cron_line(st),
         f"- idle between turns, by what ended it: {idle or 'none'}; subagents were active for"
         f" {span(t.idle_background)} of it",
         f"- subagents {len(st.subagents)} ({len(top)} top-level: {foreground} fg / {len(top) - foreground} bg;"
@@ -807,6 +824,11 @@ def session_json(st: SessionTime, grouper: BashGrouper, window: Interval | None 
             "user_waits": t.user_waits,
             "compaction_waits": t.compaction_waits,
             "idle_by_trigger": dict(t.idle_by_trigger),
+            "busy_by_trigger": {k: {"turns": v.turns, "seconds": v.seconds} for k, v in t.busy_by_trigger.items()},
+            "crons": [
+                {"prompt": redact(r.prompt, limit=200), "turns": r.turns, "seconds": r.seconds}
+                for r in crons_by_prompt(st.turns)
+            ],
             "idle_background": t.idle_background,
             "batched_calls": t.batched_calls,
             "interruptions": t.interruptions,

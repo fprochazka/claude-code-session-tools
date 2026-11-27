@@ -14,6 +14,7 @@ from cc_session_tools.session_time import (
     TimedCall,
     analyze,
     bursts,
+    crons_by_prompt,
     role_of,
     session_kind,
     union,
@@ -1035,6 +1036,34 @@ def test_the_main_agents_compactions_and_the_subagents_are_counted_apart(tmp_pat
     t = run(compacted_session(), tmp_path).totals
     assert (t.compactions, t.compactions_manual, t.compactions_auto) == (2, 1, 1)
     assert (t.subagent_compactions, t.subagents_compacted) == (1, 1)
+
+
+def test_busy_time_is_counted_by_what_opened_the_turn_and_crons_by_prompt(tmp_path: Path) -> None:
+    tx = Transcript()
+    for t, seconds in ((0, 60), (1000, 30)):
+        tx.prompt(t)
+        tx.request(t + 1).text(t + seconds)
+        tx.turn_end(t + seconds)
+    for n, (t, text) in enumerate(((2000, "Run pass 12 of the index."), (3000, "Run pass 13 of the index."),
+                                   (4000, "Send the daily digest.\nThen stop."))):  # fmt: skip
+        tx.scheduled(t, text, task_id=f"cron-{n}")
+        tx.request(t + 1).text(t + 10 * (n + 1))
+        tx.turn_end(t + 10 * (n + 1))
+    tx.prompt(4999)
+    sub = tx.request(5000).agent(5001, "a1", description="run: tests", background=True)
+    tx.agent_returned(5002, sub)
+    tx.turn_end(5003)
+    sub.request(5004).text(5010)
+    tx.handback(5100, sub)
+    tx.request(5101).text(5120)
+    tx.turn_end(5120)
+    st = run(tx, tmp_path)
+    busy = {k: (v.turns, v.seconds) for k, v in st.totals.busy_by_trigger.items()}
+    assert busy == {"human": (3, 94), "cron": (3, 60), "handback": (1, 20)}
+    assert list(busy) == ["human", "cron", "handback"]  # most busy first
+    assert [(c.prompt, c.turns, c.seconds) for c in crons_by_prompt(st.turns)] == [
+        ("Run pass N of the index.", 2, 30), ("Send the daily digest.", 1, 30),
+    ]  # fmt: skip
 
 
 def test_busy_gaps_and_the_edges_add_up_to_the_wall(tmp_path: Path) -> None:

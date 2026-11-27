@@ -291,6 +291,26 @@ def test_compactions_count_the_main_agents_with_the_subagents_beside_them(tmp_pa
     assert len(data["compactions"]) == 3  # the list has every lane
 
 
+def test_the_json_splits_tests_into_targeted_and_full(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    sub = tx.request(1).agent(2, "a1", description="run: tests")
+    run_one = sub.request(3).bash(4, "uv run pytest tests/test_x.py::test_y")
+    sub.result(10, run_one)
+    sub.request(11).text(12)
+    tx.agent_returned(13, sub)
+    full = tx.request(14).bash(15, "uv run pytest")
+    tx.result(20, full)
+    lint = tx.request(21).bash(22, "uv run ruff check .")
+    tx.result(23, lint)
+    tx.turn_end(24)
+    data = json.loads(invoke(tx, tmp_path, "--json").stdout)
+    groups = {c["id"]: c["bash_group"] for c in data["calls"]}
+    assert (groups[run_one], groups[full], groups[lint]) == ("test (targeted)", "test (full)", "lint")
+    result = runner.invoke(app, ["timeline", str(tx.path(tmp_path / "projects")), "--subagent", "a1", "--json"])
+    assert [c["bash_group"] for c in json.loads(result.stdout)["calls"]] == ["test (targeted)"]
+
+
 def test_the_json_of_a_window_keeps_only_its_records(tmp_path: Path, isolated_home: Path) -> None:
     data = json.loads(invoke(session(), tmp_path, "--json", "--from", "09:08", "--to", "09:12").stdout)
     assert [t["index"] for t in data["turns"]] == [1, 2, 3]

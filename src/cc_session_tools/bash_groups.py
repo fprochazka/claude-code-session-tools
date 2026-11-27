@@ -74,6 +74,14 @@ class BashClass:
     """The parser's warning, such as a syntax error, when it had one. A command it can't read at all is ``other``."""
 
 
+def group_label(found: BashClass) -> str:
+    """The group as ``tool-stats`` and the JSON of ``timeline`` name it: a test is ``test (targeted)`` or ``test
+    (full)`` when it can tell which."""
+    if found.group != "test" or found.targeted is None:
+        return found.group
+    return "test (targeted)" if found.targeted else "test (full)"
+
+
 class BashGroupsError(Exception):
     """The user file of Bash groups is invalid. The message names the file and the line."""
 

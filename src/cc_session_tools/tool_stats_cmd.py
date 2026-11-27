@@ -167,12 +167,6 @@ def _lane_type(sub: Subagent | None) -> str:
     return "main" if sub is None else (sub.agent_type or "?").split(":")[-1]
 
 
-def _bash_group(found: BashClass) -> str:
-    if found.group != "test" or found.targeted is None:
-        return found.group
-    return "test (targeted)" if found.targeted else "test (full)"
-
-
 def _summary(walls: Sequence[float]) -> dict[str, Any]:
     return {
         "n": len(walls),
@@ -302,7 +296,7 @@ class ToolStats:
         self._nested: defaultdict[str, _Nested] = defaultdict(_Nested)
 
     def add(self, st: SessionTime, *, title: str | None = None, top: int = 10) -> None:
-        from .bash_groups import normalize
+        from .bash_groups import group_label, normalize
 
         assert self._grouper is not None, "a detached ToolStats only merges"
 
@@ -362,7 +356,7 @@ class ToolStats:
         group_walls: defaultdict[str, float] = defaultdict(float)
         for c in bash:
             assert c.bash is not None
-            name = _bash_group(c.bash)
+            name = group_label(c.bash)
             group_walls[name] += c.call.run_wall
             row = self._groups[name]
             row.walls.append(c.call.run_wall)
@@ -451,6 +445,8 @@ class ToolStats:
         Every other call stands alone, under a key of its own that is never counted, so it has no similar calls.
         The overall ``top`` are always among them: a command slower than the session's ``top`` ranks above it
         overall too."""
+        from .bash_groups import group_label
+
         kept: dict[tuple[str, str | None], _Call] = {}
         for c in sorted(timed, key=lambda c: -c.call.run_wall):
             if c.call.name == HANDBACK_TOOL or c.call.run_wall <= 0:
@@ -477,7 +473,7 @@ class ToolStats:
                     "auto_backgrounded": c.call.auto_backgrounded,
                     "background": c.call.name == "Bash" and c.call.background,
                     "suspect_wait": suspected(c.call),
-                    "bash_group": _bash_group(c.bash) if c.bash is not None else None,
+                    "bash_group": group_label(c.bash) if c.bash is not None else None,
                     "command": c.command[:200] if c.command is not None else None,
                 }
 

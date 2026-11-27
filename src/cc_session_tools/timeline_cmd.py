@@ -769,8 +769,10 @@ def _subagent_fields(sub: Subagent) -> dict[str, Any]:
 
 
 def session_json(st: SessionTime, grouper: BashGrouper, window: Interval | None = None) -> dict[str, Any]:
+    from .bash_groups import group_label
+
     def classify(command: str) -> str:
-        return grouper.classify(command).group
+        return group_label(grouper.classify(command))  # with tests split into targeted and full
 
     def inside(moment: datetime) -> bool:
         return window is None or window.start <= moment <= window.end
@@ -904,8 +906,10 @@ def session_json(st: SessionTime, grouper: BashGrouper, window: Interval | None 
 def subagent_json(
     st: SessionTime, sub: Subagent, grouper: BashGrouper, window: Interval | None = None
 ) -> dict[str, Any]:
+    from .bash_groups import group_label
+
     def classify(command: str) -> str:
-        return grouper.classify(command).group
+        return group_label(grouper.classify(command))  # with tests split into targeted and full
 
     def inside(moment: datetime) -> bool:
         return window is None or window.start <= moment <= window.end

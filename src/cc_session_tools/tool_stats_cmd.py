@@ -488,6 +488,11 @@ class ToolStats:
             if len(row.walls) > 1
         ]
         user_waits = sorted(self._user_waits, key=lambda w: -w["wall"])
+        by_tool: dict[str, dict[str, Any]] = {}
+        for w in user_waits:
+            row = by_tool.setdefault(w["tool"], {"n": 0, "wall": 0.0})
+            row["n"] += 1
+            row["wall"] += w["wall"]
         roles = [
             {
                 "role": role,
@@ -529,7 +534,8 @@ class ToolStats:
                 "decisions": dict(self._decisions.most_common()),
                 "user_answered": len(user_waits),
                 "user_wait": sum(w["wall"] for w in user_waits),
-                "user_waits": user_waits if len(self.sessions) == 1 else user_waits[: top * 5],
+                "user_waits_by_tool": dict(sorted(by_tool.items(), key=lambda kv: (-kv[1]["wall"], -kv[1]["n"]))),
+                "user_waits": user_waits,
                 "denials": dict(self._denials.most_common()),
             },
             "subagent_roles": sorted(roles, key=lambda r: -r["active"]),
@@ -741,11 +747,18 @@ def _sections(data: dict[str, Any], *, many: bool) -> list[str]:
             " permission decisions; only their dialogs count below.",
         ]
     waits = ", ".join(f"{w['tool']} {span(w['wall'])}" for w in p["user_waits"][:6])
+    rest = len(p["user_waits"]) - 6
     out += [
         "",
         f"Prompts the user answered: {p['user_answered']}, total wait {span(p['user_wait'])}"
-        + (f": {waits}" if waits else ""),
+        + (f": {waits}" if waits else "")
+        + (f" and {rest} shorter" if rest > 0 else ""),
     ]
+    if len(p["user_waits_by_tool"]) > 1:
+        out.append(
+            "By tool: "
+            + " · ".join(f"{tool} {row['n']} {span(row['wall'])}" for tool, row in p["user_waits_by_tool"].items())
+        )
     if p["denials"]:
         out.append("Denials: " + ", ".join(f"{k} {v}" for k, v in p["denials"].items()))
     out += [

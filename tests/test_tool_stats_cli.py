@@ -219,6 +219,31 @@ def test_many_sessions_add_up(tmp_path: Path, isolated_home: Path) -> None:
     assert "cat <repo>/README.md" in commands and not any("/home/" in c for c in commands)  # each in its own repo
 
 
+def test_every_user_wait_is_kept_and_counted_per_tool(tmp_path: Path, isolated_home: Path) -> None:
+    targets = []
+    for n, tools in enumerate([["AskUserQuestion"] * 3 + ["ExitPlanMode"], ["AskUserQuestion"] + ["ExitPlanMode"] * 2]):
+        tx = Transcript(session_id=f"0000000{n}-0000-4000-8000-000000000000", cwd=f"/home/user/projects/w{n}")
+        tx.prompt(0)
+        for k, tool in enumerate(tools):
+            ask = tx.request(10 + k * 100).call(11 + k * 100, tool, question="Which one?")
+            tx.result(11 + k * 100 + 10 * (k + 1), ask, permission=permission("user_temporary"))
+        tx.turn_end(1000)
+        targets.append(str(tx.write(tmp_path / "projects")))
+    p = tool_stats_many(targets, top=1, isolate=False)["permissions"]
+    assert len(p["user_waits"]) == p["user_answered"] == 7  # not cut to the top
+    assert p["user_waits_by_tool"] == {
+        "AskUserQuestion": {"n": 4, "wall": 70.0},
+        "ExitPlanMode": {"n": 3, "wall": 90.0},
+    }
+    assert sum(row["wall"] for row in p["user_waits_by_tool"].values()) == p["user_wait"]
+    listing = tmp_path / "sessions.txt"
+    listing.write_text("\n".join(targets) + "\n", encoding="utf-8")
+    out = runner.invoke(app, ["tool-stats", "--sessions-from", str(listing)]).stdout.splitlines()
+    answered = next(line for line in out if line.startswith("Prompts the user answered: 7,"))
+    assert answered.endswith(" and 1 shorter")
+    assert "By tool: ExitPlanMode 3 1m30s · AskUserQuestion 4 1m10s" in out
+
+
 def test_a_session_that_fails_is_skipped(tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from cc_session_tools.session_time import analyze
 

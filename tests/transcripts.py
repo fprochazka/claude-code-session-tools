@@ -201,6 +201,22 @@ class Transcript:
         record.update(extra)
         return self.add(record)
 
+    def api_error(
+        self, t: float, text: str = "Prompt is too long", *, error: str = "invalid_request", status: int | None = None
+    ) -> dict[str, Any]:
+        """The synthetic assistant record Claude Code writes for a request the API refused."""
+        message = {
+            "id": self.next_id("msg_err"),
+            "type": "message",
+            "role": "assistant",
+            "model": "<synthetic>",
+            "content": [{"type": "text", "text": text}],
+            "usage": usage(fresh=0, output=0, cache_read=0, cache_creation=0),
+        }
+        return self.envelope(
+            "assistant", t, message=message, isApiErrorMessage=True, error=error, apiErrorStatus=status
+        )
+
     # Prompts
 
     def prompt(

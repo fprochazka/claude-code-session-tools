@@ -31,6 +31,7 @@ from cc_blackbox import (
     SessionTranscript,
     SubagentTranscript,
     SystemEntry,
+    TextBlock,
     ToolCall,
     ToolPermissionDecision,
     ToolResultBlock,
@@ -207,6 +208,8 @@ class ApiError:
     time: datetime
     error: str | None
     status: Any
+    message: str | None = None
+    """The error's text as Claude Code showed it, such as ``Prompt is too long``: its first text block."""
 
 
 @dataclass
@@ -552,9 +555,9 @@ def _lane(entries: Sequence[Entry], lane_id: str) -> Lane:
         elif isinstance(entry, AssistantEntry):
             if entry.raw.get("isApiErrorMessage") is True:
                 if entry.timestamp is not None:
-                    lane.api_errors.append(
-                        ApiError(entry.timestamp, _text(entry.raw.get("error")), entry.raw.get("apiErrorStatus"))
-                    )
+                    message = next((b.text for b in entry.content if isinstance(b, TextBlock) and b.text), None)
+                    error, status = _text(entry.raw.get("error")), entry.raw.get("apiErrorStatus")
+                    lane.api_errors.append(ApiError(entry.timestamp, error, status, message))
                 continue
             if entry.message_id is not None:
                 for block in entry.content:

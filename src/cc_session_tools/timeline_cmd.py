@@ -25,6 +25,7 @@ from .redact import count, redact, redacting_session, span, tokens
 from .session_time import (
     AGENT_TOOLS,
     AWAY,
+    ApiError,
     CompactionEvent,
     Interval,
     SessionTime,
@@ -129,6 +130,12 @@ def timeline(
                 st, transcript.title, grouper, max_lines=max_lines, merge_gap=merge_gap, window=window
             )
     sys.stdout.write(output)
+
+
+def _api_error(e: ApiError) -> str:
+    """``! API error <error> <status>: <message>``, each part only when the record has it."""
+    head = f"! API error {redact(e.error or '', limit=60)} {e.status or ''}".rstrip()
+    return f"{head}: {redact(e.message, limit=100)}" if e.message else head
 
 
 def _is_subagent_file(target: str) -> bool:
@@ -448,7 +455,7 @@ def _render_items(
         else:
             flush()
             e = item.value
-            out.append(f"{_hm(e.time)} ! API error {redact(e.error or '', limit=60)} {e.status or ''}".rstrip())
+            out.append(f"{_hm(e.time)} {_api_error(e)}")
     flush()
     return out
 
@@ -797,6 +804,21 @@ def session_json(st: SessionTime, grouper: BashGrouper, window: Interval | None 
             }
             for c in st.compactions
             if inside(c.time)
+        ],
+        "api_errors": [
+            {
+                "time": _iso(e.time),
+                "lane": lane,
+                "error": e.error,
+                "status": e.status,
+                "message": redact(e.message, limit=200) if e.message else None,
+            }
+            for lane, lane_errors in (
+                ("main", st.main.api_errors),
+                *((s.agent_id, s.lane.api_errors) for s in st.subagents),
+            )
+            for e in lane_errors
+            if inside(e.time)
         ],
     }
 

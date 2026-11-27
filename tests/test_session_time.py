@@ -820,6 +820,7 @@ def test_an_api_error_is_counted_and_is_not_model_time(tmp_path: Path) -> None:
         4,
         1,
     )
+    assert (st.main.api_errors[0].status, st.main.api_errors[0].message) == (429, "API Error")
 
 
 def test_busy_gaps_and_the_edges_add_up_to_the_wall(tmp_path: Path) -> None:

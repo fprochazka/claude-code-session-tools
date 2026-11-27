@@ -161,7 +161,7 @@ def test_the_json_has_every_turn_call_subagent_and_compaction_unmerged(tmp_path:
     data = json.loads(invoke(tx, tmp_path, "--json").stdout)
     assert set(data) == {
         "session_id", "kind", "kind_source", "start", "end", "has_permission_decisions", "window",
-        "totals", "main", "turns", "gaps", "calls", "subagents", "compactions",
+        "totals", "main", "turns", "gaps", "calls", "subagents", "compactions", "api_errors",
     }  # fmt: skip
     assert [t["trigger"] for t in data["turns"]] == ["human", "human", "human", "human", "cron"]
     assert data["turns"][0]["prompt"] == "Plan the change to <repo>/a.py with token=<redact…"
@@ -184,6 +184,29 @@ def test_the_json_has_every_turn_call_subagent_and_compaction_unmerged(tmp_path:
     ]
     assert data["totals"]["user_waits"] == 97
     assert data["gaps"][-1]["away"] is True
+
+
+def test_an_api_error_shows_its_message(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    sub = tx.request(1).agent(2, "a1", description="run: tests")
+    sub.request(3).text(10)
+    sub.api_error(11, "API Error: Overloaded", error="overloaded", status=529)
+    tx.agent_returned(12, sub)
+    tx.request(13).text(20)
+    tx.turn_end(21)
+    tx.scheduled(600, wakeup=False)
+    tx.api_error(601)
+    tx.turn_end(602)
+    text = "\n".join(lines_of(tx, tmp_path))
+    assert "09:10 ! API error invalid_request: Prompt is too long" in text
+    data = json.loads(invoke(tx, tmp_path / "json", "--json").stdout)
+    assert data["api_errors"] == [
+        {"time": "2026-11-02T09:10:01+00:00", "lane": "main", "error": "invalid_request", "status": None,
+         "message": "Prompt is too long"},
+        {"time": "2026-11-02T09:00:11+00:00", "lane": "a1", "error": "overloaded", "status": 529,
+         "message": "API Error: Overloaded"},
+    ]  # fmt: skip
 
 
 def test_the_json_of_a_window_keeps_only_its_records(tmp_path: Path, isolated_home: Path) -> None:

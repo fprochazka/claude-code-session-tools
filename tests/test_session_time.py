@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from transcripts import START, Transcript, permission, usage
 
+from cc_session_tools.session_activity import scan
 from cc_session_tools.session_time import (
     Interval,
     SessionTime,
@@ -21,7 +22,15 @@ HOUR = 3600
 
 
 def run(tx: Transcript, tmp_path: Path) -> SessionTime:
-    return analyze(tx.load(tmp_path / "projects"))
+    """Analyse the transcript, and check that the cheap scan of ``search --min-active`` reads the same activity."""
+    transcript = tx.load(tmp_path / "projects")
+    st = analyze(transcript)
+    activity = scan(transcript)
+    assert (activity.active, activity.wall) == (st.totals.active, st.totals.wall)
+    assert (activity.kind, activity.kind_source) == (st.kind, st.kind_source)
+    assert activity.subagents == len(st.subagents)
+    assert activity.compactions == sum(1 for c in st.compactions if c.lane == "main")
+    return st
 
 
 def call(st: SessionTime, call_id: str) -> TimedCall:
@@ -529,7 +538,7 @@ def test_the_kind_comes_from_the_start_log_role(tmp_path: Path) -> None:
     tx.request(1).text(2)
     projects = tmp_path / "projects"
     tx.log_start(projects, 0, role="worker")
-    st = analyze(tx.load(projects))
+    st = run(tx, tmp_path)
     assert (st.kind, st.kind_source) == ("worker", "start-log")
 
 

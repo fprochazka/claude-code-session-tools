@@ -84,6 +84,9 @@ cc-session-tools search --rg worktree --rg deleted --rg-any   # sessions contain
 cc-session-tools search --all                        # every project, not just this directory
 cc-session-tools search --all --since 2w -n 0         # every session of the last two weeks
 cc-session-tools search --since 2026-11-01 --json    # since a date, as JSON
+cc-session-tools search --durations                  # add wall time, active time, subagents, compactions and kind
+cc-session-tools search --all --since 60d --min-active 2h -n 0   # every session of 60 days active for 2 hours or more
+cc-session-tools search --all --since 2w --sort active -n 10     # the 10 most active sessions of two weeks
 ```
 
 The table has four columns: **When** (time since the last interaction), **Session** (the full session id, ready to paste into `claude --resume`), **Name**, and **Worktree** (the session's path relative to the repo root, shown only inside a git repo). Under `--all` the last column becomes **Project** and shows each session's own directory. A dimmed name is a title derived from the first human message, not a name the session actually has. When the rows come from more than one projects dir, a **Profile** column before the last one names the profile each session belongs to.
@@ -104,7 +107,13 @@ The table has four columns: **When** (time since the last interaction), **Sessio
 
 **`--json`** prints the rows as a JSON array instead of the table, after the same filters and limit. Each row has `session_id`, `name`, `name_is_derived`, `last_interaction` (ISO 8601), `last_interaction_from_transcript` (`false` for an empty stub whose time is the file's mtime), `profile`, `location` (the table's last column: the path relative to the repo, or the cwd under `--all`), `cwd` and `transcript_path`. When nothing matched it prints `[]` and the notice goes to stderr.
 
-Exit codes: `0`, including when nothing matched (the notice goes to stderr). `1` when `--since` can't be read. `2` when ripgrep fails.
+**`--durations`** adds five columns after **Session**: **Wall** (first to last record of the session and its subagents), **Active** (the main agent's turns and its subagents' bursts, overlaps counted once), **Subagents**, **Compactions** (of the main agent) and **Kind** (the role from the auth-switch start log, such as `worker`, else `loop` or `interactive` from what opened the turns). The numbers are the ones `timeline` puts in its header, and follow the same rules. In `--json` each row also gets `wall` and `active` in seconds, `subagents`, `compactions`, `kind` and `kind_source` (`start-log` or `origins`).
+
+**`--min-active`** keeps the sessions active at least this long (`2h`, `1h30m`) and implies `--durations`. Active time counts a tool call that stayed pending for hours, such as a permission prompt nobody answered overnight, as active, because the transcript can't tell it from a slow command; `timeline` flags such calls as suspected waits. **`--sort active`** orders the rows by active time, longest first, and implies `--durations`; the default `--sort last` orders by the last interaction. Both apply after `--since` and `--rg`, and before `-n`.
+
+**The duration columns cost time.** Plain `search` reads only the head and tail of each transcript; the columns read every shown session whole, its subagents included, in parallel processes. `--min-active` first skips the sessions whose span from their first record to the last write of any of their files is shorter than the threshold, which no active time can exceed. Expect about 10–30 seconds for 60 days of sessions on a machine with many cores, and several seconds for one session with gigabytes of transcripts. Ordered by the last interaction, no further session starts being read once `-n` sessions qualify, though the ones already being read finish first.
+
+Exit codes: `0`, including when nothing matched (the notice goes to stderr). `1` when `--since`, `--min-active` or `--sort` can't be read. `2` when ripgrep fails.
 
 ### distill
 
@@ -493,6 +502,7 @@ src/cc_session_tools/
 ├── timefmt.py         # relative "time ago" formatting
 ├── segments.py        # a transcript split at its compactions
 ├── session_time.py    # where a session's time went: turns, tool calls, subagents, idle gaps, user waits, compactions
+├── session_activity.py # a session's wall and active time read cheaply, for search --durations and --min-active
 ├── bash_groups.py     # Bash commands grouped by purpose (test, build, wait, git, …), with the user's own groups file
 ├── render.py          # condensed conversation -> markdown, one file per segment
 └── stats.py           # size and token estimates

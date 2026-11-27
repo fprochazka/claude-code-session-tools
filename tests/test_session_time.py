@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from transcripts import START, Transcript, permission, usage
@@ -889,6 +890,124 @@ def test_another_api_error_is_not_a_stall(tmp_path: Path) -> None:
     st = run(tx, tmp_path)
     assert st.main.stalls == [] and st.totals.context_full_errors == 0
     assert [e.message for e in st.main.api_errors] == ["API Error: Rate limited", "Prompt is too long"]
+
+
+def test_a_bash_call_moved_to_the_background_runs_until_its_notice(tmp_path: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    sub = tx.request(1).agent(2, "a1", description="run: tests", background=True)
+    tx.agent_returned(3, sub)
+    tx.turn_end(4)
+    moved = sub.request(9).bash(10, "./gradlew test")
+    sub.moved_to_background(190, moved, "b1")
+    lost = sub.request(191).bash(192, "./gradlew build")
+    sub.moved_to_background(372, lost, "b2", after_ms=120_000, capped=False)
+    sub.request(373).text(380)
+    sub.task_notification(610, "b1", call_id=moved, queued=True)
+    sub.request(611).text(620)
+    st = run(tx, tmp_path)
+    c = call(st, moved)
+    assert (c.wall, c.run_wall, c.moved_after, c.capped, c.auto_backgrounded) == (180, 600, 180, True, True)
+    assert (c.background, c.background_task, c.finish_status) == (False, "b1", "completed")
+    c = call(st, lost)  # the subagent stopped before its notice
+    assert (c.finished_at, c.wall, c.run_wall, c.capped, c.auto_backgrounded) == (None, 180, 180, False, True)
+    assert st.subagents[0].lane.tool_seconds() == 360  # the lane was blocked until the moves only
+
+
+def test_a_notice_without_a_call_id_or_in_another_lane_still_finds_its_call(tmp_path: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    sub = tx.request(1).agent(2, "a1", description="run: tests", background=True)
+    tx.agent_returned(3, sub)
+    tx.turn_end(4)
+    by_task = tx.request(5).bash(6, "sleep 900")
+    tx.moved_to_background(126, by_task, "b1", after_ms=120_000, capped=False)
+    tx.turn_end(127)
+    elsewhere = sub.request(9).bash(10, "./gradlew test")
+    sub.moved_to_background(190, elsewhere, "b2")
+    sub.request(191).text(200)
+    tx.task_notification(906, "b1")
+    tx.task_notification(1000, "b2", call_id=elsewhere)
+    tx.request(1001).text(1010)
+    tx.turn_end(1011)
+    st = run(tx, tmp_path)
+    assert (call(st, by_task).run_wall, call(st, elsewhere).run_wall) == (900, 990)
+
+
+def test_a_notice_written_just_before_the_move_is_kept_only_for_its_own_call(tmp_path: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    early = tx.request(1).bash(2, "./gradlew test")
+    tx.task_notification(121.994, "b1", call_id=early, queued=True)
+    tx.moved_to_background(122, early, "b1", after_ms=120_000, capped=False)
+    stale = tx.request(123).bash(124, "./gradlew build")
+    tx.moved_to_background(244, stale, "b9", after_ms=120_000, capped=False)
+    tx.task_notification(230, "b9")  # by task id only, 14 s before the move: a stale reuse
+    tx.request(245).text(250)
+    tx.turn_end(251)
+    st = run(tx, tmp_path)
+    finished, end = call(st, early).finished_at, call(st, early).end
+    assert finished is not None and end is not None and timedelta(0) < end - finished < timedelta(milliseconds=10)
+    assert call(st, early).run_wall == 120  # never below the blocking wall
+    assert call(st, stale).finished_at is None
+
+
+def test_a_bash_call_moved_to_deliver_a_message_is_moved(tmp_path: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    moved = tx.request(1).bash(2, "./gradlew test")
+    tx.moved_to_background(30, moved, "b1", to_deliver_message=True)
+    tx.task_notification(302, "b1", call_id=moved)
+    tx.request(303).text(310)
+    tx.turn_end(311)
+    st = run(tx, tmp_path)
+    c = call(st, moved)
+    assert (c.auto_backgrounded, c.moved_reason, c.moved_after, c.capped, c.background) == (
+        True, "deliver_message", None, False, False,
+    )  # fmt: skip
+    assert (c.wall, c.run_wall) == (28, 300)
+
+
+def test_every_kind_of_move_has_its_reason(tmp_path: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    sub = tx.request(1).agent(2, "a1", description="run: tests", background=True)
+    tx.agent_returned(3, sub)
+    capped = sub.request(4).bash(5, "./gradlew test")
+    sub.moved_to_background(185, capped, "b1")
+    sub.request(186).text(190)
+    kinds: dict[str, dict[str, Any]] = {
+        "timeout": {"after_ms": 120_000, "capped": False}, "deliver_message": {"to_deliver_message": True},
+        "user": {"by_user": True}, "other": {"after_ms": None},
+    }  # fmt: skip
+    calls = {"cap": capped}
+    for n, (reason, how) in enumerate(kinds.items()):
+        t = 10 + n * 200
+        calls[reason] = tx.request(t).bash(t + 1, f"./step-{n}.sh")
+        tx.moved_to_background(t + 150, calls[reason], f"c{n}", **how)
+    launched = tx.request(900).bash(901, "./serve.sh", background=True)
+    tx.moved_to_background(902, launched, "d1", after_ms=None)
+    tx.turn_end(903)
+    st = run(tx, tmp_path)
+    assert {reason: call(st, i).moved_reason for reason, i in calls.items()} == {r: r for r in calls}
+    assert all(call(st, i).auto_backgrounded for i in calls.values())
+    assert [call(st, calls[r]).moved_after for r in calls] == [180, 120, None, None, None]
+    assert (call(st, launched).moved_reason, call(st, launched).auto_backgrounded) == (None, False)
+
+
+def test_an_explicit_background_bash_call_runs_until_its_notice_and_is_not_moved(tmp_path: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    launched = tx.request(1).bash(2, "./serve.sh", background=True)
+    tx.moved_to_background(3, launched, "b1", after_ms=None)
+    tx.turn_end(4)
+    tx.task_notification(302, "b1", call_id=launched, status="failed")
+    tx.request(303).text(310)
+    tx.turn_end(311)
+    st = run(tx, tmp_path)
+    c = call(st, launched)
+    assert (c.background, c.auto_backgrounded, c.moved_after, c.wall, c.run_wall) == (True, False, None, 1, 300)
+    assert c.finish_status == "failed" and st.totals.tools == 1
 
 
 def test_busy_gaps_and_the_edges_add_up_to_the_wall(tmp_path: Path) -> None:

@@ -241,6 +241,27 @@ def test_a_stall_on_a_full_context_is_one_line_and_not_away(tmp_path: Path, isol
     assert data["gaps"][0]["stalled_seconds"] == 3 * HOUR and data["gaps"][0]["away"] is False
 
 
+def test_a_bash_call_moved_to_the_background_shows_its_runtime(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    moved = tx.request(1).bash(2, "sleep 900")
+    tx.moved_to_background(122, moved, "b1", after_ms=120_000, capped=False)
+    tx.turn_end(123)
+    tx.task_notification(902, "b1", call_id=moved)
+    tx.request(903).text(904)
+    tx.turn_end(905)
+    data = json.loads(invoke(tx, tmp_path, "--json").stdout)
+    c = next(c for c in data["calls"] if c["id"] == moved)
+    assert {k: c[k] for k in ("wall", "run_wall", "auto_backgrounded", "moved_after", "capped", "finish_status")} == {
+        "wall": 120.0, "run_wall": 900.0, "auto_backgrounded": True, "moved_after": 120.0, "capped": False,
+        "finish_status": "completed",
+    }  # fmt: skip
+    assert c["finished_at"] == "2026-11-02T09:15:02+00:00" and c["background_task"] == "b1"
+    assert data["totals"]["main_busy"] < 300 and data["totals"]["tools"] == 120  # blocked until the move only
+    text = invoke(tx, tmp_path / "md").stdout
+    assert "· ↷ 1 Bash call moved to the background, ran 15m\n" in text
+
+
 def test_the_json_of_a_window_keeps_only_its_records(tmp_path: Path, isolated_home: Path) -> None:
     data = json.loads(invoke(session(), tmp_path, "--json", "--from", "09:08", "--to", "09:12").stdout)
     assert [t["index"] for t in data["turns"]] == [1, 2, 3]

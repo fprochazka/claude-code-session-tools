@@ -190,7 +190,7 @@ def test_user_waits_batched_results_and_background_bash_are_kept_apart(tmp_path:
     assert (t["batched_calls"], t["background_bash"], t["user_wait_calls"], t["user_wait_wall"]) == (1, 1, 2, 897)
     assert data["permissions"]["decisions"]["hook reject"] == 1
     text = invoke(tx, tmp_path / "md").stdout
-    assert "2 calls waited on the user, 14m in all" in text and "Background Bash: 1 call;" in text
+    assert "2 calls waited on the user, 14m in all" in text and "Background Bash: 1 call, ran 1s until" in text
 
 
 def test_a_stall_on_a_full_context_is_counted(tmp_path: Path, isolated_home: Path) -> None:
@@ -208,6 +208,79 @@ def test_a_stall_on_a_full_context_is_counted(tmp_path: Path, isolated_home: Pat
     assert (t["stalls"], t["stalled"], t["context_full_errors"]) == (1, 2 * HOUR, 2)
     text = invoke(tx, tmp_path / "md").stdout
     assert "✖ 2 prompts refused on a full context (all lanes); the main agent stalled 1 time, 2h00m in all." in text
+
+
+def test_bash_calls_moved_to_the_background_count_until_their_notice(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    sub = tx.request(1).agent(2, "a1", description="run: tests", background=True)
+    tx.agent_returned(3, sub)
+    tx.turn_end(4)
+    moved = sub.request(9).bash(10, "./gradlew test")
+    sub.moved_to_background(190, moved, "b1")
+    lost = sub.request(191).bash(192, "./gradlew test")
+    sub.moved_to_background(312, lost, "b2", after_ms=120_000, capped=False)
+    sub.task_notification(610, "b1", call_id=moved, queued=True)
+    sub.request(611).text(620)
+    launched = tx.request(700).bash(701, "./serve.sh", background=True)
+    tx.moved_to_background(702, launched, "b3", after_ms=None)
+    tx.turn_end(703)
+    tx.task_notification(1001, "b3", call_id=launched)
+    tx.request(1002).text(1003)
+    tx.turn_end(1004)
+    data = json.loads(invoke(tx, tmp_path, "--json").stdout)
+    t = data["totals"]
+    assert (t["moved_bash"], t["moved_bash_run_wall"], t["moved_bash_unfinished"]) == (2, 720.0, 1)
+    assert t["moved_bash_by_reason"] == {"cap": 1, "timeout": 1}
+    assert (t["background_bash"], t["background_bash_run_wall"]) == (1, 300.0)
+    test = next(r for r in data["bash_groups"] if r["group"] == "test (full)")
+    assert (test["n"], test["total"], test["max"]) == (2, 720.0, 600.0)
+    slowest = data["slowest"][0]
+    assert (slowest["run_wall"], slowest["wall"], slowest["auto_backgrounded"]) == (600.0, 180.0, True)
+    assert "blocking_wall" not in slowest
+    text = invoke(tx, tmp_path / "md").stdout
+    assert (
+        "↷ Moved to the background: 2 Bash calls (1 at the subagent cap, 1 at their own timeout); they"
+        " ran 12m until their completion notices, 1 without a notice, counted until the move. The tool sections count"
+        " that runtime; the lane and busy totals count only the time until the move." in text
+    )
+    assert "Background Bash: 1 call, ran 5m00s until their completion notices or, without one, their launch." in text
+    assert "- 10m ↷ 11-02 09:00 general-purpose Bash [test (full)] (+1 similar): `./gradlew test`" in text
+
+
+def test_a_move_to_deliver_a_message_is_named(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    moved = tx.request(1).bash(2, "./gradlew test")
+    tx.moved_to_background(30, moved, "b1", to_deliver_message=True)
+    tx.task_notification(302, "b1", call_id=moved)
+    tx.request(303).text(310)
+    tx.turn_end(311)
+    data = json.loads(invoke(tx, tmp_path, "--json").stdout)
+    t = data["totals"]
+    assert (t["moved_bash"], t["moved_bash_by_reason"], t["moved_bash_run_wall"]) == (1, {"deliver_message": 1}, 300.0)
+    text = invoke(tx, tmp_path / "md").stdout
+    assert "↷ Moved to the background: 1 Bash call (1 to deliver a message); they ran 5m00s" in text
+    assert "- 5m00s ↷ " in text
+
+
+def test_every_reason_of_a_move_is_named(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    kinds: list[dict[str, Any]] = [
+        {"after_ms": 120_000, "capped": False}, {"to_deliver_message": True}, {"by_user": True}, {"after_ms": None},
+    ]  # fmt: skip
+    for n, how in enumerate(kinds):
+        moved = tx.request(10 + n * 100).bash(11 + n * 100, f"./step-{n}.sh")
+        tx.moved_to_background(41 + n * 100, moved, f"b{n}", **how)
+    tx.turn_end(500)
+    t = json.loads(invoke(tx, tmp_path, "--json").stdout)["totals"]
+    assert t["moved_bash_by_reason"] == {"timeout": 1, "deliver_message": 1, "user": 1, "other": 1}
+    text = invoke(tx, tmp_path / "md").stdout
+    assert (
+        "↷ Moved to the background: 4 Bash calls (1 at their own timeout, 1 to deliver a message, 1 by the user,"
+        " 1 for another reason)" in text
+    )
 
 
 def test_an_old_transcript_says_permission_decisions_were_not_recorded(tmp_path: Path, isolated_home: Path) -> None:

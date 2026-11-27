@@ -112,7 +112,7 @@ Reading the `timeline` header:
 - **idle between turns** is split by what ended it: `human`, `peer`, `handback` (its own subagent reporting), `task-notification`, `cron`. Idle time with subagents active is background work, not lost time.
 - **subagents** line: counts, fg/bg, **subagent active** as the union of their activity (as the clock ran), **lane time** when it differs (each subagent's own active time added up, a parent counting its wait on nested ones), and tokens. The last line counts the **⌛ suspected waits** and how much busy and active time lies inside them.
 
-Reading `tool-stats`: the header gives the call counts, the calls that waited on the user, results held behind a subagent, and the suspected waits; each section's totals are sums of elapsed times.
+Reading `tool-stats`: the header gives the call counts, the calls that waited on the user, results held behind a subagent, the suspected waits, and the Bash calls Claude Code moved to the background (`↷`), which the sections count until their completion notice while the lane and busy totals count only the time until the move; each section's totals are sums of elapsed times.
 
 Limits that change the conclusion:
 

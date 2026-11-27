@@ -291,6 +291,37 @@ class Transcript:
         """A subagent's report delivered as a peer message from its agent id."""
         return self.prompt(t, f"[Subagent hand-back] {report}", origin="peer", sender=sub.agent_id, handback=True)
 
+    def moved_to_background(
+        self,
+        t: float,
+        call_id: str,
+        task_id: str,
+        *,
+        after_ms: int | None = 180_000,
+        capped: bool = True,
+        to_deliver_message: bool = False,
+        by_user: bool = False,
+    ) -> dict[str, Any]:
+        """The result of a Bash call that runs as background task ``task_id``: moved there by Claude Code after
+        ``after_ms``, with ``capped`` by the subagent cap, with ``to_deliver_message`` so that a message could reach
+        the agent, with ``by_user`` by the user, or with ``after_ms=None`` launched there (or moved for a reason this
+        version doesn't know, when the call was not launched with ``run_in_background``)."""
+        meta: dict[str, Any] = {"stdout": "", "stderr": "", "backgroundTaskId": task_id}
+        if to_deliver_message or by_user:
+            meta["backgroundedToDeliverMessage" if to_deliver_message else "backgroundedByUser"] = True
+            text = f"Command was moved to the background (ID: {task_id})."
+        elif after_ms is None:
+            text = f"Command running in background with ID: {task_id}."
+        else:
+            meta["timedOutAfterMs"] = after_ms
+            if capped:
+                meta["subagentCapApplied"] = True
+            text = (
+                f"Command was moved to the background (ID: {task_id}) after running for {after_ms // 1000}s."
+                " You will be notified when it completes."
+            )
+        return self.result(t, call_id, text, tool_use_result=meta)
+
     def task_notification(
         self, t: float, task_id: str, *, call_id: str | None = None, status: str = "completed", queued: bool = False
     ) -> dict[str, Any]:

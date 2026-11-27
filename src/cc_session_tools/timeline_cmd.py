@@ -267,6 +267,14 @@ def _subagent_line(st: SessionTime, sub: Subagent, indent: str = "    └ ") -> 
     )
 
 
+def _moved_note(st: SessionTime) -> str:
+    """`` · ↷ N Bash calls moved to the background, ran X`` when Claude Code moved any; empty otherwise."""
+    moved = [c for c in _all_calls(st) if c.auto_backgrounded]
+    if not moved:
+        return ""
+    return f" · ↷ {count(len(moved), 'Bash call')} moved to the background, ran {span(sum(c.run_wall for c in moved))}"
+
+
 def _died_context_full(sub: Subagent) -> bool:
     return bool(sub.lane.stalls) and sub.lane.stalls[-1].ended_by == "never"
 
@@ -313,7 +321,7 @@ def _header(st: SessionTime, title: str | None) -> list[str]:
         f" / subagents {tokens(sum(s.lane.tokens_total for s in st.subagents))} (with cache reads; new"
         f" {tokens(st.main.tokens_new + sum(s.lane.tokens_new for s in st.subagents))})",
         f"- compactions {len(main_compactions)} · API errors {api_errors} · interruptions {t.interruptions}"
-        f" · results held behind a subagent {t.batched_calls}",
+        f" · results held behind a subagent {t.batched_calls}" + _moved_note(st),
     ]
     if t.stalls or t.subagents_died_context_full:
         died = t.subagents_died_context_full
@@ -704,6 +712,14 @@ def _call_json(call: TimedCall, turn_of: dict[str, int], classify: Classify) -> 
         "is_error": call.is_error,
         "batched": call.batched,
         "background": call.background,
+        "auto_backgrounded": call.auto_backgrounded,
+        "moved_after": call.moved_after,
+        "capped": call.capped,
+        "moved_reason": call.moved_reason,
+        "background_task": call.background_task,
+        "finished_at": _iso(call.finished_at),
+        "finish_status": call.finish_status,
+        "run_wall": call.run_wall,
         "user_wait": call.user_wait,
         "suspect_wait": suspected(call),
         "bash_group": classify(bash) if bash is not None else None,

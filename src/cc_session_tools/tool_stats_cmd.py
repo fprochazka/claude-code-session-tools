@@ -26,7 +26,7 @@ import typer
 
 from .discovery import AmbiguousTarget, projects_dirs_override, resolve_target
 from .redact import count, redact, redacting_session, span, tokens
-from .session_time import AGENT_TOOLS, HANDBACK_TOOL, SessionTime, Subagent, TimedCall, analyze, union
+from .session_time import AGENT_TOOLS, HANDBACK_TOOL, MOVE_REASONS, SessionTime, Subagent, TimedCall, analyze, union
 from .timeline_cmd import SUSPECT_WAIT, suspected
 
 if TYPE_CHECKING:
@@ -265,13 +265,15 @@ class _Nested:
 _TOTALS = (
     "calls", "main_calls", "subagent_calls", "tool_wall", "user_wait_calls", "user_wait_wall", "main_busy",
     "batched_calls", "background_bash", "suspect_waits", "suspect_wait_wall", "subagents", "subagents_elapsed",
-    "stalls", "stalled", "context_full_errors",
+    "stalls", "stalled", "context_full_errors", "background_bash_run_wall", "moved_bash",
+    "moved_bash_run_wall", "moved_bash_unfinished",
 )  # fmt: skip
 
 
 _COUNTS = frozenset(
     ("calls", "main_calls", "subagent_calls", "user_wait_calls", "batched_calls", "background_bash", "suspect_waits",
-     "subagents", "stalls", "context_full_errors")
+     "subagents", "stalls", "context_full_errors", "moved_bash",
+     "moved_bash_unfinished")
 )  # fmt: skip
 
 
@@ -295,6 +297,7 @@ class ToolStats:
         self._decisions: Counter[str] = Counter()
         self._user_waits: list[dict[str, Any]] = []
         self._denials: Counter[str] = Counter()
+        self._moved_reasons: Counter[str] = Counter()
         self._roles: defaultdict[tuple[str, str, bool], _Role] = defaultdict(_Role)
         self._nested: defaultdict[str, _Nested] = defaultdict(_Nested)
 
@@ -323,16 +326,21 @@ class ToolStats:
         timed = [c for c in tool_calls if c.call.name not in AGENT_TOOLS]
         bash = [c for c in tool_calls if c.bash is not None]
         suspects = [c for c in calls if suspected(c.call)]
+        moved = [c for c in bash if c.call.auto_backgrounded]
         totals: dict[str, float] = {
             "calls": len(calls),
             "main_calls": sum(1 for c in calls if c.call.lane == "main"),
             "subagent_calls": sum(1 for c in calls if c.call.lane != "main"),
-            "tool_wall": sum(c.call.wall for c in timed),
+            "tool_wall": sum(c.call.run_wall for c in timed),
             "user_wait_calls": len(user_waits),
             "user_wait_wall": sum(c.call.wall for c in user_waits),
             "main_busy": st.totals.main_busy,
             "batched_calls": st.totals.batched_calls,
             "background_bash": sum(1 for c in bash if c.call.background),
+            "background_bash_run_wall": sum(c.call.run_wall for c in bash if c.call.background),
+            "moved_bash": len(moved),
+            "moved_bash_run_wall": sum(c.call.run_wall for c in moved),
+            "moved_bash_unfinished": sum(1 for c in moved if c.call.finished_at is None),
             "suspect_waits": len(suspects),
             "suspect_wait_wall": sum(c.call.wall for c in suspects),
             "subagents": len(st.subagents),
@@ -346,7 +354,7 @@ class ToolStats:
 
         for c in tool_calls:
             row = self._tools[c.call.name]
-            row.walls.append(c.call.wall)
+            row.walls.append(c.call.run_wall)
             if c.call.lane == "main":
                 row.main += 1
             else:
@@ -355,9 +363,9 @@ class ToolStats:
         for c in bash:
             assert c.bash is not None
             name = _bash_group(c.bash)
-            group_walls[name] += c.call.wall
+            group_walls[name] += c.call.run_wall
             row = self._groups[name]
-            row.walls.append(c.call.wall)
+            row.walls.append(c.call.run_wall)
             if c.call.lane == "main":
                 row.main += 1
             else:
@@ -366,10 +374,10 @@ class ToolStats:
                 row.programs[c.bash.program] += 1
             if c.bash.waits_on is not None:
                 row.polls += 1
-                row.poll_wall += c.call.wall
+                row.poll_wall += c.call.run_wall
             if c.repeat_key:
                 repeat = self._repeated[c.repeat_key]
-                repeat.walls.append(c.call.wall)
+                repeat.walls.append(c.call.run_wall)
                 repeat.types[c.lane_type] += 1
                 repeat.sessions.add(st.session_id)
                 repeat.group = repeat.group or name
@@ -390,6 +398,7 @@ class ToolStats:
             for c in user_waits
         ]
         self._denials.update(c.call.denial for c in calls if c.call.denial)
+        self._moved_reasons.update(c.call.moved_reason for c in moved if c.call.moved_reason)
 
         for s in st.subagents:
             role = self._roles[(s.role, _lane_type(s), s.parent_id is not None)]
@@ -441,8 +450,8 @@ class ToolStats:
         The overall ``top`` are always among them: a command slower than the session's ``top`` ranks above it
         overall too."""
         kept: dict[tuple[str, str | None], _Call] = {}
-        for c in sorted(timed, key=lambda c: -c.call.wall):
-            if c.call.name == HANDBACK_TOOL or c.call.wall <= 0:
+        for c in sorted(timed, key=lambda c: -c.call.run_wall):
+            if c.call.name == HANDBACK_TOOL or c.call.run_wall <= 0:
                 continue
             if c.repeat_key is None:
                 alone = f"call {session_id} {c.call.id or c.call.start.isoformat()}"
@@ -454,7 +463,7 @@ class ToolStats:
                 kept[key] = c
         for key, c in kept.items():
             best = self._slowest.get(key)
-            if best is None or c.call.wall > best["wall"]:
+            if best is None or c.call.run_wall > best["run_wall"]:
                 self._slowest[key] = {
                     "session_id": session_id,
                     "tool": c.call.name,
@@ -462,6 +471,9 @@ class ToolStats:
                     "lane_type": c.lane_type,
                     "start": c.call.start.isoformat(),
                     "wall": c.call.wall,
+                    "run_wall": c.call.run_wall,
+                    "auto_backgrounded": c.call.auto_backgrounded,
+                    "background": c.call.name == "Bash" and c.call.background,
                     "suspect_wait": suspected(c.call),
                     "bash_group": _bash_group(c.bash) if c.bash is not None else None,
                     "command": c.command[:200] if c.command is not None else None,
@@ -494,7 +506,7 @@ class ToolStats:
             }
             for name, row in self._groups.items()
         ]
-        slowest = sorted(self._slowest.items(), key=lambda kv: -kv[1]["wall"])[:top]
+        slowest = sorted(self._slowest.items(), key=lambda kv: -kv[1]["run_wall"])[:top]
         repeated = [
             {
                 "command": key[:200],
@@ -542,7 +554,7 @@ class ToolStats:
             for role, row in self._nested.items()
         ]
         return {
-            "totals": t,
+            "totals": {**t, "moved_bash_by_reason": {r: n for r in MOVE_REASONS if (n := self._moved_reasons[r])}},
             "tools": sorted(tools, key=lambda r: (-r["total"], -r["n"])),
             "bash_groups": sorted(groups, key=lambda r: (-r["total"], -r["n"])),
             "slowest": [{**row, "similar": max(self._similar[key] - 1, 0)} for key, row in slowest],
@@ -580,12 +592,13 @@ class ToolStats:
                 mine[key].merge(row)
         self._similar.update(other._similar)
         for slow_key, best in other._slowest.items():
-            if slow_key not in self._slowest or best["wall"] > self._slowest[slow_key]["wall"]:
+            if slow_key not in self._slowest or best["run_wall"] > self._slowest[slow_key]["run_wall"]:
                 self._slowest[slow_key] = best
         self._recorded += other._recorded
         self._decisions.update(other._decisions)
         self._user_waits += other._user_waits
         self._denials.update(other._denials)
+        self._moved_reasons.update(other._moved_reasons)
         for role_key, role in other._roles.items():
             self._roles[role_key].merge(role)
         for nested_key, nested in other._nested.items():
@@ -681,6 +694,15 @@ def render_many(data: dict[str, Any]) -> str:
     return "\n".join([*out, *_sections(data, many=True)]) + "\n"
 
 
+_MOVE_REASON_TEXT = {
+    "cap": "at the subagent cap",
+    "timeout": "at their own timeout",
+    "deliver_message": "to deliver a message",
+    "user": "by the user",
+    "other": "for another reason",
+}
+
+
 def _sections(data: dict[str, Any], *, many: bool) -> list[str]:
     t = data["totals"]
     out = [
@@ -740,19 +762,32 @@ def _sections(data: dict[str, Any], *, many: bool) -> list[str]:
                 f"{r['waits_on_other_builds']} in {r['group']}, {span(r['waits_on_other_builds_wall'])}" for r in polls
             ),
         ]
+    if t["moved_bash"]:
+        unfinished = t["moved_bash_unfinished"]
+        reasons = ", ".join(f"{n} {_MOVE_REASON_TEXT[reason]}" for reason, n in t["moved_bash_by_reason"].items() if n)
+        out += [
+            "",
+            f"↷ Moved to the background: {count(t['moved_bash'], 'Bash call')} ({reasons}); they ran"
+            f" {span(t['moved_bash_run_wall'])} until their completion notices"
+            + (f", {unfinished} without a notice, counted until the move" if unfinished else "")
+            + ". The tool sections count that runtime; the lane and busy totals count only the time until the move.",
+        ]
     if t["background_bash"]:
-        out += ["", f"Background Bash: {count(t['background_bash'], 'call')}; their wall is the launch only."]
+        out += [
+            "",
+            f"Background Bash: {count(t['background_bash'], 'call')}, ran {span(t['background_bash_run_wall'])} until"
+            " their completion notices or, without one, their launch.",
+        ]
     out += ["", "## Slowest calls", ""]
     for r in data["slowest"]:
         group = f" [{r['bash_group']}]" if r["bash_group"] else ""
         similar = f" (+{r['similar']} similar)" if r["similar"] else ""
-        mark = " ⌛" if r["suspect_wait"] else ""
+        mark = (" ⌛" if r["suspect_wait"] else "") + (" ↷" if r["auto_backgrounded"] else "")
         command = f": `{_cut(r['command'])}`" if r["command"] else ""
         when = datetime.fromisoformat(r["start"]).astimezone()
         where = f"{r['session_id'][:8]} " if many else ""
-        out.append(
-            f"- {span(r['wall'])}{mark} {where}{when:%m-%d %H:%M} {r['lane_type']} {r['tool']}{group}{similar}{command}"
-        )
+        took = span(r["run_wall"])
+        out.append(f"- {took}{mark} {where}{when:%m-%d %H:%M} {r['lane_type']} {r['tool']}{group}{similar}{command}")
     out += ["", "## Repeated commands (the `cd` prefix dropped, the scratchpad and runs of 4+ digits replaced)", ""]
     for r in data["repeated"]:
         sessions = f" in {count(r['sessions'], 'session')}" if many else ""

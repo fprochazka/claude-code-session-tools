@@ -60,6 +60,11 @@ BATCHED_AGENT = timedelta(seconds=30)
 BATCHED_HELD = timedelta(seconds=10)
 """A call shorter than this that ended next to an Agent call's result ran on its own and is not batched."""
 COMPACTION_WAIT_MS = 1000
+MOVE_REASONS = ("cap", "timeout", "deliver_message", "user", "other")
+"""Why a Bash call was moved to the background: the 180 s cap on a subagent's call, the call's own timeout, so that a
+message could reach the agent, the user, or a kind of move this version doesn't know."""
+NOTICE_SLACK = timedelta(seconds=5)
+"""How much earlier than a call's result a completion notice matched by task id only may be written."""
 """A compaction that took at least this long blocked the session; faster ones ran in the background."""
 
 SERIAL_TOOLS = frozenset({"Bash", "Edit", "Write", "MultiEdit", "NotebookEdit", "PowerShell"})
@@ -178,12 +183,67 @@ class TimedCall:
     background_hint: bool | None = None
     """For an Agent call whose result names no status: whether the subagent's ``.meta.json`` says it ran in the
     background."""
+    finished_at: datetime | None = None
+    """For a Bash call that ran as a background task: when its completion notice says it stopped."""
+    finish_status: str | None = None
+    """The ``<status>`` of that notice, such as ``completed`` or ``failed``."""
 
     @property
     def wall(self) -> float:
+        """How long the call blocked its lane: until its result. For a Bash call moved to the background, the move."""
         if self.end is None or self.batched:
             return 0.0
         return max(0.0, (self.end - self.start).total_seconds())
+
+    @property
+    def background_task(self) -> str | None:
+        """The id of the background task a Bash call ran as, launched so or moved there by Claude Code."""
+        if self.name != "Bash" or not isinstance(self.result_meta, Mapping):
+            return None
+        task = self.result_meta.get("backgroundTaskId")
+        return task if isinstance(task, str) and task else None
+
+    @property
+    def moved_reason(self) -> str | None:
+        """Why a Bash call that was not launched with ``run_in_background`` runs as a background task: one of
+        :data:`MOVE_REASONS`, ``other`` for a kind of move this version doesn't know. ``None`` for any other call."""
+        if self.background_task is None or self.input.get("run_in_background") is True:
+            return None
+        meta = self.result_meta
+        if meta.get("subagentCapApplied") is True:
+            return "cap"
+        if self.moved_after is not None:
+            return "timeout"
+        if meta.get("backgroundedToDeliverMessage") is True:
+            return "deliver_message"
+        return "user" if meta.get("backgroundedByUser") is True else "other"
+
+    @property
+    def auto_backgrounded(self) -> bool:
+        """The Bash call was moved to the background, by Claude Code or the user; it was not launched there."""
+        return self.moved_reason is not None
+
+    @property
+    def moved_after(self) -> float | None:
+        """For a Bash call moved to the background when it hit its timeout or the subagent cap: the seconds it had run
+        then. ``None`` for any other call."""
+        if self.background_task is None or self.input.get("run_in_background") is True:
+            return None
+        ms = self.result_meta.get("timedOutAfterMs")
+        return ms / 1000 if isinstance(ms, int | float) and not isinstance(ms, bool) else None
+
+    @property
+    def capped(self) -> bool:
+        """The move was the 180 s cap on a subagent's Bash call, not the call's own timeout."""
+        return self.moved_reason == "cap"
+
+    @property
+    def run_wall(self) -> float:
+        """How long the command ran: for a Bash call that ran as a background task, until its completion notice;
+        otherwise :attr:`wall`."""
+        if self.finished_at is None or self.batched:
+            return self.wall
+        return max(self.wall, (self.finished_at - self.start).total_seconds())
 
     @property
     def background(self) -> bool:
@@ -215,6 +275,27 @@ class ApiError:
     def context_full(self) -> bool:
         """The API refused the request because the context is full: ``Prompt is too long``."""
         return self.error == "invalid_request" and (self.message or "").startswith("Prompt is too long")
+
+
+@dataclass(frozen=True)
+class TaskNotice:
+    """A ``<task-notification>``: a background agent or command stopped."""
+
+    time: datetime
+    task_id: str | None
+    tool_use_id: str | None
+    status: str | None
+
+
+_NOTICE_FIELD = re.compile(r"<(task-id|tool-use-id|status)>\s*([^<]*?)\s*</\1>")
+
+
+def task_notice(time: datetime, text: str) -> TaskNotice | None:
+    """The notice in ``text``, or ``None`` when it is no task notification."""
+    if "<task-notification" not in text:
+        return None
+    found = {name: value or None for name, value in _NOTICE_FIELD.findall(text)}
+    return TaskNotice(time, found.get("task-id"), found.get("tool-use-id"), found.get("status"))
 
 
 @dataclass(frozen=True)
@@ -255,6 +336,8 @@ class Lane:
     model: str | None = None
     api_errors: list[ApiError] = field(default_factory=list)
     stalls: list[Stall] = field(default_factory=list)
+    task_notices: list[TaskNotice] = field(default_factory=list)
+    """The completion notices of background tasks that reached the lane, whichever lane started the task."""
 
     def tool_seconds(self) -> float:
         """The union of the lane's tool calls, without Agent calls, user waits, batched calls and SubagentHandback."""
@@ -433,6 +516,7 @@ def analyze(transcript: SessionTranscript) -> SessionTime:
     main = _lane(entries, "main")
 
     _link_subagents(subagents, [main, *(s.lane for s in subagents)])
+    _finish_background_bash([main, *(s.lane for s in subagents)])
 
     segment_of = _segment_index(entries)
     steps = sort_steps(
@@ -602,6 +686,10 @@ def _lane(entries: Sequence[Entry], lane_id: str) -> Lane:
     for entry in entries:
         if isinstance(entry, UserEntry | AssistantEntry) and entry.timestamp is not None:
             last_record = max(last_record or entry.timestamp, entry.timestamp)
+        text = _notice_text(entry)
+        notice = task_notice(entry.timestamp, text) if text is not None and entry.timestamp is not None else None
+        if notice is not None:
+            lane.task_notices.append(notice)
         if isinstance(entry, SystemEntry) and entry.subtype == "compact_boundary" and entry.timestamp is not None:
             end_stall(entry.timestamp, "compaction")
         if entry.type == "api-request":
@@ -796,6 +884,48 @@ def _plain_prompt(entry: Entry) -> bool:
             "<agent-message",
         )
     )
+
+
+def _notice_text(entry: Entry) -> str | None:
+    """The text of a record that can carry a task notification: a queued command, or a user prompt."""
+    if isinstance(entry, AttachmentEntry):
+        if entry.attachment_type == "queued_command":
+            prompt = entry.attachment.get("prompt")
+            return prompt if isinstance(prompt, str) else None
+        return None
+    if isinstance(entry, UserEntry) and not any(isinstance(b, ToolResultBlock) for b in entry.content):
+        text = entry.plain_text
+        return text if "<task-notification" in text else None
+    return None
+
+
+def _finish_background_bash(lanes: Sequence[Lane]) -> None:
+    """Give each Bash call that ran as a background task the time and status of its completion notice. A notice
+    names the call by its tool use id, or only by its task id, and can reach another lane than the call's.
+
+    A notice can be written a few milliseconds before the result that reports the move, so one matched by its tool
+    use id is always the call's. One matched by task id only must come after the result, with
+    :data:`NOTICE_SLACK` to spare, so a reused task id can't shorten a later call."""
+    by_call: dict[str, TaskNotice] = {}
+    by_task: dict[str, TaskNotice] = {}
+    for lane in lanes:
+        for notice in lane.task_notices:
+            if notice.tool_use_id is not None:
+                by_call.setdefault(notice.tool_use_id, notice)
+            if notice.task_id is not None:
+                by_task.setdefault(notice.task_id, notice)
+    for lane in lanes:
+        for call in lane.calls:
+            task = call.background_task
+            if task is None:
+                continue
+            found = by_call.get(call.id or "")
+            if found is None:
+                by_id = by_task.get(task)
+                stale = by_id is not None and call.end is not None and by_id.time < call.end - NOTICE_SLACK
+                found = None if stale else by_id
+            if found is not None:
+                call.finished_at, call.finish_status = found.time, found.status
 
 
 def _launched_in_background(result_meta: Any) -> bool | None:

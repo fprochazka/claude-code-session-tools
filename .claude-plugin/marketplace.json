@@ -8,7 +8,7 @@
     {
       "name": "session-tools",
       "description": "Commands and skills for finding and distilling past Claude Code sessions, listing and watching the running ones, and inspecting any one, with the cc-session-tools CLI",
-      "version": "0.12.1",
+      "version": "0.13.0",
       "author": {
         "name": "Filip Procházka",
         "url": "https://github.com/fprochazka"

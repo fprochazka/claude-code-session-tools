@@ -190,6 +190,50 @@ How the numbers are made, and where they can mislead:
 - A subagent is active while its records come in less than 5 minutes apart, and while one of its own tool calls runs. A parent waiting on a nested subagent counts as active too.
 - Turns are found from the prompts, queued prompts and cron fires that open them, and end at Claude Code's turn-end record. A turn without one ends at its last activity once something new comes over 15 minutes later with no call running. A call that runs for days keeps its turn open; the `⌛` flag marks it.
 
+### tool-stats
+
+```bash
+cc-session-tools tool-stats latest                 # where the newest session of this repo spent its tool time
+cc-session-tools tool-stats <session-id> --top 20  # list 20 slowest calls and repeated commands
+cc-session-tools tool-stats <session-id> --json    # every section as data, unrounded
+```
+
+The target is resolved as for `timeline`. The markdown goes to stdout, errors to stderr; exit code `1` when the target or the Bash groups file can't be read, `2` for a usage error such as `--top 0`. Commands are redacted as in `timeline`.
+
+A call's wall runs from when it could start to when its result was written, as in `timeline`. Calls of one response, and of different subagents, overlap, so a column's total is a sum of elapsed times, not a share of the session's clock. A call over 1 h is marked `⌛` and counted in the header, because it probably waited on something the transcript doesn't show. A call the user answered a permission prompt or a dialog for waited on the user for an unknown part of its wall, because the transcript doesn't say when the answer came; such calls are left out of the tool sections, and the header gives their count and wall. The sections:
+
+- **Per tool**: count, total, median and max wall, the share of all non-Agent tool wall, and the calls of the main agent and of each subagent type.
+- **Bash by group**: each command counts once, for its highest-priority group: test (split into targeted and full), build, lint, format, wait, run, db, cloud, gh-glab, package, git, agent-coord, ext-cli, search, file-edit, file-read, other. A line follows with the polls on a build or test tool's process (`pgrep gradle` in a loop), which often wait on another session's job. Background Bash calls show only their launch.
+- **Slowest calls**, `--top` of them: one per tool and normalized command, with the count of similar calls. Results held back behind a subagent (wall 0) don't show.
+- **Repeated commands**, `--top` of them, by total wall: commands with the `cd X &&` prefix dropped, the scratchpad written as `<scratchpad>`, the durations of `timeout` and `sleep` and the numbers of `seq` as `N`, and every other run of 4 or more digits as `N`, with the lanes that ran them. So commands on different MRs or issues with numbers of 4 or more digits share a row. The markdown cuts a command at 100 characters; `--json` has the whole normalized command, up to 200.
+- **Permission decisions** of every lane by source (`config`, `hook`, `user_temporary`, `user_permanent`, `user_reject`, a rejection with its reason type when that differs from the source, or `none`), then the prompts and dialogs the user answered with their wait, and the denials.
+- **Subagent cost by role**: per role, type and whether it was nested: count, active time, median and max, rounds, tokens with cache reads and new ones, the median context of the first request, and the models. `active` is each lane's own time, and a parent's includes its wait on its nested subagents, so the column adds up to more than the subagents' elapsed time, which the section's first line gives as the union of their bursts. The nested subagents follow, grouped by the role of the top-level subagent above them.
+
+**Your own tools.** The built-in Bash rules know widely used public tools only. Map your own programs and scripts to a group in `~/.config/cc-session-tools/bash-groups.toml`; an entry overrides a built-in rule, and a bad file is an error that names the file and line:
+
+```toml
+[programs]
+my-db-cli = "db"
+my-deploy = "cloud"
+
+[scripts]
+"*/scripts/smoke-*.sh" = "test"
+```
+
+`--json` prints one object, durations in seconds, times in ISO 8601:
+
+| Key | Holds |
+|---|---|
+| `session_id` | the session |
+| `totals` | `calls`, `main_calls`, `subagent_calls`, `tool_wall` (non-Agent calls without a user wait), `user_wait_calls`, `user_wait_wall`, `main_busy`, `batched_calls`, `background_bash`, `suspect_waits`, `suspect_wait_wall`, `subagents`, `subagents_elapsed` |
+| `tools[]` | `tool`, `n`, `total`, `median`, `max`, `share` (`null` for Agent), `main`, `subagents_by_type` |
+| `bash_groups[]` | `group`, `n`, `total`, `median`, `max`, `share` (of all Bash wall), `main`, `subagents`, `programs`, `waits_on_other_builds`, `waits_on_other_builds_wall` |
+| `slowest[]` | `tool`, `lane`, `lane_type`, `start`, `wall`, `suspect_wait`, `bash_group`, `command` (200 characters), `similar` |
+| `repeated[]` | `command` (normalized, 200 characters), `n`, `total`, `median`, `max`, `bash_group`, `lanes_by_type` |
+| `permissions` | `recorded`, `decisions`, `user_answered`, `user_wait`, `user_waits[]` (`tool`, `lane`, `start`, `wall`, `decision`), `denials` |
+| `subagent_roles[]` | `role`, `guessed`, `type`, `nested`, `n`, `active`, `median`, `max`, `rounds`, `tokens_total`, `tokens_new`, `first_context_median`, `models` |
+| `nested_by_parent_role[]` | `parent_role`, `n`, `active` (lane time), `elapsed` (union), `tokens_total`, `by_type` |
+
 ### list-active
 
 ```bash
@@ -414,6 +458,7 @@ src/cc_session_tools/
 ├── search_cmd.py      # the `search` command
 ├── distill_cmd.py     # the `distill` command
 ├── timeline_cmd.py    # the `timeline` command: the markdown and JSON of a session's time
+├── tool_stats_cmd.py  # the `tool-stats` command: tool time per tool, Bash group, command, permission and subagent role
 ├── redact.py          # the cleanup of quoted text and the short duration and token formats of timeline and tool-stats
 ├── list_active_cmd.py # the `list-active` command
 ├── inspect_cmd.py     # the `inspect` command

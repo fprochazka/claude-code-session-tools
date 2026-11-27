@@ -223,15 +223,18 @@ def compaction_records(
     trigger: str = "auto",
     pre_tokens: int = 180_000,
     preserved_head: str | None = None,
+    duration_ms: int | None = None,
     summary: str | None = "This session is being continued from a previous conversation. Summary: the plan so far.",
 ) -> list[dict[str, Any]]:
     """The records Claude Code writes when it compacts a session: the boundary, then the summary.
 
     ``preserved_head`` gives the boundary the ``preservedSegment`` that Claude Code from about 2.1.266 writes; without
-    it the boundary has the older shape, with ``trigger`` and ``preTokens`` only. ``summary=None`` leaves the summary
-    record out.
+    it the boundary has the older shape, with ``trigger`` and ``preTokens`` only. ``duration_ms`` adds the
+    ``durationMs`` of current versions. ``summary=None`` leaves the summary record out.
     """
     metadata: dict[str, Any] = {"trigger": trigger, "preTokens": pre_tokens}
+    if duration_ms is not None:
+        metadata["durationMs"] = duration_ms
     if preserved_head is not None:
         metadata["postTokens"] = pre_tokens // 10
         metadata["preservedSegment"] = {

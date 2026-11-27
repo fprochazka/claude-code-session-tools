@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from typer.testing import CliRunner
 
 import cc_session_tools.discovery as discovery
 from cc_session_tools.cli import app
+from cc_session_tools.watch_events import parse_since
 
 ALPHA, BRAVO, CHARLIE = sid("alpha"), sid("bravo"), sid("charlie")
 
@@ -312,3 +314,53 @@ def test_profile_column_is_hidden_for_a_single_projects_dir(tree: Path) -> None:
     result = runner.invoke(app, ["search"])
     assert result.exit_code == 0, result.output
     assert "Profile" not in result.output
+
+
+def test_since_keeps_sessions_last_active_after_a_date(tree: Path) -> None:
+    result = runner.invoke(app, ["search", "--since", "2026-07-24T10:30:00+00:00"])
+    assert result.exit_code == 0, result.output
+    assert ALPHA in result.output and BRAVO in result.output and CHARLIE not in result.output
+
+
+def test_since_takes_a_duration_back_from_now(tree: Path) -> None:
+    assert ALPHA in runner.invoke(app, ["search", "--since", "520w"]).output
+    result = runner.invoke(app, ["search", "--since", "1d"])
+    assert result.exit_code == 0 and ALPHA not in result.stdout
+    assert "No sessions found for /home/u/plain-project since " in result.stderr
+
+
+def test_since_that_cannot_be_read_fails(tree: Path) -> None:
+    result = runner.invoke(app, ["search", "--since", "last tuesday"])
+    assert result.exit_code == 1 and "--since" in result.output and "2w" in result.output
+
+
+def test_json_prints_the_rows(tree: Path) -> None:
+    result = runner.invoke(app, ["search", "--json", "-n", "2"])
+    assert result.exit_code == 0, result.output
+    rows = json.loads(result.stdout)
+    assert [r["session_id"] for r in rows] == [ALPHA, BRAVO]
+    assert set(rows[0]) == {
+        "session_id", "name", "name_is_derived", "last_interaction", "last_interaction_from_transcript", "profile",
+        "location", "cwd", "transcript_path",
+    }  # fmt: skip
+    assert (rows[0]["name"], rows[0]["name_is_derived"], rows[1]["name_is_derived"]) == (
+        "Alpha genuine name",
+        False,
+        True,
+    )
+    assert rows[0]["last_interaction"] == "2026-07-24T12:00:00+00:00" and rows[0]["cwd"] == "/home/u/plain-project"
+
+
+def test_json_of_nothing_is_an_empty_array(tree: Path) -> None:
+    result = runner.invoke(app, ["search", "--json", "--rg", "NOTHINGMATCHESTHIS"])
+    assert result.exit_code == 0 and json.loads(result.stdout) == [] and "No sessions found" in result.stderr
+
+
+def test_since_is_a_duration_back_or_a_date() -> None:
+    now = datetime(2026, 11, 27, 12, 0, tzinfo=UTC)
+    assert parse_since("2h", now) == datetime(2026, 11, 27, 10, 0, tzinfo=UTC)
+    assert parse_since("1w", now) == datetime(2026, 11, 20, 12, 0, tzinfo=UTC)
+    assert parse_since("2026-11-01T09:00:00+00:00", now) == datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
+    assert parse_since("2026-11-01", now) == datetime(2026, 11, 1).astimezone()  # local midnight
+    with pytest.raises(ValueError, match="ISO date"):
+        parse_since("soon", now)

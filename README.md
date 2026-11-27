@@ -82,6 +82,8 @@ cc-session-tools search --rg "N+1"                   # only sessions whose trans
 cc-session-tools search --rg worktree --rg deleted   # only sessions containing BOTH keywords
 cc-session-tools search --rg worktree --rg deleted --rg-any   # sessions containing EITHER keyword
 cc-session-tools search --all                        # every project, not just this directory
+cc-session-tools search --all --since 2w -n 0         # every session of the last two weeks
+cc-session-tools search --since 2026-11-01 --json    # since a date, as JSON
 ```
 
 The table has four columns: **When** (time since the last interaction), **Session** (the full session id, ready to paste into `claude --resume`), **Name**, and **Worktree** (the session's path relative to the repo root, shown only inside a git repo). Under `--all` the last column becomes **Project** and shows each session's own directory. A dimmed name is a title derived from the first human message, not a name the session actually has. When the rows come from more than one projects dir, a **Profile** column before the last one names the profile each session belongs to.
@@ -98,7 +100,11 @@ The table has four columns: **When** (time since the last interaction), **Sessio
 
 **`--all` reads every project.** It takes about 2 seconds for ~3,000 sessions with a warm disk cache, and adds one ripgrep pass per `--rg` keyword on top. Use the scoped default when you can.
 
-Exit codes: `0`, including when nothing matched (the notice goes to stderr). `2` when ripgrep fails.
+**`--since`** keeps the sessions whose last interaction is recent enough: a duration back from now (`90m`, `2h`, `3d`, `2w`, `1w2d`) or an ISO date or time (`2026-11-01`, `2026-11-01T09:00`), in local time unless it names its zone. It is applied before `--rg` and `-n`.
+
+**`--json`** prints the rows as a JSON array instead of the table, after the same filters and limit. Each row has `session_id`, `name`, `name_is_derived`, `last_interaction` (ISO 8601), `last_interaction_from_transcript` (`false` for an empty stub whose time is the file's mtime), `profile`, `location` (the table's last column: the path relative to the repo, or the cwd under `--all`), `cwd` and `transcript_path`. When nothing matched it prints `[]` and the notice goes to stderr.
+
+Exit codes: `0`, including when nothing matched (the notice goes to stderr). `1` when `--since` can't be read. `2` when ripgrep fails.
 
 ### distill
 

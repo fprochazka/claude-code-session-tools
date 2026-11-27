@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 WATCH_STARTED = "watch_started"
@@ -158,11 +158,11 @@ class WatchEvent:
         return {"kind": self.kind, "seq": self.seq, "observed_at": self.observed_at, "data": self.data}
 
 
-_DURATION_RE = re.compile(r"^(?:(?P<h>\d+)h)?(?:(?P<m>\d+)m)?(?:(?P<s>\d+)s)?$")
+_DURATION_RE = re.compile(r"^(?:(?P<w>\d+)w)?(?:(?P<d>\d+)d)?(?:(?P<h>\d+)h)?(?:(?P<m>\d+)m)?(?:(?P<s>\d+)s)?$")
 
 
 def parse_duration(value: str) -> float:
-    """``90s``, ``30m``, ``2h``, ``1h30m``, or a plain number of seconds.
+    """``90s``, ``30m``, ``2h``, ``1h30m``, ``3d``, ``2w``, ``1d12h``, or a plain number of seconds.
 
     Raises:
         ValueError: the text is none of these.
@@ -172,9 +172,30 @@ def parse_duration(value: str) -> float:
         return float(text)
     match = _DURATION_RE.match(text)
     if not text or not match or not any(match.groupdict().values()):
-        raise ValueError(f"cannot read the duration {value!r}; use for example 90s, 30m, 2h or 1h30m")
+        raise ValueError(f"cannot read the duration {value!r}; use for example 90s, 30m, 2h, 1h30m, 3d or 2w")
     parts = {k: int(v) if v else 0 for k, v in match.groupdict().items()}
-    return float(parts["h"] * 3600 + parts["m"] * 60 + parts["s"])
+    return float(parts["w"] * 604800 + parts["d"] * 86400 + parts["h"] * 3600 + parts["m"] * 60 + parts["s"])
+
+
+def parse_since(value: str, now: datetime | None = None) -> datetime:
+    """The moment ``value`` names: a duration back from ``now`` (``2h``, ``3d``, ``2w``, see :func:`parse_duration`),
+    or an ISO date or time (``2026-11-01``, ``2026-11-01T09:00``), in local time unless it names its zone.
+
+    Raises:
+        ValueError: the text is neither.
+    """
+    now = now if now is not None else datetime.now(UTC)
+    try:
+        return now - timedelta(seconds=parse_duration(value))
+    except ValueError:
+        pass
+    try:
+        moment = datetime.fromisoformat(value.strip())
+    except ValueError:
+        raise ValueError(
+            f"cannot read {value!r}; use a duration such as 2h, 3d or 2w, or an ISO date such as 2026-11-01"
+        ) from None
+    return moment if moment.tzinfo is not None else moment.astimezone()
 
 
 _PERCENT_RE = re.compile(r"^(\d+)%$")

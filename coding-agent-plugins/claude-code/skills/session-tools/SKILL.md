@@ -28,6 +28,10 @@ Options:
                      instead of all of them. Only meaningful alongside --rg.
   --all              List sessions from every project instead of the current
                      directory and its git worktrees.
+  --since <str>      Only sessions whose last interaction is this recent: a
+                     duration such as 2h, 3d or 2w, or an ISO date such as
+                     2026-11-01.
+  --json             Print the rows as a JSON array instead of a table.
   --help             Show this message and exit.
 ```
 
@@ -39,9 +43,11 @@ Operational notes:
 - **Ordering** is by the last interaction timestamp read from inside the transcript, not by file mtime — Claude Code appends titles and summaries retroactively, which bumps mtime long after the work happened.
 - **`--rg` is literal, case-insensitive text**, not a regex. It uses `rg` (ripgrep) when it is on PATH and a slower built-in scan otherwise. Matches inside subagent transcripts and tool-result sidecars count and fold up into the parent session.
 - **Repeating `--rg` is AND at the level of the session**: every keyword must appear somewhere in it, but they may sit in different messages or in a subagent it spawned. `--rg-any` flips that to OR. Each AND keyword costs its own ripgrep pass; the OR costs one pass no matter how many keywords.
+- **`--since 3d`** (or `2h`, `2w`, an ISO date such as `2026-11-01`) keeps the sessions whose last interaction is that recent. It is applied before `--rg` and the limit, so it also makes `--rg` cheaper.
+- **`--json`** prints the rows as an array: `session_id`, `name`, `name_is_derived`, `last_interaction` (ISO), `last_interaction_from_transcript`, `profile`, `location` (the last column of the table), `cwd`, `transcript_path`. Nothing matched prints `[]`, with the notice on stderr. Prefer it to parsing the table.
 - **`--all` reads every project** — about 2 seconds over ~3,000 sessions with a warm disk cache, plus one ripgrep pass per `--rg` keyword. Prefer the repo-scoped default.
 - **A dimmed name** is a title derived from the first human message, not a real session name.
-- Exit codes: `0` including when nothing matched (the notice goes to stderr), `2` when ripgrep fails.
+- Exit codes: `0` including when nothing matched (the notice goes to stderr), `1` when `--since` can't be read, `2` when ripgrep fails.
 
 ## distill
 

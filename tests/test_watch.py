@@ -985,6 +985,9 @@ def test_durations() -> None:
     assert parse_duration("90s") == 90
     assert parse_duration("1h30m") == 5400
     assert parse_duration("45") == 45
+    assert parse_duration("3d") == 3 * 86400
+    assert parse_duration("2w") == 2 * 604800
+    assert parse_duration("1w2d3h4m5s") == 604800 + 2 * 86400 + 3 * 3600 + 4 * 60 + 5
     assert format_duration(5400) == "1h30m"
     with pytest.raises(ValueError):
         parse_duration("soon")

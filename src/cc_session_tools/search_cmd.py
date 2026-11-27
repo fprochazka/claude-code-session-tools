@@ -8,16 +8,20 @@ asked, applies the limit, and renders a ``rich`` table.
 
 from __future__ import annotations
 
+import json
 import os
+import sys
+from typing import Any
 
 import typer
 from rich.table import Table
 from rich.text import Text
 
 from .console import build_console
-from .discovery import build_session_rows, projects_dirs_override, resolve_scope
+from .discovery import SessionRow, build_session_rows, projects_dirs_override, resolve_scope
 from .search import RipgrepError, search_session_ids
 from .timefmt import time_ago
+from .watch_events import parse_since
 
 
 def search(
@@ -45,6 +49,13 @@ def search(
         "--all",
         help="List sessions from every project instead of the current directory and its git worktrees.",
     ),
+    since: str | None = typer.Option(
+        None,
+        "--since",
+        help="Only sessions whose last interaction is this recent: a duration such as 2h, 3d or 2w, or an ISO date "
+        "such as 2026-11-01.",
+    ),
+    as_json: bool = typer.Option(False, "--json", help="Print the rows as a JSON array instead of a table."),
 ) -> None:
     """List Claude Code sessions for the current directory, newest interaction first."""
     cwd = os.getcwd()
@@ -52,9 +63,16 @@ def search(
     # An absent repeatable option reaches us as None or as an empty list depending on how the command is invoked;
     # both mean "no content search", and neither may trigger a search.
     keywords = [kw for kw in (rg or []) if kw.strip()]
+    try:
+        cutoff = parse_since(since) if since is not None else None
+    except ValueError as e:
+        typer.echo(f"Error: --since: {e}", err=True)
+        raise typer.Exit(code=1) from e
 
     scope = resolve_scope(cwd, all_projects=all_projects)
     rows = build_session_rows(scope, projects_dirs=projects_dirs_override())
+    if cutoff is not None:
+        rows = [row for row in rows if row.last_ts >= cutoff]
 
     if keywords:
         try:
@@ -66,6 +84,9 @@ def search(
 
     if limit > 0:
         rows = rows[:limit]
+
+    if as_json:
+        sys.stdout.write(json.dumps([_row_json(row) for row in rows], indent=2, ensure_ascii=False) + "\n")
 
     console = build_console()
 
@@ -79,9 +100,13 @@ def search(
             message = f"No sessions found for {where} {how} {matched}"
         else:
             message = f"No sessions found for {where}"
+        if cutoff is not None:
+            message += f" since {cutoff.astimezone():%Y-%m-%d %H:%M}"
         # Plain stderr, never a rich console: keywords and paths may contain brackets
         # that rich would swallow as markup, and stdout stays parseable when piped.
         typer.echo(message, err=True)
+        return
+    if as_json:
         return
 
     # Expand to the full console width so the table always occupies at least
@@ -118,3 +143,18 @@ def search(
         table.add_row(*cells)
 
     console.print(table)
+
+
+def _row_json(row: SessionRow) -> dict[str, Any]:
+    cwd = row.transcript.cwd
+    return {
+        "session_id": row.session_id,
+        "name": row.name,
+        "name_is_derived": row.name_is_derived,
+        "last_interaction": row.last_ts.isoformat(),
+        "last_interaction_from_transcript": row.last_ts_from_transcript,
+        "profile": row.profile,
+        "location": row.worktree_rel,
+        "cwd": str(cwd) if cwd is not None else None,
+        "transcript_path": str(row.path),
+    }

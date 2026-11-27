@@ -21,7 +21,8 @@ classifiers = [
     "Topic :: Software Development",
 ]
 dependencies = [
-    "cc-blackbox>=0.15.0,<0.16",
+    "bash-classify>=0.15.0,<0.16",
+    "cc-blackbox>=0.16.0,<0.17",
     "rich>=14.0.0",
     "typer>=0.15.0",
 ]

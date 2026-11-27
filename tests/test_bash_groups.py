@@ -189,6 +189,23 @@ def test_a_command_that_waits_is_a_wait(grouper: BashGrouper, command: str, grou
     assert (found.group, found.program, found.error) == (group, program, None)
 
 
+# (command, what its time counts for): the script an interpreter runs, else the program.
+RUNS = [
+    ("python3 scripts/digest.py run a", "digest.py"),
+    ("uv run python scripts/digest.py b", "digest.py"),
+    ("cd /x && python3 -u tools/report.py", "report.py"),
+    ("env FOO=1 bash scripts/x.sh --y", "x.sh"),
+    ("./bin/sweep.sh > out 2>&1; echo $?", "sweep.sh"),
+    ("python -c 'print(1)'", "python"),
+    ("git status", "git"),
+]
+
+
+@pytest.mark.parametrize(("command", "runs"), RUNS, ids=[r[0] for r in RUNS])
+def test_the_time_of_an_interpreter_counts_for_its_script(grouper: BashGrouper, command: str, runs: str) -> None:
+    assert grouper.classify(command).runs == runs
+
+
 # (command, group, program): bash-classify unwraps the launcher, and the command it launches decides.
 WRAPPERS = [
     ("timeout 600 ./gradlew test", "test", "gradlew"),

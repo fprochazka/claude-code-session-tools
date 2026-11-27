@@ -72,6 +72,13 @@ class BashClass:
     """:data:`OTHER_BUILD` for a poll on a build or test tool's process; ``None`` otherwise."""
     error: str | None = None
     """The parser's warning, such as a syntax error, when it had one. A command it can't read at all is ``other``."""
+    script: str | None = None
+    """For an interpreter such as ``python3`` or ``bash`` that decides the group: the basename of the script it runs."""
+
+    @property
+    def runs(self) -> str | None:
+        """What the command's time counts for: the script an interpreter runs, else the program."""
+        return self.script or self.program
 
 
 def group_label(found: BashClass) -> str:
@@ -269,6 +276,7 @@ class BashGrouper:
             return BashClass("other", error=f"{type(e).__name__}: {e}")
         error = result.parse_warnings[0] if result.parse_warnings else None
         decided: list[tuple[_Group, str]] = []
+        scripts: dict[int, str] = {}
         trivial: list[str] = []
         grepped: list[str] = []
         for invocation in _leaves(result.commands):
@@ -278,16 +286,21 @@ class BashGrouper:
                 continue
             if program in _GREPS:
                 grepped += invocation.argv[1:]
-            decided.append(self._group(invocation, program))
+            found = self._group(invocation, program)
+            if (script := _script_of(found[1], invocation.argv)) is not None:
+                scripts[len(decided)] = script
+            decided.append(found)
         writes_a_file = bool(result.write_paths)
         if not decided:
             group = "file-edit" if writes_a_file else "other"
             return BashClass(group, program=trivial[0] if trivial else None, error=error)
 
-        best, program = min(decided, key=lambda d: _PRIORITY[d[0].group])
+        chosen = min(range(len(decided)), key=lambda i: _PRIORITY[decided[i][0].group])
+        best, program = decided[chosen]
         group = best.group
         if _LOOP.search(command) and any(g.group == "wait" for g, _p in decided):
-            best, program = next((g, p) for g, p in decided if g.group == "wait")
+            chosen = next(i for i, (g, _p) in enumerate(decided) if g.group == "wait")
+            best, program = decided[chosen]
             group = "wait"
         elif writes_a_file and group in ("file-read", "other"):
             group = "file-edit"  # a reader whose output goes to a file, such as `cat > notes.md <<EOF`
@@ -300,7 +313,7 @@ class BashGrouper:
                 waits_on = OTHER_BUILD
         secondary = sorted({g.group for g, _p in decided} - {group}, key=_PRIORITY.__getitem__)
         targeted = best.targeted if group == "test" else None
-        return BashClass(group, tuple(secondary), program, targeted, waits_on, error)
+        return BashClass(group, tuple(secondary), program, targeted, waits_on, error, scripts.get(chosen))
 
     def _group(self, invocation: _Invocation, program: str) -> tuple[_Group, str]:
         """The group of one invocation, and the program that decided it."""
@@ -351,6 +364,21 @@ def _leaves(invocations: Sequence[_Invocation]) -> Iterator[_Invocation]:
 
 def _is_lookup(argv: Sequence[str]) -> bool:
     return _program(argv) == "command" and any(a in ("-v", "-V") for a in argv[1:2])
+
+
+def _script_of(program: str, argv: Sequence[str]) -> str | None:
+    """The basename of the script an interpreter runs: its first argument that is not an option. ``None`` for any
+    other program, and for ``python -c``, ``python -m`` and an interpreter that reads stdin."""
+    if not _INTERPRETERS.fullmatch(program):
+        return None
+    # After the interpreter itself, which a launcher such as `uv run` can put later in the argv.
+    at = next((i for i, a in enumerate(argv) if os.path.basename(a.strip("\"'")) == program), 0)
+    for arg in argv[at + 1 :]:
+        if arg in ("-c", "-m", "-"):
+            return None
+        if not arg.startswith("-"):
+            return os.path.basename(arg.strip("\"'")) or None
+    return None
 
 
 def _uvx_tool(argv: list[str]) -> list[str]:

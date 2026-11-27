@@ -63,7 +63,8 @@ def session() -> Transcript:
 def test_the_json_has_every_section(tmp_path: Path, isolated_home: Path) -> None:
     data = json.loads(invoke(session(), tmp_path, "--json").stdout)
     assert set(data) == {
-        "session_id", "totals", "tools", "bash_groups", "slowest", "repeated", "permissions", "subagent_roles",
+        "session_id", "totals", "tools", "bash_groups", "bash_programs", "slowest", "repeated", "permissions",
+        "subagent_roles",
         "nested_by_parent_role",
     }  # fmt: skip
     groups = {r["group"]: r for r in data["bash_groups"]}
@@ -281,6 +282,23 @@ def test_every_reason_of_a_move_is_named(tmp_path: Path, isolated_home: Path) ->
         "↷ Moved to the background: 4 Bash calls (1 at their own timeout, 1 to deliver a message, 1 by the user,"
         " 1 for another reason)" in text
     )
+
+
+def test_bash_time_adds_up_per_script_and_program(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    bash(tx, 1, "python3 scripts/digest.py run a", 30)
+    bash(tx, 100, "uv run python scripts/digest.py b", 60)
+    bash(tx, 200, "./bin/sweep.sh > out 2>&1; echo $?", 20)
+    bash(tx, 300, "git status", 1)
+    tx.turn_end(400)
+    data = json.loads(invoke(tx, tmp_path, "--json").stdout)
+    rows = {r["program"]: r for r in data["bash_programs"]}
+    assert (rows["digest.py"]["n"], rows["digest.py"]["total"], rows["digest.py"]["max"]) == (2, 90.0, 60.0)
+    assert (rows["sweep.sh"]["n"], rows["sweep.sh"]["group"], rows["git"]["group"]) == (1, "run", "git")
+    assert [r["program"] for r in data["bash_programs"]] == ["digest.py", "sweep.sh", "git"]
+    text = invoke(tx, tmp_path / "md").stdout
+    assert "| `digest.py` | 2 | 1m30s | 45s | 1m00s | run | 2 | 0 |" in text
 
 
 def test_an_old_transcript_says_permission_decisions_were_not_recorded(tmp_path: Path, isolated_home: Path) -> None:

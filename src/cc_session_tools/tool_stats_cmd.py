@@ -306,6 +306,7 @@ class ToolStats:
         self._tools: defaultdict[str, _Walls] = defaultdict(_Walls)
         self._groups: defaultdict[str, _Walls] = defaultdict(_Walls)
         self._repeated: defaultdict[str, _Walls] = defaultdict(_Walls)
+        self._programs: defaultdict[str, _Walls] = defaultdict(_Walls)
         self._similar: Counter[tuple[str, str | None]] = Counter()
         self._slowest: dict[tuple[str, str | None], dict[str, Any]] = {}
         self._recorded: list[bool] = []
@@ -390,6 +391,14 @@ class ToolStats:
                 row.subagents += 1
             if c.bash.program:
                 row.programs[c.bash.program] += 1
+            if c.bash.runs:
+                runs = self._programs[redact(c.bash.runs, limit=80)]
+                runs.walls.append(c.call.run_wall)
+                runs.types[name] += 1  # its groups
+                if c.call.lane == "main":
+                    runs.main += 1
+                else:
+                    runs.subagents += 1
             if c.bash.waits_on is not None:
                 row.polls += 1
                 row.poll_wall += c.call.run_wall
@@ -532,6 +541,17 @@ class ToolStats:
             }
             for name, row in self._groups.items()
         ]
+        programs = [
+            {
+                "program": name,
+                **_summary(row.walls),
+                "group": row.types.most_common(1)[0][0],
+                "groups": dict(row.types.most_common()),
+                "main": row.main,
+                "subagents": row.subagents,
+            }
+            for name, row in self._programs.items()
+        ]
         slowest = sorted(self._slowest.items(), key=lambda kv: -kv[1]["run_wall"])[:top]
         repeated = [
             {
@@ -588,6 +608,7 @@ class ToolStats:
             },
             "tools": sorted(tools, key=lambda r: (-r["total"], -r["n"])),
             "bash_groups": sorted(groups, key=lambda r: (-r["total"], -r["n"])),
+            "bash_programs": sorted(programs, key=lambda r: (-r["total"], -r["n"]))[:top],
             "slowest": [{**row, "similar": max(self._similar[key] - 1, 0)} for key, row in slowest],
             "repeated": sorted(repeated, key=lambda r: (-r["total"], -r["n"]))[:top],
             "permissions": {
@@ -618,6 +639,7 @@ class ToolStats:
             (self._tools, other._tools),
             (self._groups, other._groups),
             (self._repeated, other._repeated),
+            (self._programs, other._programs),
         ):
             for key, row in theirs.items():
                 mine[key].merge(row)
@@ -821,6 +843,16 @@ def _sections(data: dict[str, Any], *, many: bool) -> list[str]:
             f"Background Bash: {count(t['background_bash'], 'call')}, ran {span(t['background_bash_run_wall'])} until"
             " their completion notices or, without one, their launch.",
         ]
+    out += ["", "## Bash by program (the script an interpreter runs, else the program)", ""]
+    out += _table(
+        ("program", "n", "total", "median", "max", "group", "main", "subagents"),
+        (False, True, True, True, True, False, True, True),
+        (
+            (f"`{_cut(r['program'], 60)}`", str(r["n"]), span(r["total"]), span(r["median"]), span(r["max"]),
+             r["group"], str(r["main"]), str(r["subagents"]))
+            for r in data["bash_programs"]
+        ),
+    )  # fmt: skip
     out += ["", "## Slowest calls", ""]
     for r in data["slowest"]:
         group = f" [{r['bash_group']}]" if r["bash_group"] else ""

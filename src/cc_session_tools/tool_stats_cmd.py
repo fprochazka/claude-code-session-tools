@@ -421,16 +421,21 @@ class ToolStats:
         )
 
     def _add_slowest(self, session_id: str, timed: Sequence[_Call], top: int) -> None:
-        """Count every call per tool and normalized command, and keep the details of a session's ``top`` slowest.
+        """Count the Bash calls per normalized command, and keep the details of a session's ``top`` slowest.
 
+        Every other call stands alone, under a key of its own that is never counted, so it has no similar calls.
         The overall ``top`` are always among them: a command slower than the session's ``top`` ranks above it
         overall too."""
         kept: dict[tuple[str, str | None], _Call] = {}
         for c in sorted(timed, key=lambda c: -c.call.wall):
             if c.call.name == HANDBACK_TOOL or c.call.wall <= 0:
                 continue
-            key = (c.call.name, c.repeat_key)
-            self._similar[key] += 1
+            if c.repeat_key is None:
+                alone = f"call {session_id} {c.call.id or c.call.start.isoformat()}"
+                key: tuple[str, str | None] = (c.call.name, alone)
+            else:
+                key = (c.call.name, c.repeat_key)
+                self._similar[key] += 1
             if key not in kept and len(kept) < top:
                 kept[key] = c
         for key, c in kept.items():
@@ -526,7 +531,7 @@ class ToolStats:
             "totals": t,
             "tools": sorted(tools, key=lambda r: (-r["total"], -r["n"])),
             "bash_groups": sorted(groups, key=lambda r: (-r["total"], -r["n"])),
-            "slowest": [{**row, "similar": self._similar[key] - 1} for key, row in slowest],
+            "slowest": [{**row, "similar": max(self._similar[key] - 1, 0)} for key, row in slowest],
             "repeated": sorted(repeated, key=lambda r: (-r["total"], -r["n"]))[:top],
             "permissions": {
                 "recorded": all(self._recorded) if self._recorded else False,

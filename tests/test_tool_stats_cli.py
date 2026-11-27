@@ -116,6 +116,25 @@ def test_the_markdown(tmp_path: Path, isolated_home: Path) -> None:
     assert any(line.startswith("- validate: 1 nested (test-runner 1), elapsed 5m04s") for line in out)
 
 
+def test_only_repeats_of_a_bash_command_are_similar(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    for n, seconds in enumerate([20, 50, 90]):
+        edit = tx.request(10 + n * 100).call(11 + n * 100, "Edit", file_path=f"/home/user/projects/example/{n}.py")
+        tx.result(11 + n * 100 + seconds, edit)
+    bash(tx, 400, "make lint", 5)
+    bash(tx, 500, "make lint", 10)
+    tx.turn_end(600)
+    data = json.loads(invoke(tx, tmp_path, "--json").stdout)
+    assert [(r["tool"], r["wall"], r["similar"]) for r in data["slowest"]] == [
+        ("Edit", 90.0, 0), ("Edit", 50.0, 0), ("Edit", 20.0, 0), ("Bash", 10.0, 1),
+    ]  # fmt: skip
+    out = invoke(tx, tmp_path / "md", "--top", "2").stdout.splitlines()
+    assert [line for line in out if line.startswith("- ") and " Edit" in line] == [
+        "- 1m30s 11-02 09:03 main Edit", "- 50s 11-02 09:01 main Edit",
+    ]  # fmt: skip
+
+
 def test_a_call_over_an_hour_is_flagged(tmp_path: Path, isolated_home: Path) -> None:
     tx = Transcript()
     tx.prompt(0)

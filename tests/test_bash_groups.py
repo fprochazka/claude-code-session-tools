@@ -150,6 +150,45 @@ def test_a_command_gets_the_group_of_its_rule(
     assert (found.group, found.program, found.targeted, found.error) == (group, program, targeted, None)
 
 
+# (command, group, program): an invocation that waits through an option, a subcommand or its name is a wait, unless its
+# program makes it a test, build, lint, format, git, search or file command.
+WAITS = [
+    ("poll-state.py --mr-url u --wait-for-change-timeout-minutes 8", "wait", "poll-state.py"),
+    ('"$P" --wait-for-change-timeout-minutes 8', "wait", "$P"),
+    ("python3 scripts/poll.py --wait-seconds 600", "wait", "python3"),
+    ("my-cli get-job --id x --wait=600", "wait", "my-cli"),
+    ("my-cli job wait 12", "wait", "my-cli"),
+    ("gh pr checks 3 --watch", "wait", "gh"),
+    ("gh run watch 1", "wait", "gh"),
+    ("kubectl wait --for=condition=ready pod/x", "wait", "kubectl"),
+    ("kubectl get pods --watch", "wait", "kubectl"),
+    ("docker compose up -d --wait", "wait", "docker"),
+    ("docker wait abc", "wait", "docker"),
+    ("my-watch mr 12", "wait", "my-watch"),
+    ("my-watch --version", "run", "my-watch"),
+    ("my-cli watch --help", "run", "my-cli"),
+    ("gh run watch -h", "gh-glab", "gh"),
+    ("cc-session-tools watch --help", "agent-coord", "cc-session-tools"),
+    ("git log --follow -- a.py", "git", "git"),
+    ("my-cli list --waiting-for human", "run", "my-cli"),
+    ("my-cli list --status wait", "run", "my-cli"),
+    ("my-cli deploy --no-wait", "run", "my-cli"),
+    ("my-cli run -- --wait", "run", "my-cli"),
+    ("grep -- --wait f", "search", "grep"),
+    ("cat --watch notes.md", "file-read", "cat"),
+    ("vitest --watch", "test", "vitest"),
+    ("./gradlew test --watch-fs", "test", "gradlew"),
+    ("./gradlew build --watch-fs", "build", "gradlew"),
+    ("tsc --watch", "lint", "tsc"),
+]
+
+
+@pytest.mark.parametrize(("command", "group", "program"), WAITS, ids=[w[0] for w in WAITS])
+def test_a_command_that_waits_is_a_wait(grouper: BashGrouper, command: str, group: str, program: str) -> None:
+    found = grouper.classify(command)
+    assert (found.group, found.program, found.error) == (group, program, None)
+
+
 # (command, group, program): bash-classify unwraps the launcher, and the command it launches decides.
 WRAPPERS = [
     ("timeout 600 ./gradlew test", "test", "gradlew"),
@@ -269,6 +308,14 @@ def test_the_user_file_maps_programs_and_overrides_a_built_in_rule(isolated_home
     assert grouper.classify("setsid my-db-cli query 'select 1'").group == "db"
     assert grouper.classify("curl -s https://example.com").group == "other"
     assert grouper.classify("uv run my-db-cli tables").group == "db"
+
+
+def test_the_user_file_wins_over_an_option_that_waits(isolated_home: Path) -> None:
+    _write(isolated_home, '[programs]\nmy-cli = "db"\n\n[scripts]\n"*/deploy/*.sh" = "cloud"\n')
+    grouper = BashGrouper(load_user_groups())
+    assert grouper.classify("my-cli query --wait 'select 1'").group == "db"
+    assert grouper.classify("./deploy/push.sh --watch").group == "cloud"
+    assert grouper.classify("other-cli --wait").group == "wait"
 
 
 def test_the_user_file_maps_script_paths(isolated_home: Path) -> None:

@@ -2,7 +2,9 @@
 
 bash-classify parses a command into its invocations and unwraps launchers such as ``timeout``, ``env``, ``nice``,
 ``systemd-run``, ``xargs`` and ``uv run``. This module maps each invocation to a group and gives the whole command the
-group of its highest-priority invocation, so ``cd x && ./gradlew test 2>&1 | tail`` is a test.
+group of its highest-priority invocation, so ``cd x && ./gradlew test 2>&1 | tail`` is a test. An invocation that
+waits through a ``--wait`` or ``--watch`` option, a ``wait`` or ``watch`` subcommand, or a program named ``*-watch`` is
+a wait, unless its program makes it a test, build, lint, format, git, search or file command.
 
 The built-in rules know widely used public tools only. A user file, ``~/.config/cc-session-tools/bash-groups.toml``,
 maps any other program, and any script path, to a group, and overrides a built-in rule::
@@ -17,6 +19,7 @@ maps any other program, and any script path, to a group, and overrides a built-i
 from __future__ import annotations
 
 import fnmatch
+import itertools
 import os
 import re
 import tomllib
@@ -308,7 +311,10 @@ class BashGrouper:
         user = self._user_group(program, argv)
         if user is not None:
             return _Group(user), program
-        return _builtin_group(program, path, argv, positionals), program
+        found = _builtin_group(program, path, argv, positionals)
+        if found.group in _LIFTED_TO_WAIT and _waits(program, path, argv):
+            return _Group("wait"), program
+        return found, program
 
     def _user_group(self, program: str, argv: list[str]) -> str | None:
         found = self.user.programs.get(program)
@@ -398,7 +404,7 @@ def _builtin_group(program: str, path: list[str], argv: list[str], positionals: 
     if program == "claude":
         return _Group("lint" if args[:2] == ["plugin", "validate"] else "agent-coord")
     if program == "cc-session-tools":
-        return _Group("wait" if args[:1] == ["watch"] else "agent-coord")
+        return _Group("wait" if args[:1] == ["watch"] and not _ASKS_FOR_HELP & set(args) else "agent-coord")
     if program in ("pgrep", "pidwait"):
         return _Group("wait", waits_on=OTHER_BUILD if any(_BUILD_TOOL.search(a) for a in args) else None)
     if program == "tail" and any(_follows(a) for a in args):
@@ -415,6 +421,35 @@ def _builtin_group(program: str, path: list[str], argv: list[str], positionals: 
     if _LOWERCASE_PROGRAM.fullmatch(program) and program not in _NOT_A_PROJECT_CLI:
         return _Group("run")  # an unknown program: most often a project's own CLI
     return _Group("other")
+
+
+_LIFTED_TO_WAIT = frozenset(GROUPS[_PRIORITY["wait"] + 1 :]) - {"git", "search", "file-edit", "file-read"}
+"""The groups an invocation that waits leaves for ``wait``. A test, build or linter with ``--watch`` stays what it is,
+and so does ``git log --follow`` or a search for ``--wait``."""
+_WAIT_WORDS = frozenset({"wait", "watch"})
+_ASKS_FOR_HELP = frozenset({"--help", "-h", "--version"})
+
+
+def _waits(program: str, path: list[str], argv: list[str]) -> bool:
+    """Whether an invocation waits on something: a program named ``*-watch``, a ``wait`` or ``watch`` subcommand, or an
+    option ``--wait``, ``--watch``, ``--wait-*`` or ``--watch-*`` before any bare ``--``.
+
+    Not ``--waiting-for`` or ``--no-wait``, and not an invocation that asks for ``--help``, ``-h`` or ``--version``.
+    The subcommands are the command path bash-classify knows, or for a program it doesn't know, the words before the
+    first option."""
+    args = argv[1:]
+    if _ASKS_FOR_HELP & set(itertools.takewhile(lambda a: a != "--", args)):
+        return False
+    if program.endswith("-watch"):
+        return True
+    words = path[1:] if len(path) > 1 else list(itertools.takewhile(lambda a: not a.startswith("-"), args))
+    if _WAIT_WORDS & set(words):
+        return True
+    for arg in itertools.takewhile(lambda a: a != "--", args):
+        name = arg.split("=", 1)[0]
+        if name in ("--wait", "--watch") or name.startswith(("--wait-", "--watch-")):
+            return True
+    return False
 
 
 def _follows(arg: str) -> bool:

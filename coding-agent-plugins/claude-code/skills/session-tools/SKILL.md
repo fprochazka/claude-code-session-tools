@@ -121,7 +121,7 @@ Limits that change the conclusion:
 - **User waits are left out of the tool sections**: a call the user answered a prompt or dialog for waited an unknown part of its wall. Sessions recorded before Claude Code wrote permission decisions count dialogs only, and the header says so.
 - **Model time is `n/a`** on sessions from Claude Code versions without `api-request` records; that is unknown, not zero.
 - **Redaction is a safety net, not a guarantee.** Paths, hosts, long hex ids and credential-looking values are replaced, but names, ticket keys and secrets in an unusual shape pass through. Read the output before pasting it anywhere shared.
-- **Your own CLIs land in `run`**, with every other program the built-in rules don't know, so `run` is inflated until you map them: add them to `~/.config/cc-session-tools/bash-groups.toml` (`[programs] my-db-cli = "db"`, `[scripts]` globs), as the README's `tool-stats` section shows.
+- **Your own CLIs land in `run`**, with every other program the built-in rules don't know, unless they wait through a `--wait`/`--watch` option or subcommand, which makes them `wait`. So `run` is inflated until you map them: add them to `~/.config/cc-session-tools/bash-groups.toml` (`[programs] my-db-cli = "db"`, `[scripts]` globs), as the README's `tool-stats` section shows.
 
 ## Slash commands
 

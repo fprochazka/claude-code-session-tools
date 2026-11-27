@@ -362,6 +362,26 @@ def test_a_subagent_is_found_by_its_file_name_and_its_json_keeps_the_window(
     assert [c["command"] for c in data["calls"]] == ["make step1"] and data["window"] is not None
 
 
+def test_a_session_id_prefix_is_a_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    projects = tmp_path / "projects"
+    for n in (1, 2):
+        tx = Transcript(session_id=f"aaaa{n}{n}{n}{n}-0000-4000-8000-000000000000", cwd=f"/home/user/projects/p{n}")
+        tx.prompt(0, f"Do step {n}.")
+        tx.turn_end(10)
+        tx.write(projects)
+    monkeypatch.setenv("CLAUDE_PROJECTS_DIR", str(projects))
+    result = runner.invoke(app, ["timeline", "aaaa2222"])
+    assert result.exit_code == 0, result.output
+    assert "aaaa2222" in result.stdout.splitlines()[0]
+    result = runner.invoke(app, ["timeline", "aaaa"])
+    assert result.exit_code == 1 and result.stdout == ""
+    errors = result.stderr.splitlines()
+    assert errors[0] == "Error: 2 sessions match 'aaaa' by session id prefix:"
+    assert [line.split()[0] for line in errors[1:]] == [
+        "aaaa1111-0000-4000-8000-000000000000", "aaaa2222-0000-4000-8000-000000000000",
+    ]  # fmt: skip
+
+
 def test_a_subagent_file_as_target_points_to_the_subagent_option(tmp_path: Path, isolated_home: Path) -> None:
     path = session().write(tmp_path / "projects")
     sub_file = path.with_suffix("") / "subagents" / "agent-a1.jsonl"

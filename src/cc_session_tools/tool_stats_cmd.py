@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Any
 
 import typer
 
-from .discovery import projects_dirs_override, resolve_target
+from .discovery import AmbiguousTarget, projects_dirs_override, resolve_target
 from .redact import count, redact, redacting_session, span, tokens
 from .session_time import AGENT_TOOLS, HANDBACK_TOOL, SessionTime, Subagent, TimedCall, analyze, union
 from .timeline_cmd import SUSPECT_WAIT, suspected
@@ -37,7 +37,9 @@ COMMAND_LIMIT = 100
 
 
 def tool_stats_command(
-    target: str | None = typer.Argument(None, help="A .jsonl path, a session UUID, or the literal 'latest'."),
+    target: str | None = typer.Argument(
+        None, help="A .jsonl path, a session id or a prefix of one, or the literal 'latest'."
+    ),
     sessions_from: str | None = typer.Option(
         None,
         "--sessions-from",
@@ -75,7 +77,11 @@ def tool_stats_command(
         return
 
     assert target is not None
-    transcript = resolve_target(target, cwd=os.getcwd(), projects_dirs=projects_dirs_override())
+    try:
+        transcript = resolve_target(target, cwd=os.getcwd(), projects_dirs=projects_dirs_override())
+    except AmbiguousTarget as e:
+        typer.echo(e.listing(), err=True)
+        raise typer.Exit(code=1) from e
     if transcript is None:
         typer.echo(f"Error: could not resolve session target: {target}", err=True)
         raise typer.Exit(code=1)
@@ -97,7 +103,10 @@ def _session_stats(target: str, top: int) -> ToolStats:
     """One session's sections, for :func:`tool_stats_many` to add up; it runs in a child process."""
     from .bash_groups import BashGrouper, load_user_groups
 
-    transcript = resolve_target(target, cwd=os.getcwd(), projects_dirs=projects_dirs_override())
+    try:
+        transcript = resolve_target(target, cwd=os.getcwd(), projects_dirs=projects_dirs_override())
+    except AmbiguousTarget as e:
+        raise LookupError(str(e)) from None  # a plain exception, so it pickles back from the child process
     if transcript is None:
         raise LookupError("could not resolve the session")
     st = analyze(transcript)

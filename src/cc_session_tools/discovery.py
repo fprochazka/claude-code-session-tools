@@ -166,6 +166,35 @@ def build_session_rows(scope: Scope, *, projects_dirs: Sequence[Path] | None = N
 
 
 _ID_PREFIX = re.compile(r"^[0-9a-f][0-9a-f-]{3,}$")
+MAX_LISTED = 20
+"""How many candidates an error about an ambiguous session lists."""
+
+
+def candidate_lines(transcripts: Sequence[SessionTranscript]) -> list[str]:
+    """One indented line per candidate session: its id, its last record and its title, at most :data:`MAX_LISTED`."""
+    lines = []
+    for t in transcripts[:MAX_LISTED]:
+        when = t.last_record_at.isoformat(timespec="minutes") if t.last_record_at else "-"
+        lines.append(f"  {t.session_id}  {when}  {t.title or '-'}")
+    if len(transcripts) > MAX_LISTED:
+        lines.append(f"  … and {len(transcripts) - MAX_LISTED} more")
+    return lines
+
+
+class AmbiguousTarget(Exception):
+    """A session id prefix that matches several sessions. The message names the prefix and lists their ids."""
+
+    def __init__(self, target: str, candidates: Sequence[SessionTranscript]) -> None:
+        self.target = target
+        self.candidates = list(candidates)
+        ids = ", ".join(t.session_id for t in self.candidates[:MAX_LISTED])
+        more = f" and {len(self.candidates) - MAX_LISTED} more" if len(self.candidates) > MAX_LISTED else ""
+        super().__init__(f"{len(self.candidates)} sessions match {target!r} by session id prefix: {ids}{more}")
+
+    def listing(self) -> str:
+        """The error as the commands print it: a line that names the prefix, then a line per candidate."""
+        header = f"Error: {len(self.candidates)} sessions match {self.target!r} by session id prefix:"
+        return "\n".join([header, *candidate_lines(self.candidates)])
 
 
 def find_by_id_prefix(prefix: str, *, projects_dirs: Sequence[Path] | None = None) -> list[SessionTranscript]:
@@ -197,11 +226,15 @@ def find_by_id_prefix(prefix: str, *, projects_dirs: Sequence[Path] | None = Non
 
 
 def resolve_target(target: str, *, cwd: str, projects_dirs: Sequence[Path] | None = None) -> SessionTranscript | None:
-    """Resolve a distill target: a ``.jsonl`` path, a session id, or ``"latest"``.
+    """Resolve a distill target: a ``.jsonl`` path, a session id, a prefix of one, or ``"latest"``.
 
+    A prefix of at least 4 characters is looked up by file name, in every profile or in ``projects_dirs``.
     ``"latest"`` uses the same scope as ``search`` and skips stubs, which have no interaction to distill but whose
     mtime can put them first. There is deliberately no "newest session overall" fallback: distilling an unrelated
     session is worse than failing. Returns ``None`` when nothing resolves.
+
+    Raises:
+        AmbiguousTarget: the target is a prefix of several session ids.
     """
     candidate = Path(target)
     if candidate.suffix == ".jsonl" and candidate.is_file():
@@ -221,4 +254,8 @@ def resolve_target(target: str, *, cwd: str, projects_dirs: Sequence[Path] | Non
         rows = build_session_rows(resolve_scope(cwd), projects_dirs=projects_dirs)
         return next((row.transcript for row in rows if row.last_ts_from_transcript), None)
 
-    return None
+    # Keyed by session id: the same session can be listed under two projects dirs.
+    matches = {t.session_id: t for t in reversed(find_by_id_prefix(target, projects_dirs=projects_dirs))}
+    if len(matches) > 1:
+        raise AmbiguousTarget(target, sorted(matches.values(), key=lambda t: t.session_id))
+    return next(iter(matches.values()), None)

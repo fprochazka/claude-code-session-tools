@@ -306,6 +306,21 @@ def test_many_sessions_in_markdown(tmp_path: Path, isolated_home: Path) -> None:
     assert "not recorded: this Claude Code version wrote no permission decisions, so only dialogs count below" in out
 
 
+def test_an_ambiguous_prefix_in_the_list_is_skipped(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    many(tmp_path)
+    monkeypatch.setenv("CLAUDE_PROJECTS_DIR", str(tmp_path / "projects"))
+    data = tool_stats_many(["00000002", "0000000"], isolate=True)
+    assert [s["session_id"][:8] for s in data["sessions"]] == ["00000002"]
+    assert data["skipped"] == [
+        {"target": "0000000", "error": "LookupError: 3 sessions match '0000000' by session id prefix: "
+         + ", ".join(f"0000000{n}-0000-4000-8000-000000000000" for n in range(3))},
+    ]  # fmt: skip
+    result = runner.invoke(app, ["tool-stats", "0000"])
+    assert result.exit_code == 1 and "Error: 3 sessions match '0000' by session id prefix:" in result.stderr
+
+
 def test_a_target_and_a_list_exclude_each_other(tmp_path: Path, isolated_home: Path) -> None:
     targets, _ = many(tmp_path)
     assert runner.invoke(app, ["tool-stats"]).exit_code == 1

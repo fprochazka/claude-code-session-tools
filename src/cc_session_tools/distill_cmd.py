@@ -23,7 +23,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from .discovery import projects_dirs_override, resolve_target
+from .discovery import AmbiguousTarget, projects_dirs_override, resolve_target
 from .render import distill_entries, render_markdown
 from .stats import TranscriptStats, compute_stats, human_bytes
 
@@ -52,7 +52,7 @@ def _stats_table(stats: TranscriptStats) -> Table:
 def distill(
     target: str = typer.Argument(
         ...,
-        help="A .jsonl path, a session UUID, or the literal 'latest'.",
+        help="A .jsonl path, a session id or a prefix of one, or the literal 'latest'.",
     ),
     include_thinking: bool = typer.Option(
         False,
@@ -75,7 +75,11 @@ def distill(
 ) -> None:
     """Render a condensed markdown transcript of a session."""
     cwd = os.getcwd()
-    transcript = resolve_target(target, cwd=cwd, projects_dirs=projects_dirs_override())
+    try:
+        transcript = resolve_target(target, cwd=cwd, projects_dirs=projects_dirs_override())
+    except AmbiguousTarget as e:
+        typer.echo(e.listing(), err=True)
+        raise typer.Exit(code=1) from e
     if transcript is None:
         # Plain text, never rich markup: a target can contain brackets.
         typer.echo(f"Error: could not resolve session target: {target}", err=True)

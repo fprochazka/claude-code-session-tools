@@ -70,7 +70,8 @@ Usage: cc-session-tools distill [OPTIONS] {target}
   Render a condensed markdown transcript of a session.
 
 Arguments:
-  target  A .jsonl path, a session UUID, or the literal 'latest'.  [required]
+  target  A .jsonl path, a session id or a prefix of one, or the literal
+          'latest'.  [required]
 
 Options:
   --include-thinking   Include assistant thinking blocks.
@@ -87,7 +88,7 @@ Operational notes:
 
 - **Do not filter the output.** In file mode stdout is exactly one line — the path of the written markdown — and the stats table goes to stderr. Read the file it names; it is short and costs little context.
 - **`latest` uses the same scope as `search`**: the newest session of the current repo and its worktrees. Transcripts with no timestamped records — empty stubs — are skipped. There is no "newest session overall" fallback — if the scope is empty the command fails rather than distilling something unrelated.
-- **A UUID target** is looked up across every project dir, so it works from anywhere. Subagent sidecars under `<session-id>/subagents/` are not sessions and cannot be reached by id.
+- **A session id target**, or a prefix of one of at least 4 characters, is looked up across every project dir, so it works from anywhere; a prefix that matches several sessions fails and lists them. The same goes for `timeline` and `tool-stats`. Subagent sidecars under `<session-id>/subagents/` are not sessions and cannot be reached by id.
 - **Headings name who sent a prompt**: `👤 User` for the user, `📨 Peer session` for a message from another Claude Code session, `🔔 Task notification` for a finished background task. Only `👤 User` prompts are the user's own words.
 - **A compacted session is split at its compactions.** The main file `<session-id>.md` holds only what the model worked with after the last compaction: the compaction summary under `## 📦 Compaction summary`, the stretch of conversation Claude Code kept verbatim, and everything after. Its first line under the title is a `> Compacted session: …` pointer to the absolute path of the part before, `<session-id>.pre-compact-<k>.md` in the same dir, and each part points back to the one before it, down to `pre-compact-1`, the oldest. Each pre-compact part ends with a `> Continued after compaction <k> in …` line. For a recap of the whole session, follow the pointers and read every part, oldest first; for what the session ended up with, the main file is enough.
 - `--stdout` writes the main markdown to stdout instead of a file; the stats table still goes to stderr, so the stdout stays valid markdown. The pre-compact parts of a compacted session are still written to `--output-dir`, so the pointer line names files that exist.

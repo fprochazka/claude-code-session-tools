@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import typer
 
-from .discovery import projects_dirs_override, resolve_target
+from .discovery import AmbiguousTarget, projects_dirs_override, resolve_target
 from .redact import count, redact, redacting_session, span, tokens
 from .session_time import (
     AGENT_TOOLS,
@@ -58,7 +58,7 @@ _TAG = re.compile(r"<[^>]+>")
 
 
 def timeline(
-    target: str = typer.Argument(..., help="A .jsonl path, a session UUID, or the literal 'latest'."),
+    target: str = typer.Argument(..., help="A .jsonl path, a session id or a prefix of one, or the literal 'latest'."),
     max_lines: int = typer.Option(
         150, "--max-lines", help="Collapse short turns and gaps until the markdown fits about this many lines."
     ),
@@ -80,7 +80,11 @@ def timeline(
             f"Error: {target} is a subagent's transcript; pass its session and --subagent {Path(target).stem}", err=True
         )
         raise typer.Exit(code=1)
-    transcript = resolve_target(target, cwd=os.getcwd(), projects_dirs=projects_dirs_override())
+    try:
+        transcript = resolve_target(target, cwd=os.getcwd(), projects_dirs=projects_dirs_override())
+    except AmbiguousTarget as e:
+        typer.echo(e.listing(), err=True)
+        raise typer.Exit(code=1) from e
     if transcript is None:
         typer.echo(f"Error: could not resolve session target: {target}", err=True)
         raise typer.Exit(code=1)

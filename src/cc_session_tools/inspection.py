@@ -43,13 +43,12 @@ from .active import (
     to_json,
     transcript_json,
 )
-from .discovery import find_by_id_prefix
+from .discovery import candidate_lines, find_by_id_prefix
 from .plan import plan_json, read_plan_file
 from .screen import plain_lines
 from .search import search_session_ids
 
 DEFAULT_DAYS = 14
-MAX_LISTED = 20
 _TITLE_RECORDS = {"custom-title": "customTitle", "agent-name": "agentName", "ai-title": "aiTitle"}
 
 
@@ -67,12 +66,7 @@ class Found:
 
 
 def _fail(query: str, transcripts: Sequence[SessionTranscript], what: str) -> SessionLookupError:
-    lines = [f"Error: {len(transcripts)} ended sessions match {query!r} by {what}:"]
-    for t in transcripts[:MAX_LISTED]:
-        when = t.last_record_at.isoformat(timespec="minutes") if t.last_record_at else "-"
-        lines.append(f"  {t.session_id}  {when}  {t.title or '-'}")
-    if len(transcripts) > MAX_LISTED:
-        lines.append(f"  … and {len(transcripts) - MAX_LISTED} more")
+    lines = [f"Error: {len(transcripts)} ended sessions match {query!r} by {what}:", *candidate_lines(transcripts)]
     return SessionLookupError("\n".join(lines), ambiguous=True)
 
 

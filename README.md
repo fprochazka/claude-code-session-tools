@@ -126,13 +126,13 @@ cc-session-tools distill latest --include-thinking   # keep the assistant's thin
 cc-session-tools distill latest --output-dir ./notes # write somewhere other than the default
 ```
 
-The target is a `.jsonl` path, a session id, or the literal `latest`.
+The target is a `.jsonl` path, a session id, a prefix of one of at least 4 characters, such as `27906ead`, or the literal `latest`.
 
 By default the command writes `<output-dir>/<session-id>.md` and prints that one path on stdout. The output directory defaults to `/tmp/claude-code-session-tools`. The stats table — prompt count, subagent count, size, estimated tokens — goes to stderr in both modes, so stdout stays either a single path or valid markdown.
 
 `latest` uses the same scope as `search`: the newest session of the current repo and its worktrees, by transcript timestamp. Transcripts with no timestamped records — empty stubs — are skipped. There is no "newest session overall" fallback. If the scope is empty the command fails with exit `1` rather than distilling an unrelated session.
 
-A session id is looked up across every project directory, so it works from anywhere. Subagent sidecars under `<session-id>/subagents/` are child transcripts, not sessions, and cannot be reached by id.
+A session id or prefix is looked up across every project directory, so it works from anywhere; a prefix costs one directory listing per project and reads only the file names. A prefix that matches several sessions is an error that lists them, with their last record and title, and exits `1`. Subagent sidecars under `<session-id>/subagents/` are child transcripts, not sessions, and cannot be reached by id.
 
 **A compacted session is split at its compactions.** A compaction continues in the same transcript file, and replaces the model's context with a summary. The main file holds only the context the model worked with since the last compaction: the compaction summary under `## 📦 Compaction summary`, the stretch of conversation Claude Code kept verbatim next to it, and everything after. Each earlier stretch goes next to it as `<output-dir>/<session-id>.pre-compact-<k>.md`, `k` = 1 for the oldest, with its own summary when a compaction opened it. Every record of the transcript lands in exactly one file. A further compaction adds one file and keeps the existing numbers. A session without compactions gives one file, as before.
 
@@ -166,7 +166,7 @@ cc-session-tools timeline <session-id> --subagent <agent-id>     # one subagent:
 cc-session-tools timeline <session-id> --json             # everything, nothing merged
 ```
 
-The target is a `.jsonl` path, a session id, or `latest`, as for `distill`. The markdown goes to stdout, errors to stderr; exit code `1` when the target, a time or the Bash groups file can't be read. A subagent's own `agent-<id>.jsonl` is no target: pass its session and `--subagent`.
+The target is a `.jsonl` path, a session id or a prefix of one, or `latest`, as for `distill`. The markdown goes to stdout, errors to stderr; exit code `1` when the target, a time or the Bash groups file can't be read. A subagent's own `agent-<id>.jsonl` is no target: pass its session and `--subagent`.
 
 The header gives the session's totals:
 
@@ -250,7 +250,7 @@ my-deploy = "cloud"
 | `subagent_roles[]` | `role`, `guessed`, `type`, `nested`, `n`, `active`, `median`, `max`, `rounds`, `tokens_total`, `tokens_new`, `first_context_median`, `models` |
 | `nested_by_parent_role[]` | `parent_role`, `n`, `active` (lane time), `elapsed` (union), `tokens_total`, `by_type` |
 
-**Many sessions.** `--sessions-from FILE` adds the sections up over the sessions FILE lists, one session id or `.jsonl` path per line; blank lines and `#` comments are skipped, and `-` reads the list from stdin. It takes no TARGET. Each session is analysed in a child process of its own, one after another, and only its sums come back, so the run needs the memory of the largest session, not of all of them: a large session can take a few GB while it is analysed. A session that can't be resolved or read is reported on stderr, listed under `skipped` and left out; the run goes on. Each session's text is redacted with its own repo. The markdown starts with a row per session, by active time (kind, active, main busy, tool wall, the Bash group with the most wall, suspected waits, user waits), and the totals per session kind, then the sections as for one session: repeated commands give the number of sessions that ran them, slowest calls name their session, and the subagents' elapsed time is each session's union, added up. The JSON adds three keys to the single-session shape and drops `session_id`:
+**Many sessions.** `--sessions-from FILE` adds the sections up over the sessions FILE lists, one session id, session id prefix or `.jsonl` path per line; blank lines and `#` comments are skipped, and `-` reads the list from stdin. It takes no TARGET. Each session is analysed in a child process of its own, one after another, and only its sums come back, so the run needs the memory of the largest session, not of all of them: a large session can take a few GB while it is analysed. A session that can't be resolved or read is reported on stderr, listed under `skipped` and left out; the run goes on. Each session's text is redacted with its own repo. The markdown starts with a row per session, by active time (kind, active, main busy, tool wall, the Bash group with the most wall, suspected waits, user waits), and the totals per session kind, then the sections as for one session: repeated commands give the number of sessions that ran them, slowest calls name their session, and the subagents' elapsed time is each session's union, added up. The JSON adds three keys to the single-session shape and drops `session_id`:
 
 | Key | Holds |
 |---|---|

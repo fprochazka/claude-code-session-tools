@@ -106,7 +106,7 @@ Exit codes: `0`, including when nothing matched (the notice goes to stderr). `2`
 cc-session-tools distill latest                      # newest session of this repo and its worktrees
 cc-session-tools distill <session-id>                # by session id, from anywhere
 cc-session-tools distill <path-to>.jsonl             # by path to the transcript
-cc-session-tools distill latest --stdout             # markdown on stdout instead of a file
+cc-session-tools distill latest --stdout             # the main markdown on stdout instead of a file
 cc-session-tools distill latest --include-thinking   # keep the assistant's thinking blocks
 cc-session-tools distill latest --output-dir ./notes # write somewhere other than the default
 ```
@@ -118,6 +118,20 @@ By default the command writes `<output-dir>/<session-id>.md` and prints that one
 `latest` uses the same scope as `search`: the newest session of the current repo and its worktrees, by transcript timestamp. Transcripts with no timestamped records — empty stubs — are skipped. There is no "newest session overall" fallback. If the scope is empty the command fails with exit `1` rather than distilling an unrelated session.
 
 A session id is looked up across every project directory, so it works from anywhere. Subagent sidecars under `<session-id>/subagents/` are child transcripts, not sessions, and cannot be reached by id.
+
+**A compacted session is split at its compactions.** A compaction continues in the same transcript file, and replaces the model's context with a summary. The main file holds only the context the model worked with since the last compaction: the compaction summary under `## 📦 Compaction summary`, the stretch of conversation Claude Code kept verbatim next to it, and everything after. Each earlier stretch goes next to it as `<output-dir>/<session-id>.pre-compact-<k>.md`, `k` = 1 for the oldest, with its own summary when a compaction opened it. Every record of the transcript lands in exactly one file. A further compaction adds one file and keeps the existing numbers. A session without compactions gives one file, as before.
+
+The main file and every part after the first start, right under the title, with a line that points back:
+
+```text
+> Compacted session: this part starts at compaction 2 of 2 (auto, 2026-11-20 14:03 UTC, 180k tokens before it). The conversation before it is distilled in /tmp/claude-code-session-tools/<session-id>.pre-compact-2.md.
+```
+
+The path is absolute, so an agent can open it as it is. Every pre-compact part ends with `> Continued after compaction <k> in <path>.`, pointing at the next part. Each file's header gives its own prompt count and time range. A subagent spawned before a compaction and finished after it stays whole, in the part where it was spawned.
+
+Claude Code from about 2.1.266 keeps the last stretch of the conversation verbatim after a compaction. Those records stay before the boundary in the transcript, so the part after a compaction starts at the first of them. Older transcripts have no such stretch, and the part starts at the compaction.
+
+The stdout contract holds: without `--stdout` it is the path of the main file. With `--stdout` it is the main file's markdown, and the pre-compact parts are still written to the output directory so the pointer line names a file that exists; stderr names the directory. The stats table describes the main file and adds a `Pre-compact parts` row with the count, total size and estimated tokens of the other files.
 
 **A prompt's heading names who sent it:** `👤 User` for you, `📨 Peer session` for a message another Claude Code session sent, `🔔 Task notification` for a background task that finished. Prompts you typed while Claude was working are included.
 
@@ -364,7 +378,8 @@ src/cc_session_tools/
 ├── titles.py          # display title derived from the first user message
 ├── search.py          # ripgrep shell-out with the built-in fallback
 ├── timefmt.py         # relative "time ago" formatting
-├── render.py          # condensed conversation -> markdown
+├── segments.py        # a transcript split at its compactions
+├── render.py          # condensed conversation -> markdown, one file per segment
 └── stats.py           # size and token estimates
 
 tests/                # unit tests; test_live_screen.py is the opt-in live contract test (pytest -m live)

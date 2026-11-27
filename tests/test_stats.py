@@ -36,7 +36,7 @@ def test_compute_stats_on_small_fixture(tmp_path: Path) -> None:
     session = distill_entries("sess", list(iter_entries(path, diagnostics=diagnostics)), diagnostics)
     markdown = "# Session sess\nbody with a few words\n"
 
-    stats = compute_stats(session, markdown)
+    stats = compute_stats(session.main_part, markdown)
 
     assert stats.prompt_count == 1
     assert stats.subagent_count == 0
@@ -69,3 +69,19 @@ def test_stdout_mode_keeps_stats_off_stdout(tmp_path: Path) -> None:
     assert "Transcript stats" not in result.stdout
     assert "Transcript stats" in result.stderr
     assert "tokens" in result.stderr.lower()
+
+
+def test_compute_stats_sums_the_pre_compact_parts(tmp_path: Path) -> None:
+    path = tmp_path / "sess.jsonl"
+    path.write_text(_jsonl({"type": "user", "message": {"content": "do the thing"}}), encoding="utf-8")
+    diagnostics = ReadDiagnostics()
+    session = distill_entries("sess", list(iter_entries(path, diagnostics=diagnostics)), diagnostics)
+
+    assert compute_stats(session.main_part, "main").pre_compact is None
+    stats = compute_stats(session.main_part, "main", ["a" * 400, "é" * 40])
+    assert stats.pre_compact is not None
+    assert (stats.pre_compact.part_count, stats.pre_compact.byte_size, stats.pre_compact.estimated_tokens) == (
+        2,
+        480,
+        110,
+    )

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from cc_blackbox import project_slug
+from conftest import compaction_records
 from typer.testing import CliRunner
 
 import cc_session_tools.discovery as discovery
@@ -250,3 +251,75 @@ def test_latest_fails_when_the_scope_holds_only_stubs(tmp_path: Path, monkeypatc
     assert result.exit_code == 1
     assert "could not resolve session target: latest" in result.stderr
     assert result.stdout == ""
+
+
+COMPACTED_ID = "cccccccc-0000-0000-0000-000000000003"
+
+
+def _write_compacted_session(project_dir: Path) -> Path:
+    """Write a session compacted once, with a preserved segment, in the shape newer Claude Code writes."""
+
+    def said(uuid: str, text: str, minute: int) -> dict[str, object]:
+        return {
+            "type": "user",
+            "uuid": uuid,
+            "cwd": CWD,
+            "sessionId": COMPACTED_ID,
+            "timestamp": f"2026-07-24T13:{minute:02d}:00.000Z",
+            "message": {"role": "user", "content": text},
+        }
+
+    records = [
+        said("u1", "the first ask", 0),
+        said("u2", "the kept ask", 2),
+        *compaction_records("b1", timestamp="2026-07-24T13:05:00.000Z", logical_parent="u2", preserved_head="u2"),
+        said("u3", "the ask after compaction", 6),
+    ]
+    path = project_dir / f"{COMPACTED_ID}.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    return path
+
+
+def test_a_compacted_session_writes_its_pre_compact_part_next_to_the_main_file(tree: Path, tmp_path: Path) -> None:
+    session = _write_compacted_session(tree / project_slug(CWD))
+    out_dir = tmp_path / "out"
+
+    result = runner.invoke(app, ["distill", str(session), "--output-dir", str(out_dir)])
+
+    assert result.exit_code == 0, result.output
+    main = Path(result.stdout.strip())
+    assert main == (out_dir / f"{COMPACTED_ID}.md").resolve()
+    part = (out_dir / f"{COMPACTED_ID}.pre-compact-1.md").resolve()
+    main_text = main.read_text(encoding="utf-8")
+    assert main_text.splitlines()[1].endswith(f"The conversation before it is distilled in {part}.")
+    assert "the kept ask" in main_text and "the first ask" not in main_text
+    part_text = part.read_text(encoding="utf-8")
+    assert "the first ask" in part_text and "the kept ask" not in part_text
+    assert part_text.rstrip().endswith(f"> Continued after compaction 1 in {main}.")
+    assert "Pre-compact parts" in result.stderr
+
+
+def test_stdout_mode_still_writes_the_pre_compact_parts(tree: Path, tmp_path: Path) -> None:
+    session = _write_compacted_session(tree / project_slug(CWD))
+    out_dir = tmp_path / "out"
+
+    result = runner.invoke(app, ["distill", str(session), "--stdout", "--output-dir", str(out_dir)])
+
+    assert result.exit_code == 0, result.output
+    part = (out_dir / f"{COMPACTED_ID}.pre-compact-1.md").resolve()
+    assert result.stdout.startswith(f"# Session {COMPACTED_ID}\n> Compacted session:")
+    assert f"distilled in {part}." in result.stdout
+    assert part.is_file()
+    assert not (out_dir / f"{COMPACTED_ID}.md").exists()
+    assert f"Pre-compact parts written to {out_dir.resolve()}" in result.stderr
+
+
+def test_a_session_without_compactions_has_no_pre_compact_row(tree: Path, tmp_path: Path) -> None:
+    session = tree / project_slug(CWD) / f"{NEW_ID}.jsonl"
+    out_dir = tmp_path / "out"
+
+    result = runner.invoke(app, ["distill", str(session), "--output-dir", str(out_dir)])
+
+    assert result.exit_code == 0, result.output
+    assert "Pre-compact parts" not in result.stderr
+    assert sorted(p.name for p in out_dir.iterdir()) == [f"{NEW_ID}.md"]

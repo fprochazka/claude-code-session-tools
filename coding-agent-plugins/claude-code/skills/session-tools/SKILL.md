@@ -55,9 +55,12 @@ Arguments:
 
 Options:
   --include-thinking   Include assistant thinking blocks.
-  --output-dir <path>  Directory to write <session-id>.md into.  [default:
+  --output-dir <path>  Directory to write <session-id>.md, and the pre-compact
+                       parts of a compacted session, into.  [default:
                        /tmp/claude-code-session-tools]
-  --stdout             Print markdown to stdout instead of writing a file.
+  --stdout             Print the main markdown to stdout instead of writing it
+                       to a file. A compacted session's pre-compact parts are
+                       still written to the output dir.
   --help               Show this message and exit.
 ```
 
@@ -67,7 +70,8 @@ Operational notes:
 - **`latest` uses the same scope as `search`**: the newest session of the current repo and its worktrees. Transcripts with no timestamped records — empty stubs — are skipped. There is no "newest session overall" fallback — if the scope is empty the command fails rather than distilling something unrelated.
 - **A UUID target** is looked up across every project dir, so it works from anywhere. Subagent sidecars under `<session-id>/subagents/` are not sessions and cannot be reached by id.
 - **Headings name who sent a prompt**: `👤 User` for the user, `📨 Peer session` for a message from another Claude Code session, `🔔 Task notification` for a finished background task. Only `👤 User` prompts are the user's own words.
-- `--stdout` writes the markdown to stdout instead of a file; the stats table still goes to stderr, so the stdout stays valid markdown.
+- **A compacted session is split at its compactions.** The main file `<session-id>.md` holds only what the model worked with after the last compaction: the compaction summary under `## 📦 Compaction summary`, the stretch of conversation Claude Code kept verbatim, and everything after. Its first line under the title is a `> Compacted session: …` pointer to the absolute path of the part before, `<session-id>.pre-compact-<k>.md` in the same dir, and each part points back to the one before it, down to `pre-compact-1`, the oldest. Each pre-compact part ends with a `> Continued after compaction <k> in …` line. For a recap of the whole session, follow the pointers and read every part, oldest first; for what the session ended up with, the main file is enough.
+- `--stdout` writes the main markdown to stdout instead of a file; the stats table still goes to stderr, so the stdout stays valid markdown. The pre-compact parts of a compacted session are still written to `--output-dir`, so the pointer line names files that exist.
 - Exit code `1` when the target does not resolve or the file cannot be read; the message is a plain `Error: …` line on stderr.
 
 ## Slash commands

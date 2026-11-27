@@ -16,6 +16,8 @@ cc-session-tools distill --help
 
 This command takes a session and outputs a path to an `.md` file that has only the important parts of the session. Do not filter its output, it's short and won't take much context.
 
+A compacted session is split at its compactions. The file the command prints holds only the conversation since the last compaction, and starts with a `> Compacted session: …` line that names the file of the part before it, `<session-id>.pre-compact-<k>.md` next to it. Each part points back the same way, down to `pre-compact-1`. The recap covers the whole session, so the subagent follows those pointers and reads every part.
+
 Run the distill command in the orchestrator agent (the current one), only hand the output file(s) to the subagents.
 
 ## Context
@@ -32,7 +34,7 @@ Instruct the subagent exactly as follows:
 
 > You are distilling a Claude Code session transcript into a recap for a future session.
 >
-> 1. **Read the full transcript file first** (path given below) before writing anything. Read it in its entirety.
+> 1. **Read the full transcript first** (path given below) before writing anything. Read it in its entirety. If its first line under the title starts with `> Compacted session:`, the session was compacted and the file holds only the conversation since the last compaction: that line names the file of the part before it, which names the part before that, down to `<session-id>.pre-compact-1.md`. Follow the pointers and read every part, oldest first. A part's `## 📦 Compaction summary` condenses the parts before it; the earlier parts hold the detail.
 > 2. **Collapse superseded history.** When a decision, plan, value, or piece of information was later changed, corrected, or abandoned, keep **only the final state**. Discard the intermediate steps, dead ends, and walked-back choices — the reader does not need the journey, only where it landed. The one exception: if a decision *pivoted*, note the rejected alternative and what triggered the pivot in one line, because that is load-bearing context.
 > 3. **Write the recap to `./.claude/plans/session-distill-<slug>.md`** — `<slug>` is a short kebab-case slug of what the session was about, the same naming the `/session-tools:search` command uses for `past-sessions-<slug>.md` (fall back to the session id when the topic is unclear). Create the directory if it does not exist. The full recap lives in this file and nowhere else. Use this structure:
 >

@@ -215,6 +215,57 @@ def compact_boundary(epoch_seconds: float) -> dict[str, Any]:
     return {"type": "system", "subtype": "compact_boundary", "timestamp": stamp(epoch_seconds)}
 
 
+def compaction_records(
+    boundary_uuid: str,
+    *,
+    timestamp: str,
+    logical_parent: str | None = None,
+    trigger: str = "auto",
+    pre_tokens: int = 180_000,
+    preserved_head: str | None = None,
+    summary: str | None = "This session is being continued from a previous conversation. Summary: the plan so far.",
+) -> list[dict[str, Any]]:
+    """The records Claude Code writes when it compacts a session: the boundary, then the summary.
+
+    ``preserved_head`` gives the boundary the ``preservedSegment`` that Claude Code from about 2.1.266 writes; without
+    it the boundary has the older shape, with ``trigger`` and ``preTokens`` only. ``summary=None`` leaves the summary
+    record out.
+    """
+    metadata: dict[str, Any] = {"trigger": trigger, "preTokens": pre_tokens}
+    if preserved_head is not None:
+        metadata["postTokens"] = pre_tokens // 10
+        metadata["preservedSegment"] = {
+            "headUuid": preserved_head,
+            "anchorUuid": f"{boundary_uuid}-summary",
+            "tailUuid": logical_parent,
+        }
+    records: list[dict[str, Any]] = [
+        {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "uuid": boundary_uuid,
+            "parentUuid": None,
+            "logicalParentUuid": logical_parent,
+            "timestamp": timestamp,
+            "content": "Conversation compacted",
+            "compactMetadata": metadata,
+        }
+    ]
+    if summary is not None:
+        records.append(
+            {
+                "type": "user",
+                "uuid": f"{boundary_uuid}-summary",
+                "parentUuid": boundary_uuid,
+                "timestamp": timestamp,
+                "isCompactSummary": True,
+                "isVisibleInTranscriptOnly": True,
+                "message": {"role": "user", "content": summary},
+            }
+        )
+    return records
+
+
 def cost_state(total: float) -> dict[str, Any]:
     """A ``cost-state`` record, which Claude Code appends when a session process exits."""
     return {

@@ -3,9 +3,12 @@
 Orchestration only — target resolution lives in ``discovery``, the condensed conversation
 and its markdown in ``render``, and the size figures in ``stats``.
 
-Stdout carries exactly one thing: the rendered markdown under ``--stdout``, or the
-single path of the written file otherwise. Everything else — the stats table, every
+Stdout carries exactly one thing: the rendered markdown of the main file under ``--stdout``,
+or the single path of the main file otherwise. Everything else — the stats table, every
 error — goes to stderr, so a caller can consume stdout without filtering it.
+
+A compacted session also gets one file per part before its last compaction, written in both
+modes, so the pointer line at the top of the main markdown always names a file that exists.
 """
 
 from __future__ import annotations
@@ -37,6 +40,12 @@ def _stats_table(stats: TranscriptStats) -> Table:
     table.add_row(Text("Subagent calls"), Text(str(stats.subagent_count)))
     table.add_row(Text("Doc size"), Text(f"{human_bytes(stats.byte_size)} ({stats.char_count:,} chars)"))
     table.add_row(Text("Tokens"), Text(f"~{stats.estimated_tokens:,} (est.)"))
+    if stats.pre_compact is not None:
+        pre = stats.pre_compact
+        table.add_row(
+            Text("Pre-compact parts"),
+            Text(f"{pre.part_count} ({human_bytes(pre.byte_size)}, ~{pre.estimated_tokens:,} tokens est.)"),
+        )
     return table
 
 
@@ -53,12 +62,15 @@ def distill(
     output_dir: Path = typer.Option(
         DEFAULT_OUTPUT_DIR,
         "--output-dir",
-        help="Directory to write <session-id>.md into.",
+        help="Directory to write <session-id>.md, and the pre-compact parts of a compacted session, into.",
     ),
     stdout: bool = typer.Option(
         False,
         "--stdout",
-        help="Print markdown to stdout instead of writing a file.",
+        help=(
+            "Print the main markdown to stdout instead of writing it to a file. A compacted session's pre-compact"
+            " parts are still written to the output dir."
+        ),
     ),
 ) -> None:
     """Render a condensed markdown transcript of a session."""
@@ -79,20 +91,30 @@ def distill(
     session = distill_entries(
         transcript.session_id, entries, diagnostics, include_thinking=include_thinking, session=transcript
     )
-    markdown = render_markdown(session)
-    stats = compute_stats(session, markdown)
+    # Absolute, so an agent can open the file a pointer line names without path arithmetic.
+    output_dir = output_dir.resolve()
+    main = session.main_part
+    markdown = render_markdown(session, main, output_dir=output_dir)
+    earlier = [(part, render_markdown(session, part, output_dir=output_dir)) for part in session.parts[:-1]]
+    stats = compute_stats(main, markdown, [text for _, text in earlier])
 
     # The stats table is a human aid, so it goes to stderr in both modes: stdout is
     # either the markdown or the output path, and callers parse it as such.
     error_console = Console(stderr=True, highlight=False)
 
+    if earlier or not stdout:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    for part, text in earlier:
+        (output_dir / session.part_file_name(part)).write_text(text, encoding="utf-8")
+
     if stdout:
         sys.stdout.write(markdown)
+        if earlier:
+            typer.echo(f"Pre-compact parts written to {output_dir}", err=True)
         error_console.print(_stats_table(stats))
         return
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = (output_dir / f"{session.session_id}.md").resolve()
+    out_path = output_dir / session.part_file_name(main)
     out_path.write_text(markdown, encoding="utf-8")
     typer.echo(str(out_path))
     error_console.print(_stats_table(stats))

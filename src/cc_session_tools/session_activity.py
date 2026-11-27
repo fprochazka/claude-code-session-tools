@@ -18,7 +18,7 @@ import math
 import multiprocessing
 import os
 from collections import Counter
-from collections.abc import Generator, Iterator, Sequence
+from collections.abc import Generator, Iterable, Iterator, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -50,6 +50,8 @@ class SessionActivity:
     """The main agent's compactions."""
     kind: str
     kind_source: str
+    subagent_compactions: int = 0
+    """The subagents' compactions, counted apart from :attr:`compactions`."""
 
 
 def active_upper_bound(transcript: SessionTranscript) -> float:
@@ -97,7 +99,16 @@ def scan(transcript: SessionTranscript) -> SessionActivity:
             steps.append(step)
     steps = sort_steps(steps)
     turns, _interruptions = turns_of(steps)
-    bursts = [b for sub in subagents for b in activity_bursts(_entries(sub.path))]
+    subagent_compactions = 0
+
+    def counted(entries: Iterable[Entry]) -> Iterator[Entry]:
+        nonlocal subagent_compactions
+        for entry in entries:
+            if isinstance(entry, SystemEntry) and entry.subtype == "compact_boundary" and entry.timestamp is not None:
+                subagent_compactions += 1
+            yield entry
+
+    bursts = [b for sub in subagents for b in activity_bursts(counted(_entries(sub.path)))]
     wall = wall_of(steps, turns, bursts)
     kind, kind_source = session_kind(
         [start.role for start in transcript.profile_starts()], Counter(t.trigger for t in turns)
@@ -108,6 +119,7 @@ def scan(transcript: SessionTranscript) -> SessionActivity:
         active=active_of(turns, bursts),
         subagents=len(subagents),
         compactions=compactions,
+        subagent_compactions=subagent_compactions,
         kind=kind,
         kind_source=kind_source,
     )

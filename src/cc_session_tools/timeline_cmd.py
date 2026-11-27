@@ -32,6 +32,7 @@ from .session_time import (
     Stall,
     Subagent,
     TimedCall,
+    Totals,
     Turn,
     analyze,
     clip,
@@ -267,6 +268,17 @@ def _subagent_line(st: SessionTime, sub: Subagent, indent: str = "    └ ") -> 
     )
 
 
+def _compaction_counts(t: Totals) -> str:
+    """``38 main (21 manual, 17 auto) · 14 in 13 subagents``: the main agent's first, the subagents' beside them."""
+    kinds = ", ".join(
+        f"{n} {kind}" for kind, n in (("manual", t.compactions_manual), ("auto", t.compactions_auto)) if n
+    )
+    text = f"{t.compactions} main" + (f" ({kinds})" if kinds else "")
+    if t.subagent_compactions:
+        text += f" · {t.subagent_compactions} in {count(t.subagents_compacted, 'subagent')}"
+    return text
+
+
 def _moved_note(st: SessionTime) -> str:
     """`` · ↷ N Bash calls moved to the background, ran X`` when Claude Code moved any; empty otherwise."""
     moved = [c for c in _all_calls(st) if c.auto_backgrounded]
@@ -297,7 +309,6 @@ def _header(st: SessionTime, title: str | None) -> list[str]:
     idle = " · ".join(f"{k} {span(v)}" for k, v in sorted(t.idle_by_trigger.items(), key=lambda kv: -kv[1]))
     suspects, busy_in, active_in = _suspect_busy(st)
     api_errors = t.api_errors + sum(len(s.lane.api_errors) for s in st.subagents)
-    main_compactions = [c for c in st.compactions if c.lane == "main"]
     elapsed, lane_time = subagent_active(st)
     lanes = f" (lane time {span(lane_time)})" if span(lane_time) != span(elapsed) else ""
     lines = [
@@ -320,7 +331,7 @@ def _header(st: SessionTime, title: str | None) -> list[str]:
         f" · subagent model {span(sum(sub_model)) if sub_model else 'n/a'} · tokens main {tokens(st.main.tokens_total)}"
         f" / subagents {tokens(sum(s.lane.tokens_total for s in st.subagents))} (with cache reads; new"
         f" {tokens(st.main.tokens_new + sum(s.lane.tokens_new for s in st.subagents))})",
-        f"- compactions {len(main_compactions)} · API errors {api_errors} · interruptions {t.interruptions}"
+        f"- compactions {_compaction_counts(t)} · API errors {api_errors} · interruptions {t.interruptions}"
         f" · results held behind a subagent {t.batched_calls}" + _moved_note(st),
     ]
     if t.stalls or t.subagents_died_context_full:
@@ -792,6 +803,11 @@ def session_json(st: SessionTime, grouper: BashGrouper, window: Interval | None 
             "batched_calls": t.batched_calls,
             "interruptions": t.interruptions,
             "api_errors": t.api_errors,
+            "compactions": t.compactions,
+            "compactions_manual": t.compactions_manual,
+            "compactions_auto": t.compactions_auto,
+            "subagent_compactions": t.subagent_compactions,
+            "subagents_compacted": t.subagents_compacted,
             "stalled": t.stalled,
             "stalls": t.stalls,
             "context_full_errors": t.context_full_errors,

@@ -262,6 +262,35 @@ def test_a_bash_call_moved_to_the_background_shows_its_runtime(tmp_path: Path, i
     assert "· ↷ 1 Bash call moved to the background, ran 15m\n" in text
 
 
+def test_compactions_count_the_main_agents_with_the_subagents_beside_them(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    sub = tx.request(1).agent(2, "a1", description="run: tests", background=True)
+    tx.agent_returned(3, sub)
+    sub.request(4).text(10)
+    sub.compaction(20)
+    sub.request(21).text(30)
+    tx.turn_end(40)
+    tx.local_command(100)
+    tx.compaction(100, trigger="manual", duration_ms=20)
+    tx.prompt(200)
+    tx.request(201).text(205)
+    tx.compaction(206)
+    tx.request(267).text(270)
+    tx.turn_end(271)
+    out = lines_of(tx, tmp_path)
+    assert any(
+        line.startswith("- compactions 2 main (1 manual, 1 auto) · 1 in 1 subagent · API errors") for line in out
+    )
+    data = json.loads(invoke(tx, tmp_path / "json", "--json").stdout)
+    t = data["totals"]
+    assert {k: t[k] for k in ("compactions", "compactions_manual", "compactions_auto")} == {
+        "compactions": 2, "compactions_manual": 1, "compactions_auto": 1,
+    }  # fmt: skip
+    assert (t["subagent_compactions"], t["subagents_compacted"]) == (1, 1)
+    assert len(data["compactions"]) == 3  # the list has every lane
+
+
 def test_the_json_of_a_window_keeps_only_its_records(tmp_path: Path, isolated_home: Path) -> None:
     data = json.loads(invoke(session(), tmp_path, "--json", "--from", "09:08", "--to", "09:12").stdout)
     assert [t["index"] for t in data["turns"]] == [1, 2, 3]

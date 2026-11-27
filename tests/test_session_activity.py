@@ -142,6 +142,26 @@ def test_durations_add_the_columns(projects: Path) -> None:
     assert "3h00m" in table and "interactive" in table
 
 
+def test_durations_show_the_subagents_compactions_beside_the_main_agents(
+    projects: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tx = Transcript(session_id=sid("compacted"))
+    tx.prompt(10 * HOUR)
+    sub = tx.request(10 * HOUR + 1).agent(10 * HOUR + 2, "a1", description="run: tests", background=True)
+    tx.agent_returned(10 * HOUR + 3, sub)
+    sub.request(10 * HOUR + 4).text(10 * HOUR + 10)
+    sub.compaction(10 * HOUR + 20)
+    sub.request(10 * HOUR + 21).text(10 * HOUR + 30)
+    tx.compaction(10 * HOUR + 40)
+    tx.compaction(10 * HOUR + 140)
+    tx.request(10 * HOUR + 201).text(10 * HOUR + 205)
+    tx.turn_end(10 * HOUR + 206)
+    tx.write(projects)
+    row = next(r for r in search_json("--durations") if r["session_id"] == sid("compacted"))
+    assert (row["compactions"], row["subagent_compactions"]) == (2, 1)
+    assert "2 (+1)" in runner.invoke(app, ["search", "--durations"]).output
+
+
 def test_min_active_keeps_sessions_active_long_enough_and_reads_only_those_that_can_be(
     projects: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

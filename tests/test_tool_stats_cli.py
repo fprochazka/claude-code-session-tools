@@ -320,6 +320,7 @@ def test_many_sessions_add_up(tmp_path: Path, isolated_home: Path) -> None:
     row = data["sessions"][2]
     assert (row["top_group"], row["top_group_wall"], row["suspect_wait_wall"]) == ("wait", 180.0, 0.0)
     assert set(row) >= {"session_id", "kind", "active", "main_busy", "top_group", "suspect_wait_wall"}
+    assert (row["compactions"], row["subagent_compactions"]) == (0, 0)
     poll = next(r for r in data["repeated"] if r["command"] == "sleep N; pgrep -af gradle")
     assert (poll["n"], poll["sessions"], poll["total"]) == (6, 3, 360.0)
     assert data["by_kind"]["interactive"]["sessions"] == 2 and data["by_kind"]["worker"]["bash_groups"]["wait"] == 180

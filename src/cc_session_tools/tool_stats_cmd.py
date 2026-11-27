@@ -438,6 +438,8 @@ class ToolStats:
                 "suspect_wait_wall": totals["suspect_wait_wall"],
                 "user_wait_wall": totals["user_wait_wall"],
                 "stalled": st.totals.stalled,
+                "compactions": st.totals.compactions,
+                "subagent_compactions": st.totals.subagent_compactions,
                 "subagents": len(st.subagents),
                 "bash_groups": dict(group_walls),
             }

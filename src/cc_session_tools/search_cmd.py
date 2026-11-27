@@ -205,7 +205,10 @@ def search(
 def _duration_cells(activity: SessionActivity) -> list[str]:
     """The cells of :data:`DURATION_HEADERS` for one session."""
     wall, active = span(activity.wall), span(activity.active)
-    return [wall, active, str(activity.subagents), str(activity.compactions), activity.kind]
+    compactions = str(activity.compactions)
+    if activity.subagent_compactions:
+        compactions += f" (+{activity.subagent_compactions})"  # the subagents', never added to the main agent's
+    return [wall, active, str(activity.subagents), compactions, activity.kind]
 
 
 def _width(header: str, cells: list[str]) -> int:
@@ -251,6 +254,7 @@ def _row_json(row: SessionRow, activity: SessionActivity | None = None) -> dict[
             "active": activity.active,
             "subagents": activity.subagents,
             "compactions": activity.compactions,
+            "subagent_compactions": activity.subagent_compactions,
             "kind": activity.kind,
             "kind_source": activity.kind_source,
         }

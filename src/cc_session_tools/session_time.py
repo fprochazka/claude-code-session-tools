@@ -489,6 +489,14 @@ class Totals:
     """``Prompt is too long`` errors of the main agent and the subagents."""
     subagents_died_context_full: int = 0
     """Subagents whose last stall never ended: they stopped on a full context."""
+    compactions: int = 0
+    """The main agent's compactions: they reset the session's own context. A subagent's are counted apart."""
+    compactions_manual: int = 0
+    compactions_auto: int = 0
+    subagent_compactions: int = 0
+    """The subagents' compactions, never added to :attr:`compactions`."""
+    subagents_compacted: int = 0
+    """How many subagents compacted at least once."""
 
 
 @dataclass
@@ -1303,6 +1311,7 @@ def _totals(
         else:
             idle_by_trigger[gap.ended_by] = idle_by_trigger.get(gap.ended_by, 0.0) + gap.unstalled_seconds
             idle_background += gap.background_seconds
+    main_compactions = [c for c in compaction_events if c.lane == "main"]
     busy = [Interval(t.start, t.end) for t in turns]
     stalled = union(busy + [Interval(s.start, s.end) for s in main.stalls]) - union(busy)
     lanes = [main, *(s.lane for s in subagents)]
@@ -1334,6 +1343,11 @@ def _totals(
         subagents_died_context_full=sum(
             1 for s in subagents if s.lane.stalls and s.lane.stalls[-1].ended_by == "never"
         ),
+        compactions=len(main_compactions),
+        compactions_manual=sum(1 for c in main_compactions if c.trigger == "manual"),
+        compactions_auto=sum(1 for c in main_compactions if c.trigger == "auto"),
+        subagent_compactions=len(compaction_events) - len(main_compactions),
+        subagents_compacted=sum(1 for s in subagents if s.compactions),
     )
 
 

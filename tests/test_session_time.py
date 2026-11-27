@@ -30,7 +30,8 @@ def run(tx: Transcript, tmp_path: Path) -> SessionTime:
     assert (activity.active, activity.wall) == (st.totals.active, st.totals.wall)
     assert (activity.kind, activity.kind_source) == (st.kind, st.kind_source)
     assert activity.subagents == len(st.subagents)
-    assert activity.compactions == sum(1 for c in st.compactions if c.lane == "main")
+    assert activity.compactions == sum(1 for c in st.compactions if c.lane == "main") == st.totals.compactions
+    assert activity.subagent_compactions == st.totals.subagent_compactions
     return st
 
 
@@ -1008,6 +1009,32 @@ def test_an_explicit_background_bash_call_runs_until_its_notice_and_is_not_moved
     c = call(st, launched)
     assert (c.background, c.auto_backgrounded, c.moved_after, c.wall, c.run_wall) == (True, False, None, 1, 300)
     assert c.finish_status == "failed" and st.totals.tools == 1
+
+
+def compacted_session() -> Transcript:
+    """Two compactions of the main agent, one manual and one auto, and one of a subagent."""
+    tx = Transcript()
+    tx.prompt(0)
+    sub = tx.request(1).agent(2, "a1", description="run: tests", background=True)
+    tx.agent_returned(3, sub)
+    sub.request(4).text(10)
+    sub.compaction(20)
+    sub.request(21).text(30)
+    tx.turn_end(40)
+    tx.local_command(100)
+    tx.compaction(100, trigger="manual", duration_ms=20)
+    tx.prompt(200)
+    tx.request(201).text(205)
+    tx.compaction(206)
+    tx.request(267).text(270)
+    tx.turn_end(271)
+    return tx
+
+
+def test_the_main_agents_compactions_and_the_subagents_are_counted_apart(tmp_path: Path) -> None:
+    t = run(compacted_session(), tmp_path).totals
+    assert (t.compactions, t.compactions_manual, t.compactions_auto) == (2, 1, 1)
+    assert (t.subagent_compactions, t.subagents_compacted) == (1, 1)
 
 
 def test_busy_gaps_and_the_edges_add_up_to_the_wall(tmp_path: Path) -> None:

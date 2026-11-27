@@ -196,6 +196,7 @@ How the numbers are made, and where they can mislead:
 cc-session-tools tool-stats latest                 # where the newest session of this repo spent its tool time
 cc-session-tools tool-stats <session-id> --top 20  # list 20 slowest calls and repeated commands
 cc-session-tools tool-stats <session-id> --json    # every section as data, unrounded
+cc-session-tools tool-stats --sessions-from ids.txt  # added up over many sessions, one id or .jsonl path per line
 ```
 
 The target is resolved as for `timeline`. The markdown goes to stdout, errors to stderr; exit code `1` when the target or the Bash groups file can't be read, `2` for a usage error such as `--top 0`. Commands are redacted as in `timeline`.
@@ -228,11 +229,19 @@ my-deploy = "cloud"
 | `totals` | `calls`, `main_calls`, `subagent_calls`, `tool_wall` (non-Agent calls without a user wait), `user_wait_calls`, `user_wait_wall`, `main_busy`, `batched_calls`, `background_bash`, `suspect_waits`, `suspect_wait_wall`, `subagents`, `subagents_elapsed` |
 | `tools[]` | `tool`, `n`, `total`, `median`, `max`, `share` (`null` for Agent), `main`, `subagents_by_type` |
 | `bash_groups[]` | `group`, `n`, `total`, `median`, `max`, `share` (of all Bash wall), `main`, `subagents`, `programs`, `waits_on_other_builds`, `waits_on_other_builds_wall` |
-| `slowest[]` | `tool`, `lane`, `lane_type`, `start`, `wall`, `suspect_wait`, `bash_group`, `command` (200 characters), `similar` |
-| `repeated[]` | `command` (normalized, 200 characters), `n`, `total`, `median`, `max`, `bash_group`, `lanes_by_type` |
-| `permissions` | `recorded`, `decisions`, `user_answered`, `user_wait`, `user_waits[]` (`tool`, `lane`, `start`, `wall`, `decision`), `denials` |
+| `slowest[]` | `session_id`, `tool`, `lane`, `lane_type`, `start`, `wall`, `suspect_wait`, `bash_group`, `command` (200 characters), `similar` |
+| `repeated[]` | `command` (normalized, 200 characters), `n`, `total`, `median`, `max`, `sessions` (how many ran it), `bash_group`, `lanes_by_type` |
+| `permissions` | `recorded` (every session recorded decisions), `sessions_without_decisions`, `decisions`, `user_answered`, `user_wait`, `user_waits[]` (`session_id`, `tool`, `lane`, `start`, `wall`, `decision`), `denials` |
 | `subagent_roles[]` | `role`, `guessed`, `type`, `nested`, `n`, `active`, `median`, `max`, `rounds`, `tokens_total`, `tokens_new`, `first_context_median`, `models` |
 | `nested_by_parent_role[]` | `parent_role`, `n`, `active` (lane time), `elapsed` (union), `tokens_total`, `by_type` |
+
+**Many sessions.** `--sessions-from FILE` adds the sections up over the sessions FILE lists, one session id or `.jsonl` path per line; blank lines and `#` comments are skipped, and `-` reads the list from stdin. It takes no TARGET. Each session is analysed in a child process of its own, one after another, and only its sums come back, so the run needs the memory of the largest session, not of all of them: a large session can take a few GB while it is analysed. A session that can't be resolved or read is reported on stderr, listed under `skipped` and left out; the run goes on. Each session's text is redacted with its own repo. The markdown starts with a row per session, by active time (kind, active, main busy, tool wall, the Bash group with the most wall, suspected waits, user waits), and the totals per session kind, then the sections as for one session: repeated commands give the number of sessions that ran them, slowest calls name their session, and the subagents' elapsed time is each session's union, added up. The JSON adds three keys to the single-session shape and drops `session_id`:
+
+| Key | Holds |
+|---|---|
+| `sessions[]` | `session_id`, `title` (60 characters), `kind`, `start`, `wall`, `active`, `main_busy`, `tool_wall`, `top_group`, `top_group_wall`, `suspect_wait_wall`, `user_wait_wall`, `subagents` |
+| `by_kind` | per kind: `sessions`, `wall`, `active`, `main_busy`, `tool_wall`, `suspect_wait_wall`, `user_wait_wall`, `subagents`, `bash_groups` (group → wall) |
+| `skipped[]` | `target`, `error` |
 
 ### list-active
 

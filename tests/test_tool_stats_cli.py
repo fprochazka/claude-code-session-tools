@@ -11,6 +11,7 @@ from transcripts import Transcript, permission
 from typer.testing import CliRunner
 
 from cc_session_tools.cli import app
+from cc_session_tools.tool_stats_cmd import tool_stats_many
 
 runner = CliRunner()
 HOUR = 3600
@@ -72,7 +73,8 @@ def test_the_json_has_every_section(tmp_path: Path, isolated_home: Path) -> None
     assert [r["n"] for r in data["repeated"]] == [2, 3]  # by total wall
     assert data["repeated"][1] == {
         "command": "sleep N; pgrep -af gradle # run N",
-        "n": 3, "total": 180.0, "median": 60.0, "max": 60.0, "bash_group": "wait", "lanes_by_type": {"main": 3},
+        "n": 3, "total": 180.0, "median": 60.0, "max": 60.0, "sessions": 1, "bash_group": "wait",
+        "lanes_by_type": {"main": 3},
     }  # fmt: skip
     p = data["permissions"]
     assert p["decisions"] == {"hook": 3, "none": 3, "config": 2, "user_temporary": 1, "user_reject": 1}
@@ -179,3 +181,91 @@ def test_an_old_transcript_says_permission_decisions_were_not_recorded(tmp_path:
     tx.turn_end(10)
     text = invoke(tx, tmp_path).stdout
     assert "not recorded: this Claude Code version wrote no permission decisions" in text
+
+
+def many(tmp_path: Path) -> tuple[list[str], list[Path]]:
+    """Two sessions in different repos that both run the same poll, and a third that is a worker by its start log."""
+    paths = []
+    for n, cwd in enumerate(("/home/user/projects/one", "/home/user/projects/two", "/home/user/projects/three")):
+        tx = Transcript(session_id=f"0000000{n}-0000-4000-8000-000000000000", cwd=cwd)
+        tx.prompt(0)
+        bash(tx, 1, f"cat {cwd}/README.md", 2)
+        for k in range(n + 1):
+            bash(tx, 10 + k * 100, "sleep 60; pgrep -af gradle", 60)
+        tx.turn_end(500)
+        if n == 2:
+            tx.log_start(tmp_path / "projects", 0, role="worker")
+        paths.append(tx.write(tmp_path / "projects"))
+    return [str(p) for p in paths], paths
+
+
+def test_many_sessions_add_up(tmp_path: Path, isolated_home: Path) -> None:
+    targets, _ = many(tmp_path)
+    listing = tmp_path / "sessions.txt"
+    listing.write_text("# long sessions\n" + "\n".join(targets) + "\n\n", encoding="utf-8")
+    result = runner.invoke(app, ["tool-stats", "--sessions-from", str(listing), "--json"])
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert {"sessions", "by_kind", "skipped", "totals", "repeated", "subagent_roles"} <= set(data)
+    assert [r["kind"] for r in data["sessions"]] == ["interactive", "interactive", "worker"]
+    row = data["sessions"][2]
+    assert (row["top_group"], row["top_group_wall"], row["suspect_wait_wall"]) == ("wait", 180.0, 0.0)
+    assert set(row) >= {"session_id", "kind", "active", "main_busy", "top_group", "suspect_wait_wall"}
+    poll = next(r for r in data["repeated"] if r["command"] == "sleep N; pgrep -af gradle")
+    assert (poll["n"], poll["sessions"], poll["total"]) == (6, 3, 360.0)
+    assert data["by_kind"]["interactive"]["sessions"] == 2 and data["by_kind"]["worker"]["bash_groups"]["wait"] == 180
+    assert data["totals"]["calls"] == 9 and isinstance(data["totals"]["calls"], int)
+    commands = {r["command"] for r in data["slowest"]}
+    assert "cat <repo>/README.md" in commands and not any("/home/" in c for c in commands)  # each in its own repo
+
+
+def test_a_session_that_fails_is_skipped(tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cc_session_tools.session_time import analyze
+
+    targets, _ = many(tmp_path)
+
+    def failing(transcript: Any) -> Any:
+        if transcript.session_id.startswith("00000001"):
+            raise ValueError("the transcript of /home/user/projects/two is broken")
+        return analyze(transcript)
+
+    monkeypatch.setattr("cc_session_tools.tool_stats_cmd.analyze", failing)
+    listing = [targets[0], "00000000-dead-4000-8000-000000000000", targets[1], targets[2]]
+    data = tool_stats_many(listing, isolate=False)  # in this process, so the patch applies
+    assert [s["session_id"][:8] for s in data["sessions"]] == ["00000000", "00000002"]
+    assert data["skipped"] == [
+        {"target": "00000000-dead-4000-8000-000000000000", "error": "LookupError: could not resolve the session"},
+        {"target": targets[1].replace("-home-user", "~"),
+         "error": "ValueError: the transcript of ~/projects/two is broken"},
+    ]  # fmt: skip
+
+
+def test_a_session_that_fails_in_its_child_process_is_skipped(tmp_path: Path, isolated_home: Path) -> None:
+    targets, _ = many(tmp_path)
+    listing = "\n".join([targets[0], "00000000-dead-4000-8000-000000000000", targets[2]])
+    result = runner.invoke(app, ["tool-stats", "--sessions-from", "-", "--json"], input=listing)
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert [s["session_id"][:8] for s in data["sessions"]] == ["00000000", "00000002"]
+    assert "Warning: skipped 00000000-dead-4000-8000-000000000000: LookupError" in result.stderr
+
+
+def test_many_sessions_in_markdown(tmp_path: Path, isolated_home: Path) -> None:
+    targets, _ = many(tmp_path)
+    result = runner.invoke(app, ["tool-stats", "--sessions-from", "-"], input="\n".join(targets))
+    out = result.stdout.splitlines()
+    assert out[0] == "# Tool stats over 3 sessions"
+    assert "## Sessions, by active time" in out and "## By session kind" in out
+    assert any(line.startswith("| 00000002 | 2026-11-02 | worker |") and "| wait 3m00s |" in line for line in out)
+    assert any(line.startswith("- ×6 in 3 sessions total 6m00s (max 1m00s) [wait]") for line in out)
+    assert any(line.startswith("- 1m00s 0000000") for line in out)  # the slowest calls name their session
+    assert "not recorded: this Claude Code version wrote no permission decisions, so only dialogs count below" in out
+
+
+def test_a_target_and_a_list_exclude_each_other(tmp_path: Path, isolated_home: Path) -> None:
+    targets, _ = many(tmp_path)
+    assert runner.invoke(app, ["tool-stats"]).exit_code == 1
+    result = runner.invoke(app, ["tool-stats", targets[0], "--sessions-from", "-"], input="")
+    assert result.exit_code == 1 and "either a TARGET or --sessions-from" in result.output
+    result = runner.invoke(app, ["tool-stats", "--sessions-from", str(tmp_path / "missing.txt")])
+    assert result.exit_code == 1 and "--sessions-from" in result.output

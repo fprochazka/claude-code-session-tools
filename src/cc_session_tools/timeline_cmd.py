@@ -29,6 +29,7 @@ from .session_time import (
     CompactionEvent,
     Interval,
     SessionTime,
+    Stall,
     Subagent,
     TimedCall,
     Turn,
@@ -130,6 +131,14 @@ def timeline(
                 st, transcript.title, grouper, max_lines=max_lines, merge_gap=merge_gap, window=window
             )
     sys.stdout.write(output)
+
+
+def _stall_line(stall: Stall) -> str:
+    ended = {"compaction": " → compaction", "activity": " → answered again"}.get(stall.ended_by, ", never recovered")
+    return (
+        f"{_hm(stall.start)}-{_hm(stall.end)} ✖ context full: {count(stall.refused, 'prompt')} refused,"
+        f" stalled {span(stall.seconds)}{ended}"
+    )
 
 
 def _api_error(e: ApiError) -> str:
@@ -254,7 +263,12 @@ def _subagent_line(st: SessionTime, sub: Subagent, indent: str = "    └ ") -> 
     return (
         f"{indent}{_shape(sub)} {kind} {_model(sub)} {_role(sub)} {when} {span(sub.active)}{bursts}{rounds}"
         f' {tokens(sub.lane.tokens_total)} tok "{description}"{fold}'
+        + (" ✖ context full" if _died_context_full(sub) else "")
     )
+
+
+def _died_context_full(sub: Subagent) -> bool:
+    return bool(sub.lane.stalls) and sub.lane.stalls[-1].ended_by == "never"
 
 
 def _prompt_label(turn: Turn) -> str:
@@ -301,6 +315,12 @@ def _header(st: SessionTime, title: str | None) -> list[str]:
         f"- compactions {len(main_compactions)} · API errors {api_errors} · interruptions {t.interruptions}"
         f" · results held behind a subagent {t.batched_calls}",
     ]
+    if t.stalls or t.subagents_died_context_full:
+        died = t.subagents_died_context_full
+        lines.append(
+            f"- ✖ stalls {t.stalls} ({span(t.stalled)}, context full: {count(t.context_full_errors, 'prompt')} refused)"
+            + (f" · {count(died, 'subagent')} stopped on a full context" if died else "")
+        )
     if suspects:
         lines.append(
             f"- ⌛ {suspects} calls over {int(SUSPECT_WAIT.total_seconds() // 3600)} h, suspected waits: main busy"
@@ -311,7 +331,7 @@ def _header(st: SessionTime, title: str | None) -> list[str]:
         "Legend: `T` turn (trigger: human/peer/handback/task-notification/cron/sdk/other) · `└ fg|bg type model [role]"
         ' span active tokens "description"` subagent launched in that turn (`?` after a guessed role) · `…` idle ·'
         " `⏸` waiting on the user inside a turn · `⌛` a call over 1 h, suspected wait · `≡` compaction (segment) ·"
-        " `!` interruption or API error · `⋯` merged short turns and gaps.",
+        " `!` interruption or API error · `✖` stalled on a full context · `⋯` merged short turns and gaps.",
         "",
     ]
     return lines
@@ -340,7 +360,8 @@ def _items(st: SessionTime, window: Interval | None) -> list[_Item]:
     items = [_Item(t.start, 1, "turn", t) for t in st.turns]
     items += [_Item(g.start, 0, "gap", g) for g in st.gaps]
     items += [_Item(c.time, 2, "compaction", c) for c in st.compactions if c.lane == "main"]
-    items += [_Item(e.time, 2, "api-error", e) for e in st.main.api_errors]
+    items += [_Item(e.time, 2, "api-error", e) for e in st.main.api_errors if not e.context_full]
+    items += [_Item(s.start, 2, "stall", s) for s in st.main.stalls]  # in place of its context-full errors
     if window is not None:
         items = [i for i in items if window.start <= i.time <= window.end]
     return sorted(items, key=lambda i: (i.time, i.order))
@@ -429,15 +450,19 @@ def _render_items(
             out += _subagent_lines(st, launched)
         elif item.kind == "gap":
             g = item.value
-            if g.seconds < gap_limit and not g.away:
-                add(g.start, g.end, idle=g.seconds)
+            # A stall in the gap has a line of its own; the gap shows the rest.
+            if g.unstalled_seconds < gap_limit and not g.away:
+                add(g.start, g.end, idle=g.unstalled_seconds)
                 continue
             flush()
+            besides = " besides the stall" if g.stalled_seconds else ""
             if g.away:
-                out.append(f"{_hm(g.start)}-{_hm(g.end)} … away {span(g.seconds)} → {g.ended_by}")
+                out.append(f"{_hm(g.start)}-{_hm(g.end)} … away {span(g.unstalled_seconds)}{besides} → {g.ended_by}")
             else:
                 busy = f" (subagents active {span(g.background_seconds)})" if g.background_seconds > 30 else ""
-                out.append(f"{_hm(g.start)}-{_hm(g.end)} … idle {span(g.seconds)} → {g.ended_by}{busy}")
+                out.append(
+                    f"{_hm(g.start)}-{_hm(g.end)} … idle {span(g.unstalled_seconds)}{besides} → {g.ended_by}{busy}"
+                )
         elif item.kind == "compaction":
             c = item.value
             if compact and _in_background(c):
@@ -452,6 +477,9 @@ def _render_items(
                 f"{_hm(c.time)} ≡ compaction {c.trigger or '?'} {took}"
                 f" {tokens(c.pre_tokens or 0)}→{tokens(c.post_tokens or 0)}, segment {c.segment}"
             )
+        elif item.kind == "stall":
+            flush()
+            out.append(_stall_line(item.value))
         else:
             flush()
             e = item.value
@@ -709,6 +737,7 @@ def _subagent_fields(sub: Subagent) -> dict[str, Any]:
         "tokens_new": sub.lane.tokens_new,
         "first_context": sub.lane.first_context,
         "api_errors": len(sub.lane.api_errors),
+        "died_context_full": _died_context_full(sub),
     }
 
 
@@ -747,6 +776,10 @@ def session_json(st: SessionTime, grouper: BashGrouper, window: Interval | None 
             "batched_calls": t.batched_calls,
             "interruptions": t.interruptions,
             "api_errors": t.api_errors,
+            "stalled": t.stalled,
+            "stalls": t.stalls,
+            "context_full_errors": t.context_full_errors,
+            "subagents_died_context_full": t.subagents_died_context_full,
             "suspect_waits": suspects,
             "suspect_wait_main_busy": busy_in,
             "suspect_wait_subagent_active": active_in,
@@ -784,6 +817,7 @@ def session_json(st: SessionTime, grouper: BashGrouper, window: Interval | None 
                 "seconds": g.seconds,
                 "ended_by": g.ended_by,
                 "background_seconds": g.background_seconds,
+                "stalled_seconds": g.stalled_seconds,
                 "away": g.away,
             }
             for g in st.gaps
@@ -804,6 +838,18 @@ def session_json(st: SessionTime, grouper: BashGrouper, window: Interval | None 
             }
             for c in st.compactions
             if inside(c.time)
+        ],
+        "stalls": [
+            {
+                "lane": stall.lane,
+                "start": _iso(stall.start),
+                "end": _iso(stall.end),
+                "seconds": stall.seconds,
+                "refused": stall.refused,
+                "ended_by": stall.ended_by,
+            }
+            for stall in [*st.main.stalls, *(x for s in st.subagents for x in s.lane.stalls)]
+            if inside(stall.start)
         ],
         "api_errors": [
             {

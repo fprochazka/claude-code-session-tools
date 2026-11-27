@@ -265,12 +265,13 @@ class _Nested:
 _TOTALS = (
     "calls", "main_calls", "subagent_calls", "tool_wall", "user_wait_calls", "user_wait_wall", "main_busy",
     "batched_calls", "background_bash", "suspect_waits", "suspect_wait_wall", "subagents", "subagents_elapsed",
+    "stalls", "stalled", "context_full_errors",
 )  # fmt: skip
 
 
 _COUNTS = frozenset(
     ("calls", "main_calls", "subagent_calls", "user_wait_calls", "batched_calls", "background_bash", "suspect_waits",
-     "subagents")
+     "subagents", "stalls", "context_full_errors")
 )  # fmt: skip
 
 
@@ -336,6 +337,9 @@ class ToolStats:
             "suspect_wait_wall": sum(c.call.wall for c in suspects),
             "subagents": len(st.subagents),
             "subagents_elapsed": union(b for s in st.subagents for b in s.bursts),
+            "stalls": st.totals.stalls,
+            "stalled": st.totals.stalled,
+            "context_full_errors": st.totals.context_full_errors,
         }
         for key, value in totals.items():
             self.totals[key] += value
@@ -424,6 +428,7 @@ class ToolStats:
                 "top_group_wall": top_group[1],
                 "suspect_wait_wall": totals["suspect_wait_wall"],
                 "user_wait_wall": totals["user_wait_wall"],
+                "stalled": st.totals.stalled,
                 "subagents": len(st.subagents),
                 "bash_groups": dict(group_walls),
             }
@@ -592,10 +597,12 @@ class ToolStats:
             kind = kinds.setdefault(
                 row["kind"],
                 {"sessions": 0, "wall": 0.0, "active": 0.0, "main_busy": 0.0, "tool_wall": 0.0,
-                 "suspect_wait_wall": 0.0, "user_wait_wall": 0.0, "subagents": 0, "bash_groups": Counter()},
+                 "suspect_wait_wall": 0.0, "user_wait_wall": 0.0, "stalled": 0.0, "subagents": 0,
+                 "bash_groups": Counter()},
             )  # fmt: skip
             kind["sessions"] += 1
-            for key in ("wall", "active", "main_busy", "tool_wall", "suspect_wait_wall", "user_wait_wall", "subagents"):
+            sums = ("wall", "active", "main_busy", "tool_wall", "suspect_wait_wall", "user_wait_wall", "stalled")
+            for key in (*sums, "subagents"):
                 kind[key] += row[key]
             kind["bash_groups"].update(row["bash_groups"])
         for kind in kinds.values():
@@ -647,23 +654,25 @@ def render_many(data: dict[str, Any]) -> str:
         out.append("")
     out += ["## Sessions, by active time", ""]
     out += _table(
-        ("session", "start", "kind", "active", "main busy", "tool wall", "top Bash group", "⌛ suspect", "user waits"),
-        (False, False, False, True, True, True, False, True, True),
+        ("session", "start", "kind", "active", "main busy", "tool wall", "top Bash group", "⌛ suspect", "user waits",
+         "✖ stalled"),
+        (False, False, False, True, True, True, False, True, True, True),
         (
             (s["session_id"][:8], f"{datetime.fromisoformat(s['start']).astimezone():%Y-%m-%d}", s["kind"],
              span(s["active"]), span(s["main_busy"]), span(s["tool_wall"]),
              f"{s['top_group']} {span(s['top_group_wall'])}" if s["top_group"] else "", span(s["suspect_wait_wall"]),
-             span(s["user_wait_wall"]))
+             span(s["user_wait_wall"]), span(s["stalled"]))
             for s in sorted(sessions, key=lambda s: -s["active"])
         ),
     )  # fmt: skip
     out += ["", "## By session kind", ""]
     out += _table(
-        ("kind", "sessions", "active", "main busy", "tool wall", "⌛ suspected", "user waits", "top Bash groups"),
-        (False, True, True, True, True, True, True, False),
+        ("kind", "sessions", "active", "main busy", "tool wall", "⌛ suspected", "user waits", "✖ stalled",
+         "top Bash groups"),
+        (False, True, True, True, True, True, True, True, False),
         (
             (kind, str(k["sessions"]), span(k["active"]), span(k["main_busy"]), span(k["tool_wall"]),
-             span(k["suspect_wait_wall"]), span(k["user_wait_wall"]),
+             span(k["suspect_wait_wall"]), span(k["user_wait_wall"]), span(k["stalled"]),
              ", ".join(f"{g} {span(w)}" for g, w in list(k["bash_groups"].items())[:3]))
             for kind, k in data["by_kind"].items()
         ),
@@ -686,6 +695,12 @@ def _sections(data: dict[str, Any], *, many: bool) -> list[str]:
             f"{count(t['user_wait_calls'], 'call')} waited on the user, {span(t['user_wait_wall'])} in all: a"
             " permission prompt the user answered, or a dialog. The transcript doesn't say when the answer came, so"
             " they are left out of the tool sections and shown under Permission decisions.",
+        ]
+    if t["context_full_errors"]:
+        out += [
+            "",
+            f"✖ {count(t['context_full_errors'], 'prompt')} refused on a full context (all lanes); the main agent"
+            f" stalled {count(t['stalls'], 'time')}, {span(t['stalled'])} in all.",
         ]
     if t["batched_calls"]:
         out += ["", f"{t['batched_calls']} results were held back behind a subagent; their runtime is unknown, so 0."]

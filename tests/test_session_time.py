@@ -823,6 +823,74 @@ def test_an_api_error_is_counted_and_is_not_model_time(tmp_path: Path) -> None:
     assert (st.main.api_errors[0].status, st.main.api_errors[0].message) == (429, "API Error")
 
 
+def stalled_session(*, compact: bool = True) -> Transcript:
+    """A turn, then three cron fires into a full context, then a /compact (or the model answering again)."""
+    tx = Transcript()
+    tx.prompt(0)
+    tx.request(1).text(5)
+    tx.turn_end(10)
+    for t in (100, 3700, 7300):
+        tx.scheduled(t)
+        tx.api_error(t)
+    if compact:
+        tx.local_command(9000)
+        tx.compaction(9000, trigger="manual", duration_ms=20)
+    else:
+        tx.request(9000).text(9001)
+        tx.turn_end(9005)
+    tx.prompt(9100, "Go on.")
+    tx.request(9101).text(9105)
+    tx.turn_end(9110)
+    return tx
+
+
+def test_a_full_context_is_one_stall_and_not_away(tmp_path: Path) -> None:
+    st = run(stalled_session(), tmp_path)
+    assert [(s.lane, s.refused, s.ended_by, s.seconds) for s in st.main.stalls] == [("main", 3, "compaction", 8900)]
+    t = st.totals
+    assert (t.stalls, t.stalled, t.context_full_errors, t.away) == (1, 8900, 3, 0)
+    (gap,) = st.gaps
+    assert (gap.stalled_seconds, gap.unstalled_seconds, gap.away) == (8900, 190, False)
+    assert t.idle_by_trigger == {"human": 190}
+    assert t.main_busy + t.main_idle == t.wall
+    assert t.stalled + t.away + sum(t.idle_by_trigger.values()) <= t.main_idle
+
+
+def test_a_stall_ends_when_the_model_answers_again(tmp_path: Path) -> None:
+    st = run(stalled_session(compact=False), tmp_path)
+    (stall,) = st.main.stalls
+    assert (stall.refused, stall.ended_by, stall.end) == (3, "activity", st.wall.start + timedelta(seconds=9001))
+    assert st.totals.stalled == 8901
+
+
+def test_a_subagent_that_ends_on_a_full_context_died_on_it(tmp_path: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    sub = tx.request(1).agent(2, "a1", description="watch: MR 12", background=True)
+    tx.agent_returned(3, sub)
+    tx.turn_end(4)
+    sub.request(5).text(10)
+    sub.api_error(600)
+    sub.api_error(1200)
+    st = run(tx, tmp_path)
+    (stall,) = st.subagents[0].lane.stalls
+    assert (stall.lane, stall.refused, stall.ended_by, stall.seconds) == ("a1", 2, "never", 600)
+    t = st.totals
+    assert (t.subagents_died_context_full, t.context_full_errors, t.stalls, t.stalled) == (1, 2, 0, 0)
+
+
+def test_another_api_error_is_not_a_stall(tmp_path: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    tx.request(1).text(5)
+    tx.api_error(6, "API Error: Rate limited", error="rate_limit", status=429)
+    tx.api_error(7, "Prompt is too long", error="rate_limit")
+    tx.turn_end(8)
+    st = run(tx, tmp_path)
+    assert st.main.stalls == [] and st.totals.context_full_errors == 0
+    assert [e.message for e in st.main.api_errors] == ["API Error: Rate limited", "Prompt is too long"]
+
+
 def test_busy_gaps_and_the_edges_add_up_to_the_wall(tmp_path: Path) -> None:
     tx = Transcript()
     tx.prompt(0)

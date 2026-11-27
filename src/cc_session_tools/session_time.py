@@ -211,6 +211,32 @@ class ApiError:
     message: str | None = None
     """The error's text as Claude Code showed it, such as ``Prompt is too long``: its first text block."""
 
+    @property
+    def context_full(self) -> bool:
+        """The API refused the request because the context is full: ``Prompt is too long``."""
+        return self.error == "invalid_request" and (self.message or "").startswith("Prompt is too long")
+
+
+@dataclass(frozen=True)
+class Stall:
+    """A stretch in which a lane's context was full and the API refused every prompt.
+
+    It starts at the first ``Prompt is too long`` error after the lane's last model activity, so a cron that keeps
+    firing into the full context extends one stall. It ends at the lane's next model activity or compaction,
+    whichever comes first, or at its last record when neither came."""
+
+    lane: str
+    start: datetime
+    end: datetime
+    refused: int
+    """How many requests the API refused in it."""
+    ended_by: str
+    """``compaction``, ``activity``, or ``never`` for a lane that never recovered, such as a subagent that died."""
+
+    @property
+    def seconds(self) -> float:
+        return max(0.0, (self.end - self.start).total_seconds())
+
 
 @dataclass
 class Lane:
@@ -228,6 +254,7 @@ class Lane:
     """The context of the first request: input, cache creation and cache reads."""
     model: str | None = None
     api_errors: list[ApiError] = field(default_factory=list)
+    stalls: list[Stall] = field(default_factory=list)
 
     def tool_seconds(self) -> float:
         """The union of the lane's tool calls, without Agent calls, user waits, batched calls and SubagentHandback."""
@@ -313,10 +340,18 @@ class Gap:
     background_seconds: float
     """How much of the gap subagents were active."""
     away: bool
+    """Over :data:`AWAY` without its stalls, before a human or cron prompt."""
+    stalled_seconds: float = 0.0
+    """How much of the gap the main agent was stalled on a full context, see :class:`Stall`."""
 
     @property
     def seconds(self) -> float:
         return max(0.0, (self.end - self.start).total_seconds())
+
+    @property
+    def unstalled_seconds(self) -> float:
+        """The gap without its stalls: the time that is idle, or away."""
+        return max(0.0, self.seconds - self.stalled_seconds)
 
 
 @dataclass(frozen=True)
@@ -363,6 +398,14 @@ class Totals:
     """Calls of the main agent and the subagents whose result was held back behind a foreground subagent."""
     interruptions: int
     api_errors: int
+    stalled: float = 0.0
+    """The main agent's stalls on a full context, outside its turns. Neither away nor idle by trigger."""
+    stalls: int = 0
+    """How many stalls the main agent had."""
+    context_full_errors: int = 0
+    """``Prompt is too long`` errors of the main agent and the subagents."""
+    subagents_died_context_full: int = 0
+    """Subagents whose last stall never ended: they stopped on a full context."""
 
 
 @dataclass
@@ -401,7 +444,7 @@ def analyze(transcript: SessionTranscript) -> SessionTime:
     activity = [b for s in subagents for b in s.bursts]
     wall = wall_of(steps, turns, activity) or Interval(transcript.modified_at, transcript.modified_at)
 
-    gaps = _gaps(turns, subagents)
+    gaps = _gaps(turns, subagents, main.stalls)
     compaction_events = _compactions(entries, segment_of, "main")
     for sub in subagents:
         compaction_events += sub.compactions
@@ -547,7 +590,20 @@ def _lane(entries: Sequence[Entry], lane_id: str) -> Lane:
     request_ends: dict[str, datetime] = {}
     usages: dict[str, tuple[datetime | None, Usage]] = {}
     message_of: dict[str, str] = {}  # tool_use id -> message id, for calls without a requestRef
+    stall: list[Any] | None = None  # [start, refused] of the open stall
+    last_record: datetime | None = None
+
+    def end_stall(end: datetime, ended_by: str) -> None:
+        nonlocal stall
+        if stall is not None:
+            lane.stalls.append(Stall(lane_id, stall[0], max(end, stall[0]), stall[1], ended_by))
+            stall = None
+
     for entry in entries:
+        if isinstance(entry, UserEntry | AssistantEntry) and entry.timestamp is not None:
+            last_record = max(last_record or entry.timestamp, entry.timestamp)
+        if isinstance(entry, SystemEntry) and entry.subtype == "compact_boundary" and entry.timestamp is not None:
+            end_stall(entry.timestamp, "compaction")
         if entry.type == "api-request":
             request_id = entry.raw.get("id")
             if isinstance(request_id, str) and entry.timestamp is not None:
@@ -557,7 +613,12 @@ def _lane(entries: Sequence[Entry], lane_id: str) -> Lane:
                 if entry.timestamp is not None:
                     message = next((b.text for b in entry.content if isinstance(b, TextBlock) and b.text), None)
                     error, status = _text(entry.raw.get("error")), entry.raw.get("apiErrorStatus")
-                    lane.api_errors.append(ApiError(entry.timestamp, error, status, message))
+                    api_error = ApiError(entry.timestamp, error, status, message)
+                    lane.api_errors.append(api_error)
+                    if api_error.context_full:
+                        if stall is None:
+                            stall = [entry.timestamp, 0]
+                        stall[1] += 1
                 continue
             if entry.message_id is not None:
                 for block in entry.content:
@@ -565,6 +626,8 @@ def _lane(entries: Sequence[Entry], lane_id: str) -> Lane:
                         message_of[block.id] = entry.message_id
             if entry.model is None or entry.model == "<synthetic>":
                 continue
+            if entry.timestamp is not None:
+                end_stall(entry.timestamp, "activity")
             lane.model = lane.model or entry.model
             ref = entry.raw.get("requestRef")
             if isinstance(ref, str) and entry.timestamp is not None:
@@ -574,6 +637,8 @@ def _lane(entries: Sequence[Entry], lane_id: str) -> Lane:
                 # Every block of a response repeats its usage; a later block has the final output count.
                 first_seen = usages[key][0] if key in usages else entry.timestamp
                 usages[key] = (first_seen, entry.usage)
+    if stall is not None:
+        end_stall(last_record or stall[0], "never")
     if request_starts:
         lane.model_seconds = sum(
             max(0.0, (end - request_starts[ref]).total_seconds())
@@ -1052,15 +1117,19 @@ def _attach_calls(turns: Sequence[Turn], calls: Sequence[TimedCall], subagents: 
         sub.turn = ancestor.turn if ancestor is not None else None
 
 
-def _gaps(turns: Sequence[Turn], subagents: Sequence[Subagent]) -> list[Gap]:
+def _gaps(turns: Sequence[Turn], subagents: Sequence[Subagent], stalls: Sequence[Stall] = ()) -> list[Gap]:
+    """The gaps between the main agent's turns. Its ``stalls`` are cut out of the time that can be away."""
     activity = [b for s in subagents for b in s.bursts]
+    stalled = [Interval(s.start, s.end) for s in stalls]
     gaps = []
     for previous, following in zip(turns, turns[1:], strict=False):
         window = Interval(previous.end, following.start)
         if window.seconds <= 0:
             continue
-        away = window.end - window.start > AWAY and following.trigger in ("human", "cron")
-        gaps.append(Gap(window.start, window.end, following.trigger, union(clip(activity, window)), away))
+        stalled_seconds = union(clip(stalled, window))
+        away = window.seconds - stalled_seconds > AWAY.total_seconds() and following.trigger in ("human", "cron")
+        background = union(clip(activity, window))
+        gaps.append(Gap(window.start, window.end, following.trigger, background, away, stalled_seconds))
     return gaps
 
 
@@ -1100,10 +1169,13 @@ def _totals(
     away = 0.0
     for gap in gaps:
         if gap.away:
-            away += gap.seconds
+            away += gap.unstalled_seconds
         else:
-            idle_by_trigger[gap.ended_by] = idle_by_trigger.get(gap.ended_by, 0.0) + gap.seconds
+            idle_by_trigger[gap.ended_by] = idle_by_trigger.get(gap.ended_by, 0.0) + gap.unstalled_seconds
             idle_background += gap.background_seconds
+    busy = [Interval(t.start, t.end) for t in turns]
+    stalled = union(busy + [Interval(s.start, s.end) for s in main.stalls]) - union(busy)
+    lanes = [main, *(s.lane for s in subagents)]
     finished = [c for c in main.calls if c.end is not None and not c.batched]
 
     def spans(calls: Iterable[TimedCall]) -> list[Interval]:
@@ -1123,9 +1195,15 @@ def _totals(
         compaction_waits=sum(c.wait_seconds for c in compaction_events if c.lane == "main"),
         idle_by_trigger=idle_by_trigger,
         idle_background=idle_background,
-        batched_calls=sum(1 for lane in [main, *(s.lane for s in subagents)] for c in lane.calls if c.batched),
+        batched_calls=sum(1 for lane in lanes for c in lane.calls if c.batched),
         interruptions=interruptions,
         api_errors=len(main.api_errors),
+        stalled=stalled,
+        stalls=len(main.stalls),
+        context_full_errors=sum(1 for lane in lanes for e in lane.api_errors if e.context_full),
+        subagents_died_context_full=sum(
+            1 for s in subagents if s.lane.stalls and s.lane.stalls[-1].ended_by == "never"
+        ),
     )
 
 

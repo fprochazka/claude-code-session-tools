@@ -193,6 +193,23 @@ def test_user_waits_batched_results_and_background_bash_are_kept_apart(tmp_path:
     assert "2 calls waited on the user, 14m in all" in text and "Background Bash: 1 call;" in text
 
 
+def test_a_stall_on_a_full_context_is_counted(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    bash(tx, 1, "git status", 2)
+    tx.turn_end(10)
+    for t in (HOUR, 2 * HOUR):
+        tx.scheduled(t)
+        tx.api_error(t)
+    tx.local_command(3 * HOUR)
+    tx.compaction(3 * HOUR, trigger="manual", duration_ms=20)
+    data = json.loads(invoke(tx, tmp_path, "--json").stdout)
+    t = data["totals"]
+    assert (t["stalls"], t["stalled"], t["context_full_errors"]) == (1, 2 * HOUR, 2)
+    text = invoke(tx, tmp_path / "md").stdout
+    assert "✖ 2 prompts refused on a full context (all lanes); the main agent stalled 1 time, 2h00m in all." in text
+
+
 def test_an_old_transcript_says_permission_decisions_were_not_recorded(tmp_path: Path, isolated_home: Path) -> None:
     tx = Transcript()
     tx.prompt(0)

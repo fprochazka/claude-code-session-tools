@@ -161,7 +161,8 @@ def test_the_json_has_every_turn_call_subagent_and_compaction_unmerged(tmp_path:
     data = json.loads(invoke(tx, tmp_path, "--json").stdout)
     assert set(data) == {
         "session_id", "kind", "kind_source", "start", "end", "has_permission_decisions", "window",
-        "totals", "main", "turns", "gaps", "calls", "subagents", "compactions", "api_errors",
+        "totals", "main", "turns", "gaps", "calls", "subagents", "compactions", "stalls",
+        "api_errors",
     }  # fmt: skip
     assert [t["trigger"] for t in data["turns"]] == ["human", "human", "human", "human", "cron"]
     assert data["turns"][0]["prompt"] == "Plan the change to <repo>/a.py with token=<redact…"
@@ -194,19 +195,50 @@ def test_an_api_error_shows_its_message(tmp_path: Path, isolated_home: Path) -> 
     sub.api_error(11, "API Error: Overloaded", error="overloaded", status=529)
     tx.agent_returned(12, sub)
     tx.request(13).text(20)
-    tx.turn_end(21)
+    tx.api_error(21, "API Error: Rate limited", error="rate_limit", status=429)
+    tx.turn_end(22)
     tx.scheduled(600, wakeup=False)
     tx.api_error(601)
     tx.turn_end(602)
-    text = "\n".join(lines_of(tx, tmp_path))
-    assert "09:10 ! API error invalid_request: Prompt is too long" in text
+    out = lines_of(tx, tmp_path)
+    assert "09:00 ! API error rate_limit 429: API Error: Rate limited" in out
+    assert "09:10-09:10 ✖ context full: 1 prompt refused, stalled 0s, never recovered" in out
     data = json.loads(invoke(tx, tmp_path / "json", "--json").stdout)
     assert data["api_errors"] == [
+        {"time": "2026-11-02T09:00:21+00:00", "lane": "main", "error": "rate_limit", "status": 429,
+         "message": "API Error: Rate limited"},
         {"time": "2026-11-02T09:10:01+00:00", "lane": "main", "error": "invalid_request", "status": None,
          "message": "Prompt is too long"},
         {"time": "2026-11-02T09:00:11+00:00", "lane": "a1", "error": "overloaded", "status": 529,
          "message": "API Error: Overloaded"},
     ]  # fmt: skip
+
+
+def test_a_stall_on_a_full_context_is_one_line_and_not_away(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    tx.request(1).text(5)
+    tx.turn_end(10)
+    for t in (HOUR, 2 * HOUR, 3 * HOUR):
+        tx.scheduled(t)
+        tx.api_error(t)
+    tx.local_command(4 * HOUR)
+    tx.compaction(4 * HOUR, trigger="manual", duration_ms=20)
+    tx.prompt(4 * HOUR + 60, "Go on.")
+    tx.request(4 * HOUR + 61).text(4 * HOUR + 65)
+    tx.turn_end(4 * HOUR + 70)
+    out = lines_of(tx, tmp_path)
+    assert "10:00-13:00 ✖ context full: 3 prompts refused, stalled 3h00m → compaction" in out
+    assert not any("… away" in line or "Prompt is too long" in line for line in out)
+    assert any(line.startswith("- ✖ stalls 1 (3h00m, context full: 3 prompts refused)") for line in out)
+    data = json.loads(invoke(tx, tmp_path / "json", "--json").stdout)
+    assert data["stalls"] == [
+        {"lane": "main", "start": "2026-11-02T10:00:00+00:00", "end": "2026-11-02T13:00:00+00:00",
+         "seconds": 3 * HOUR, "refused": 3, "ended_by": "compaction"},
+    ]  # fmt: skip
+    t = data["totals"]
+    assert (t["stalled"], t["stalls"], t["context_full_errors"], t["away"]) == (3 * HOUR, 1, 3, 0)
+    assert data["gaps"][0]["stalled_seconds"] == 3 * HOUR and data["gaps"][0]["away"] is False
 
 
 def test_the_json_of_a_window_keeps_only_its_records(tmp_path: Path, isolated_home: Path) -> None:

@@ -11,7 +11,7 @@ import sys
 
 import typer
 
-from . import __version__, distill_cmd, inspect_cmd, limits_cmd, list_active_cmd, search_cmd, watch_cmd
+from . import __version__, distill_cmd, inspect_cmd, limits_cmd, list_active_cmd, search_cmd, timeline_cmd, watch_cmd
 
 app = typer.Typer(
     name="cc-session-tools",
@@ -44,6 +44,7 @@ def root(
 
 app.command("search")(search_cmd.search)
 app.command("distill")(distill_cmd.distill)
+app.command("timeline")(timeline_cmd.timeline)
 app.command("list-active", context_settings={"allow_extra_args": True})(list_active_cmd.list_active)
 app.command("inspect")(inspect_cmd.inspect)
 app.command("watch")(watch_cmd.watch)

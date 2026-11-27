@@ -139,6 +139,57 @@ The stdout contract holds: without `--stdout` it is the path of the main file. W
 
 Exit code `1` when the target does not resolve or the file cannot be read.
 
+### timeline
+
+```bash
+cc-session-tools timeline latest                          # where the newest session of this repo spent its time
+cc-session-tools timeline <session-id>                    # by session id, from anywhere
+cc-session-tools timeline <session-id> --max-lines 80     # collapse more
+cc-session-tools timeline <session-id> --gap 5m           # print idle gaps from 5 minutes, merge shorter ones
+cc-session-tools timeline <session-id> --from 18:30 --to 19:00   # one stretch, every turn and gap
+cc-session-tools timeline <session-id> --subagent <agent-id>     # one subagent: its bursts, calls and children; agent-<id> works too
+cc-session-tools timeline <session-id> --json             # everything, nothing merged
+```
+
+The target is a `.jsonl` path, a session id, or `latest`, as for `distill`. The markdown goes to stdout, errors to stderr; exit code `1` when the target, a time or the Bash groups file can't be read. A subagent's own `agent-<id>.jsonl` is no target: pass its session and `--subagent`.
+
+The header gives the session's totals:
+
+- **wall** runs from the first to the last prompt, response, tool result or subagent record. Notices that Claude Code writes days later don't count.
+- **active** is the time the main agent was in a turn or a subagent was working, overlaps counted once. **away** is the idle gaps over 2 h that a human or cron prompt ended.
+- **main agent busy** is the sum of its turns, split into model time (from the `api-request` records, `n/a` before Claude Code wrote them), tool time, foreground subagents, waiting on the user (permission prompts the user answered, AskUserQuestion, ExitPlanMode) and compactions that blocked the session. The parts overlap: a call runs while the model streams the next one.
+- **idle between turns** is split by what ended the gap: `human`, `peer` (another session), `handback` (one of the session's own subagents reporting), `task-notification`, `cron`, `sdk`, `other` (model activity no recorded prompt opened). The time subagents were active during the gaps follows.
+- **subagents**: how many, top-level (foreground and background) and nested. **subagent active** is the union of their activity, as the clock ran; **lane time**, shown when it differs, adds up each subagent's own active time, in which a parent counts its wait on its nested subagents. Their model time and tokens follow.
+- **⌛ suspected waits**: a tool call over 1 h usually waited on something the transcript doesn't show, an unanswered prompt or a machine that slept. Its time still counts as busy and active; the header says how much of both lies inside such calls, so it can be discounted.
+
+Below the header, one line per turn: `HH:MM-HH:MM T <trigger> <prompt or command> <busy>: <tool mix>`, with Bash split by purpose (`Bash:test×3`, `Bash:wait`, `Bash:git`); `~/.config/cc-session-tools/bash-groups.toml` maps your own programs to a group. Under a turn: `⏸` a wait on the user, `⌛` a suspected wait, `!` an interruption, and `└` each subagent it launched: shape (`fg` or `bg`), type, model, role (`[validate]` from a description prefix such as `validate: C4`, `[validate?]` guessed from the agent type, a word naming the agent such as `implementer` or `actor`, or the description's first verb), span, active time, bursts, rounds, tokens and description. Nested subagents fold into their parent's line, and a turn that launched more than four groups them by shape, type and role. `…` lines are idle gaps, `≡` compactions with the segment they open (the numbering of `distill`'s parts), `!` API errors.
+
+Short turns without subagents or waits, and short idle gaps, merge into `⋯ N turns (…) busy …, idle …` lines. When the output is still longer than `--max-lines`, the thresholds grow; past a point compact mode starts again from the base thresholds and grows them until the output fills `--max-lines`. In compact mode short turns are left out, and a short turn prints only the subagents it launched that were active at least half the turn threshold, as `HH:MM trigger→subagent` (grouped when there are more than three). Each day header carries the day's busy time and turns, the count of compactions that ran in the background (under 1 s) with their segments, and a line with the top-level subagents launched that day: their active time by role and the most repeated descriptions, digits written as `N`. Nested subagents are only counted there, because a parent's active time already covers its wait on them. The thresholds stop growing at 6 h for turns and 24 h for gaps; a session that still doesn't fit says so in one line and suggests `--from`/`--to`. `--from`/`--to` print a stretch with nothing merged. They take `HH:MM` on the session's first day, in local time, or an ISO time.
+
+Prompt excerpts are cut to 50 characters. The session's cwd and, for a worktree, its repo print as `<repo>`, the home dir as `~`, also in the dashed form of a project dir name (`-home-user-…`), a scratchpad dir as `<scratchpad>`, other files of Claude Code's per-session temp dir (`…/claude-<uid>/<project>/<session>/`) as `<claude-tmp>/…`, host names, in URLs or not, as `<host>` (lowercase names outside a path: `example.com` with a common public domain, longer names or names after `@`, `//`, `-h`, `ssh` or before `:<port>` also with a private or newer one, so `compose.dev` or `server.app` stay), `gs://` and `s3://` buckets as `<bucket>`, long hex ids as `<hex>`, and values that look like credentials as `<redacted>`. That is a safety net for pasting the output somewhere, not a guarantee.
+
+`--json` prints one object, durations in seconds, times in ISO 8601:
+
+| Key | Holds |
+|---|---|
+| `session_id`, `kind`, `kind_source`, `start`, `end`, `has_permission_decisions`, `window` | the session; `kind` is the auth-switch start log's role (`kind_source: start-log`) or `loop`/`interactive` guessed from what opened the turns (`origins`); `window` is `--from`/`--to` or `null` |
+| `totals` | `wall`, `active`, `away`, `main_busy`, `main_idle`, `model` (`null` without api-request records), `tools`, `foreground_subagents`, `user_waits`, `compaction_waits`, `idle_by_trigger`, `idle_background`, `batched_calls`, `interruptions`, `api_errors`, `suspect_waits`, `suspect_wait_main_busy`, `suspect_wait_subagent_active` (a union over the subagents), `subagent_active` (the union of the subagents' bursts), `subagent_lane_time` (the sum over their lanes) |
+| `main` | the main agent's `model`, `model_seconds`, `requests`, `tokens_total` (with cache reads), `tokens_new` (input, cache creation, output), `first_context` |
+| `turns[]` | `index`, `start`, `end`, `seconds`, `trigger`, `prompt` (50 characters), `segment`, `ended_by_record`, `interrupted`, `subagents` |
+| `gaps[]` | `start`, `end`, `seconds`, `ended_by`, `background_seconds`, `away` |
+| `calls[]` | every tool call of the main agent and the subagents: `id`, `name`, `lane` (`main` or an agent id), `turn`, `streamed_at`, `start`, `end`, `wall`, `request_ref`, `permission_source`, `permission_decision`, `denial`, `is_error`, `batched`, `background`, `user_wait`, `suspect_wait`, `bash_group`, `command` (200 characters), `description` |
+| `subagents[]` | `agent_id`, `agent_type`, `description`, `shape`, `parent_id`, `depth`, `tool_use_id`, `turn`, `role`, `role_source`, `step`, `start`, `end`, `active`, `rounds`, `bursts`, `model`, `model_seconds`, `requests`, `tokens_total`, `tokens_new`, `first_context`, `api_errors` |
+| `compactions[]` | `time`, `lane`, `trigger`, `duration_ms`, `wait_seconds` (0 for one that ran in the background), `pre_tokens`, `post_tokens`, `segment` |
+
+With `--subagent`, the JSON is that subagent's fields plus `window`, `tools`, its `calls` and its `children`. `--from`/`--to` limit the lists to records inside the window; the totals stay the session's.
+
+How the numbers are made, and where they can mislead:
+
+- A tool call starts when its `tool_use` block streams and ends when its result is written. Calls of one response overlap, so a call's `wall` is elapsed time and the totals are unions. Bash, Edit and Write calls of one response run one after another, and each starts when the previous one ended.
+- A result written together with a long Agent call's result of the same response was likely held back until the subagent returned. Its own runtime is unknown, its `wall` is 0 and it is counted in `batched_calls`.
+- A subagent is active while its records come in less than 5 minutes apart, and while one of its own tool calls runs. A parent waiting on a nested subagent counts as active too.
+- Turns are found from the prompts, queued prompts and cron fires that open them, and end at Claude Code's turn-end record. A turn without one ends at its last activity once something new comes over 15 minutes later with no call running. A call that runs for days keeps its turn open; the `⌛` flag marks it.
+
 ### list-active
 
 ```bash
@@ -362,6 +413,8 @@ src/cc_session_tools/
 ├── cli.py             # root Typer app, --version, the error guard
 ├── search_cmd.py      # the `search` command
 ├── distill_cmd.py     # the `distill` command
+├── timeline_cmd.py    # the `timeline` command: the markdown and JSON of a session's time
+├── redact.py          # the cleanup of quoted text and the short duration and token formats of timeline and tool-stats
 ├── list_active_cmd.py # the `list-active` command
 ├── inspect_cmd.py     # the `inspect` command
 ├── inspection.py      # one session, running or ended: the lookup and its fields

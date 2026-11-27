@@ -25,6 +25,8 @@ _REAL_SETUP_ENV = (
     "CLAUDE_PID",
     "CLAUDE_CODE_SESSION_ID",
     "CLAUDE_CODE_MESSAGING_SOCKET",
+    # The user's own bash-classify command definitions, which would change how Bash commands are grouped.
+    "BASH_CLASSIFY_CONFIG_DIR",
     # The tmux server and pane the tests may run in.
     "TMUX",
     "TMUX_PANE",

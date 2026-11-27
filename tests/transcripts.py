@@ -83,6 +83,8 @@ class Request:
     message_id: str
     model: str
     usage: dict[str, Any]
+    logged: bool = True
+    """``False`` for older versions, which wrote neither the ``api-request`` record nor ``requestRef``."""
 
     def text(self, t: float, value: str = "Working on it.") -> dict[str, Any]:
         return self.transcript.block(self, t, {"type": "text", "text": value})
@@ -286,15 +288,24 @@ class Transcript:
             return self.queued(t, text, mode="task-notification", origin="task-notification")
         return self.prompt(t, text, origin="task-notification")
 
-    def queued(self, t: float, text: str, *, mode: str = "prompt", origin: str = "human") -> dict[str, Any]:
-        """A ``queued_command`` attachment: a prompt that arrived while the session was busy."""
-        payload = {
+    def queued(
+        self, t: float, text: str, *, mode: str | None = "prompt", origin: str = "human", sender: str | None = None
+    ) -> dict[str, Any]:
+        """A ``queued_command`` attachment: a prompt that arrived while the session was busy.
+
+        ``mode=None`` leaves out ``commandMode``, as for a message to a subagent, such as a nested subagent's hand-back
+        (``origin="peer"`` with the child's ``sender``).
+        """
+        payload: dict[str, Any] = {
             "type": "queued_command",
             "prompt": text,
-            "commandMode": mode,
             "origin": {"kind": origin},
             "timestamp": at(t),
         }
+        if mode is not None:
+            payload["commandMode"] = mode
+        if sender is not None:
+            payload["origin"]["from"] = sender
         return self.envelope("attachment", t, attachment=payload)
 
     def local_command(self, t: float, command: str = "/compact") -> dict[str, Any]:
@@ -311,7 +322,8 @@ class Transcript:
 
         ``tokens`` is the :func:`usage` of its response.
 
-        ``logged=False`` leaves out the ``api-request`` record, as older versions such as 2.1.269 did.
+        ``logged=False`` leaves out the ``api-request`` record and the blocks' ``requestRef``, as older versions such as
+        2.1.269 did.
         """
         request_id = self.next_id("req")
         if logged:
@@ -326,7 +338,7 @@ class Transcript:
             if self.agent_id is not None:
                 record["agentId"] = self.agent_id
             self.add(record)
-        return Request(self, request_id, self.next_id("msg"), model, tokens if tokens is not None else usage())
+        return Request(self, request_id, self.next_id("msg"), model, tokens if tokens is not None else usage(), logged)
 
     def block(self, request: Request, t: float, content: dict[str, Any]) -> dict[str, Any]:
         """One content block of ``request``'s response, as its own assistant record."""
@@ -339,6 +351,8 @@ class Transcript:
             "stop_reason": "tool_use" if content["type"] == "tool_use" else "end_turn",
             "usage": request.usage,
         }
+        if not request.logged:
+            return self.envelope("assistant", t, message=message, requestId=request.message_id)
         return self.envelope("assistant", t, message=message, requestId=request.message_id, requestRef=request.id)
 
     def result(
@@ -456,7 +470,8 @@ class Transcript:
         folder = main.with_suffix("") / "subagents"
         for sub in self.subagents:
             write_records(folder / f"agent-{sub.agent_id}.jsonl", sub.records)
-            (folder / f"agent-{sub.agent_id}.meta.json").write_text(json.dumps(sub.meta()), encoding="utf-8")
+            if sub.has_meta:
+                (folder / f"agent-{sub.agent_id}.meta.json").write_text(json.dumps(sub.meta()), encoding="utf-8")
         return main
 
     def load(self, projects_dir: Path) -> SessionTranscript:
@@ -491,6 +506,8 @@ class Subagent(Transcript):
         self.background = background
         self.started = started
         self.finished = True
+        self.has_meta = True
+        """``False`` leaves out the ``.meta.json``, as for subagents of older versions."""
 
     @property
     def root(self) -> Transcript:

@@ -379,6 +379,7 @@ src/cc_session_tools/
 ├── search.py          # ripgrep shell-out with the built-in fallback
 ├── timefmt.py         # relative "time ago" formatting
 ├── segments.py        # a transcript split at its compactions
+├── session_time.py    # where a session's time went: turns, tool calls, subagents, idle gaps, user waits, compactions
 ├── bash_groups.py     # Bash commands grouped by purpose (test, build, wait, git, …), with the user's own groups file
 ├── render.py          # condensed conversation -> markdown, one file per segment
 └── stats.py           # size and token estimates

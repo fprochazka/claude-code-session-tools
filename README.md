@@ -168,7 +168,7 @@ cc-session-tools timeline <session-id> --json             # everything, nothing 
 
 The target is a `.jsonl` path, a session id or a prefix of one, or `latest`, as for `distill`. The markdown goes to stdout, errors to stderr; exit code `1` when the target, a time or the Bash groups file can't be read. A subagent's own `agent-<id>.jsonl` is no target: pass its session and `--subagent`.
 
-The header gives the session's totals:
+The header gives the session's span in local time with its time zone, both zones (`CEST → CET`) when the session crossed a daylight saving change, then its totals:
 
 - **wall** runs from the first to the last prompt, response, tool result or subagent record. Notices that Claude Code writes days later don't count.
 - **active** is the time the main agent was in a turn or a subagent was working, overlaps counted once. **away** is the idle gaps over 2 h that a human or cron prompt ended.

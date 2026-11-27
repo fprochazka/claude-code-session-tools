@@ -311,6 +311,27 @@ def test_the_json_splits_tests_into_targeted_and_full(tmp_path: Path, isolated_h
     assert [c["bash_group"] for c in json.loads(result.stdout)["calls"]] == ["test (targeted)"]
 
 
+def test_a_session_across_a_dst_change_names_both_zones(
+    tmp_path: Path, isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TZ", "Europe/Prague")
+    time.tzset()
+    tx = Transcript()
+    tx.prompt(-10 * 24 * HOUR)  # 2026-10-23, still summer time
+    tx.request(-10 * 24 * HOUR + 1).text(-10 * 24 * HOUR + 5)
+    tx.turn_end(-10 * 24 * HOUR + 6)
+    tx.prompt(0)
+    tx.request(1).text(5)
+    tx.turn_end(6)
+    out = lines_of(tx, tmp_path)
+    assert out[2] == "2026-10-23 11:00 → 2026-11-02 10:00 (local time, CEST → CET) · kind interactive (origins)"
+    one_zone = Transcript()
+    one_zone.prompt(0)
+    one_zone.request(1).text(5)
+    one_zone.turn_end(6)
+    assert "(local time, CET) ·" in lines_of(one_zone, tmp_path / "one")[2]
+
+
 def test_the_json_of_a_window_keeps_only_its_records(tmp_path: Path, isolated_home: Path) -> None:
     data = json.loads(invoke(session(), tmp_path, "--json", "--from", "09:08", "--to", "09:12").stdout)
     assert [t["index"] for t in data["turns"]] == [1, 2, 3]

@@ -160,6 +160,12 @@ def _local(moment: datetime) -> datetime:
     return moment.astimezone()
 
 
+def _zones(wall: Interval) -> str:
+    """The local time zone of the session, as ``CEST → CET`` when it crossed a daylight saving change."""
+    start, end = f"{_local(wall.start):%Z}", f"{_local(wall.end):%Z}"
+    return start if start == end else f"{start} → {end}"
+
+
 def _hm(moment: datetime) -> str:
     return f"{_local(moment):%H:%M}"
 
@@ -315,7 +321,7 @@ def _header(st: SessionTime, title: str | None) -> list[str]:
         f"# Timeline {st.session_id[:8]}" + (f" — {redact(title, limit=80)}" if title else ""),
         "",
         f"{_local(st.wall.start):%Y-%m-%d %H:%M} → {_local(st.wall.end):%Y-%m-%d %H:%M}"
-        f" (local time, {_local(st.wall.start):%Z}) · kind {st.kind} ({st.kind_source})",
+        f" (local time, {_zones(st.wall)}) · kind {st.kind} ({st.kind_source})",
         "",
         f"- wall {span(t.wall)} · active {span(t.active)} (main turns ∪ subagent activity)"
         f" · away {span(t.away)} (gaps over {int(AWAY.total_seconds() // 3600)} h before a human or cron prompt)",

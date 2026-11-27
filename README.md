@@ -1,8 +1,8 @@
 # claude-code-session-tools
 
-Commands and skills for finding and distilling past Claude Code sessions, and for listing the running ones, with the `cc-session-tools` CLI.
+Commands and skills for finding, distilling and timing past Claude Code sessions, and for listing the running ones, with the `cc-session-tools` CLI.
 
-The CLI has six subcommands. `search` lists and greps the sessions that belong to the directory you run it in. `distill` condenses one session transcript into markdown. `list-active` lists the sessions that run on the machine now, in every profile, with their live tmux pane. `inspect` shows every field of one session, running or ended. `watch` reports changes to the running sessions as JSON events, for an agent that waits for other sessions. `limits` shows the rate limits of every profile's account.
+The CLI has eight subcommands. `search` lists and greps the sessions that belong to the directory you run it in, optionally with how long each was active. `distill` condenses one session transcript into markdown. `timeline` shows where a session's time went: its turns, subagents, idle gaps, waits on the user and compactions. `tool-stats` shows where its tool time went, with Bash commands grouped by purpose, for one session or many. `list-active` lists the sessions that run on the machine now, in every profile, with their live tmux pane. `inspect` shows every field of one session, running or ended. `watch` reports changes to the running sessions as JSON events, for an agent that waits for other sessions. `limits` shows the rate limits of every profile's account.
 
 ## Why
 
@@ -50,7 +50,7 @@ This repository is also a [Claude Code](https://docs.anthropic.com/en/docs/claud
 
 - `/session-tools:search <keywords or topic>` — mine past sessions for decisions and context, writing the findings to `./.claude/plans/past-sessions-<slug>.md`.
 - `/session-tools:distill <session-id | latest>` — condense one session into a recap at `./.claude/plans/session-distill-<slug>.md`.
-- The `session-tools` skill, which teaches Claude `search` and `distill` and how they scope their results.
+- The `session-tools` skill, which teaches Claude `search` and `distill` and how they scope their results, and `timeline` and `tool-stats`: finding where a session's time went, in which order to run them, how to read their headers, and what the transcripts can't tell.
 - The `session-watch` skill, which teaches Claude `watch`: waiting for other sessions to finish a turn, wait for their user or end, with the events arriving as messages, and never watching its own session.
 - The `active-sessions` skill, which teaches Claude `list-active`, `inspect` and `limits`: finding another session, running or ended, its profile, tmux pane, messaging address and resume command, and how much of each profile's rate limits is left, through `--json` and `jq`.
 

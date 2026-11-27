@@ -1,13 +1,13 @@
 ---
 name: session-tools
-description: CLI for finding and distilling past Claude Code sessions — list and grep the sessions of the current repo and its git worktrees, then condense one transcript into markdown. Use when the user refers to an earlier conversation, asks what was decided or tried before, wants a past session summarized, or needs the session id of something that already happened. Triggered by requests involving past sessions, an earlier conversation, a session transcript, "what did we decide before", or "find the session where".
-trigger-keywords: claude code session, past session, previous session, session transcript, session history, ccdistill, session search
-allowed-tools: Bash(cc-session-tools --help), Bash(cc-session-tools search:*), Bash(cc-session-tools distill:*)
+description: CLI for finding, distilling and timing past Claude Code sessions — list and grep the sessions of the current repo and its git worktrees, condense one transcript into markdown, and show where a session's time went (turns, subagents, tool calls, idle gaps, waits on the user). Use when the user refers to an earlier conversation, asks what was decided or tried before, wants a past session summarized, needs the session id of something that already happened, or asks why a session took so long or what it spent its time on. Triggered by requests involving past sessions, an earlier conversation, a session transcript, "what did we decide before", "find the session where", "where did the time go", "why did this session take so long", or the slowest or longest sessions.
+trigger-keywords: claude code session, past session, previous session, session transcript, session history, ccdistill, session search, session timeline, tool stats, where the time went, long session, session duration
+allowed-tools: Bash(cc-session-tools --help), Bash(cc-session-tools search:*), Bash(cc-session-tools distill:*), Bash(cc-session-tools timeline:*), Bash(cc-session-tools tool-stats:*)
 ---
 
 # cc-session-tools
 
-Claude Code writes every session as a JSONL transcript under `<config dir>/projects/<encoded-cwd>/<session-id>.jsonl`, where `<encoded-cwd>` is the absolute launch directory with every non-alphanumeric character replaced by `-`. This tool reads the projects dir of every Claude Code profile on the machine, each shared dir once — or only `CLAUDE_PROJECTS_DIR` when it is set — and never writes to it. `search` maps the current directory back onto its project dirs and lists the sessions; `distill` turns one transcript into a markdown recap. Both read the transcript content itself rather than file metadata, so ordering and names reflect the real conversation.
+Claude Code writes every session as a JSONL transcript under `<config dir>/projects/<encoded-cwd>/<session-id>.jsonl`, where `<encoded-cwd>` is the absolute launch directory with every non-alphanumeric character replaced by `-`. This tool reads the projects dir of every Claude Code profile on the machine, each shared dir once — or only `CLAUDE_PROJECTS_DIR` when it is set — and never writes to it. `search` maps the current directory back onto its project dirs and lists the sessions; `distill` turns one transcript into a markdown recap; `timeline` and `tool-stats` show where its time went. All of them read the transcript content itself rather than file metadata, so ordering and names reflect the real conversation.
 
 ## search
 
@@ -92,6 +92,36 @@ Operational notes:
 - **A compacted session is split at its compactions.** The main file `<session-id>.md` holds only what the model worked with after the last compaction: the compaction summary under `## 📦 Compaction summary`, the stretch of conversation Claude Code kept verbatim, and everything after. Its first line under the title is a `> Compacted session: …` pointer to the absolute path of the part before, `<session-id>.pre-compact-<k>.md` in the same dir, and each part points back to the one before it, down to `pre-compact-1`, the oldest. Each pre-compact part ends with a `> Continued after compaction <k> in …` line. For a recap of the whole session, follow the pointers and read every part, oldest first; for what the session ended up with, the main file is enough.
 - `--stdout` writes the main markdown to stdout instead of a file; the stats table still goes to stderr, so the stdout stays valid markdown. The pre-compact parts of a compacted session are still written to `--output-dir`, so the pointer line names files that exist.
 - Exit code `1` when the target does not resolve or the file cannot be read; the message is a plain `Error: …` line on stderr.
+
+## Where the time went
+
+`timeline` and `tool-stats` analyse where a session spent its time. Both take the same target as `distill` and `--json`; their options and the full output contract are in `cc-session-tools timeline --help`, `cc-session-tools tool-stats --help` and the project README (`### timeline`, `### tool-stats`). Run them in this order:
+
+1. **Find the sessions**: `cc-session-tools search --all --since 30d --min-active 2h -n 0` (add `--sort active` for the longest first). The columns cost seconds per large session; narrow with `--since` first.
+2. **`timeline <session>`** for the shape: when it worked, idled, waited and compacted, and which subagents ran in which turn. Long sessions are collapsed to `--max-lines`.
+3. **`tool-stats <session>`** for where the busy time went: per tool, Bash by purpose (test full or targeted, build, wait, git, …), slowest and repeated commands, permission prompts, and subagent cost by role.
+4. **Zoom in** with `timeline <session> --from 18:30 --to 19:00` (every turn and gap of the stretch, nothing merged) or `timeline <session> --subagent <agent-id>` (one subagent's bursts, calls and children).
+5. **Many sessions**: `tool-stats --sessions-from ids.txt` (or `-` for stdin, e.g. ids from `search --json` through `jq -r '.[].session_id'`) adds the sections up, with a row per session and totals per kind.
+6. **The why** is not in the numbers: `distill` the session and read the turns the timeline pointed at.
+
+Reading the `timeline` header:
+
+- **wall** is first to last record; **active** is main turns ∪ subagent activity; **away** is idle gaps over 2 h ended by a human or cron prompt. A loop session (`kind` from the start log, or guessed from what opened the turns) idles by design.
+- **main agent busy** splits into model, tools, foreground subagents, waiting on the user and blocking compactions. The parts overlap and don't add up to busy.
+- **idle between turns** is split by what ended it: `human`, `peer`, `handback` (its own subagent reporting), `task-notification`, `cron`. Idle time with subagents active is background work, not lost time.
+- **subagents** line: counts, fg/bg, **subagent active** as the union of their activity (as the clock ran), **lane time** when it differs (each subagent's own active time added up, a parent counting its wait on nested ones), and tokens. The last line counts the **⌛ suspected waits** and how much busy and active time lies inside them.
+
+Reading `tool-stats`: the header gives the call counts, the calls that waited on the user, results held behind a subagent, and the suspected waits; each section's totals are sums of elapsed times.
+
+Limits that change the conclusion:
+
+- **Suspected waits still count.** A call over 1 h (`⌛`) probably waited on something the transcript can't show: an unanswered permission prompt, a machine that slept overnight. Its time stays in busy and active, also in `search --min-active`; subtract what the header reports before calling a session long.
+- **Lane time is not elapsed time.** Calls overlap, subagents run in parallel, and a parent's active time includes its wait on nested subagents, so per-tool and per-role sums exceed the clock. Compare against the session's union (`active`, the subagents' elapsed line), never add lanes up.
+- **Roles with `?` are guesses** from the agent type or the description's words; only a description prefix (`impl:`, `validate:`, `run:`, `explore:`) is certain.
+- **User waits are left out of the tool sections**: a call the user answered a prompt or dialog for waited an unknown part of its wall. Sessions recorded before Claude Code wrote permission decisions count dialogs only, and the header says so.
+- **Model time is `n/a`** on sessions from Claude Code versions without `api-request` records; that is unknown, not zero.
+- **Redaction is a safety net, not a guarantee.** Paths, hosts, long hex ids and credential-looking values are replaced, but names, ticket keys and secrets in an unusual shape pass through. Read the output before pasting it anywhere shared.
+- **Your own CLIs land in `run`**, with every other program the built-in rules don't know, so `run` is inflated until you map them: add them to `~/.config/cc-session-tools/bash-groups.toml` (`[programs] my-db-cli = "db"`, `[scripts]` globs), as the README's `tool-stats` section shows.
 
 ## Slash commands
 

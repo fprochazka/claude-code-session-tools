@@ -1,13 +1,13 @@
 {
   "name": "fprochazka-claude-code-session-tools",
-  "description": "CLI for searching and distilling past Claude Code sessions, with commands and a skill for Claude Code",
+  "description": "CLI for searching, distilling and timing past Claude Code sessions, with commands and skills for Claude Code",
   "owner": {
     "name": "Filip Procházka"
   },
   "plugins": [
     {
       "name": "session-tools",
-      "description": "Commands and skills for finding and distilling past Claude Code sessions, listing and watching the running ones, and inspecting any one, with the cc-session-tools CLI",
+      "description": "Commands and skills for finding, distilling and timing past Claude Code sessions, listing and watching the running ones, and inspecting any one, with the cc-session-tools CLI",
       "version": "0.13.0",
       "author": {
         "name": "Filip Procházka",

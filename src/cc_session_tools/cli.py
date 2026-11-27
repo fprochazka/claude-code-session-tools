@@ -25,7 +25,7 @@ from . import (
 
 app = typer.Typer(
     name="cc-session-tools",
-    help="Search and distill Claude Code sessions, list the running ones, inspect one, and watch them change.",
+    help="Search, distill and time Claude Code sessions, list the running ones, inspect one, and watch them change.",
     no_args_is_help=True,
     add_completion=False,
     rich_markup_mode=None,
@@ -49,7 +49,7 @@ def root(
         is_eager=True,
     ),
 ) -> None:
-    """Search and distill Claude Code sessions, list the running ones, inspect one, and watch them change."""
+    """Search, distill and time Claude Code sessions, list the running ones, inspect one, and watch them change."""
 
 
 app.command("search")(search_cmd.search)

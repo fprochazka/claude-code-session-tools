@@ -64,7 +64,7 @@ def test_the_json_has_every_section(tmp_path: Path, isolated_home: Path) -> None
     data = json.loads(invoke(session(), tmp_path, "--json").stdout)
     assert set(data) == {
         "session_id", "totals", "tools", "bash_groups", "bash_programs", "slowest", "repeated", "permissions",
-        "subagent_roles", "subagent_descriptions", "nested_by_parent_role",
+        "subagent_roles", "subagent_descriptions", "nested_by_parent_role", "filter",
     }  # fmt: skip
     groups = {r["group"]: r for r in data["bash_groups"]}
     assert (groups["test (full)"]["n"], groups["test (full)"]["total"]) == (2, 420)
@@ -378,6 +378,58 @@ def test_subagent_descriptions_add_up_over_sessions(tmp_path: Path, isolated_hom
     ]  # fmt: skip
     rows = {r["description"]: r for r in tool_stats_many(targets, isolate=False)["subagent_descriptions"]}
     assert (rows["Indexing pass"]["n"], rows["Indexing pass"]["sessions"], rows["Profile N"]["n"]) == (6, 2, 2)
+
+
+def filtered_session(session_id: str = SESSION_ID, cwd: str = CWD) -> Transcript:
+    """The main agent runs a test; a tooling batch with a nested runner runs a build; a profile run reads a file."""
+    tx = Transcript(session_id=session_id, cwd=cwd)
+    tx.prompt(0)
+    bash(tx, 1, "uv run pytest", 100)
+    batch = tx.request(200).agent(201, "b1", description="Tooling batch 1", background=True)
+    tx.agent_returned(202, batch)
+    profile = tx.request(203).agent(204, "p1", description="Profile X", background=True)
+    tx.agent_returned(205, profile)
+    tx.turn_end(206)
+    build = batch.request(210).bash(211, "make build")
+    batch.result(271, build)
+    runner_sub = batch.request(272).agent(273, "r1", description="run: tests", agent_type="test-runner")
+    lint = runner_sub.request(274).bash(275, "uv run ruff check .")
+    runner_sub.result(285, lint)
+    runner_sub.request(286).text(287)
+    batch.agent_returned(288, runner_sub)
+    batch.request(289).text(290)
+    read = profile.request(210).bash(211, "cat notes.md")
+    profile.result(212, read)
+    profile.request(213).text(214)
+    return tx
+
+
+def test_subagents_keeps_the_matching_subagents_and_their_nested_ones(tmp_path: Path, isolated_home: Path) -> None:
+    data = json.loads(invoke(filtered_session(), tmp_path, "--json", "--subagents", "TOOLING batch").stdout)
+    assert data["filter"] == {"subagents": "TOOLING batch", "lanes": 2}
+    groups = {r["group"]: r for r in data["bash_groups"]}
+    assert set(groups) == {"build", "lint"}  # not the main agent's test, not the profile's read
+    assert (groups["build"]["subagents"], groups["build"]["main"]) == (1, 0)
+    t = data["totals"]
+    assert (t["main_calls"], t["main_busy"], t["subagents"], t["busy_by_trigger"]) == (0, 0, 2, {})
+    assert {r["description"] for r in data["subagent_descriptions"]} == {"Tooling batch N"}
+    text = invoke(filtered_session(), tmp_path / "md", "--subagents", "tooling batch").stdout
+    assert "matches `tooling batch` (case-insensitive) and their nested subagents: 2 lanes." in text
+    assert json.loads(invoke(filtered_session(), tmp_path / "all", "--json").stdout)["filter"] is None
+
+
+def test_subagents_works_over_many_sessions_and_rejects_a_bad_regex(tmp_path: Path, isolated_home: Path) -> None:
+    targets = [
+        str(filtered_session(f"0000000{n}-0000-4000-8000-000000000000", f"/home/user/projects/f{n}").write(
+            tmp_path / "projects"
+        ))
+        for n in range(2)
+    ]  # fmt: skip
+    data = tool_stats_many(targets, isolate=False, subagents="profile")
+    assert data["filter"] == {"subagents": "profile", "lanes": 2}
+    assert [r["group"] for r in data["bash_groups"]] == ["file-read"]
+    result = runner.invoke(app, ["tool-stats", targets[0], "--subagents", "("])
+    assert result.exit_code == 2 and "--subagents" in result.output
 
 
 def test_an_old_transcript_says_permission_decisions_were_not_recorded(tmp_path: Path, isolated_home: Path) -> None:

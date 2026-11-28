@@ -217,9 +217,12 @@ cc-session-tools tool-stats latest                 # where the newest session of
 cc-session-tools tool-stats <session-id> --top 20  # list 20 slowest calls and repeated commands
 cc-session-tools tool-stats <session-id> --json    # every section as data, unrounded
 cc-session-tools tool-stats --sessions-from ids.txt  # added up over many sessions, one id or .jsonl path per line
+cc-session-tools tool-stats <session-id> --subagents 'tooling batch'  # only those subagents and their nested ones
 ```
 
-The target is resolved as for `timeline`. The markdown goes to stdout, errors to stderr; exit code `1` when the target or the Bash groups file can't be read, `2` for a usage error such as `--top 0`. Commands are redacted as in `timeline`.
+The target is resolved as for `timeline`. The markdown goes to stdout, errors to stderr; exit code `1` when the target or the Bash groups file can't be read, `2` for a usage error such as `--top 0` or a `--subagents` that is not a regular expression. Commands are redacted as in `timeline`.
+
+**`--subagents REGEX`** keeps only the top-level subagents whose description REGEX matches, case-insensitive, and the subagents nested under them, and leaves the main agent out: its calls, turns, busy time and crons. Every section then covers just that kind of work, such as the tool time inside the tooling batches of a loop session. The figures are computed again over the kept lanes, so main busy is 0 and active time is theirs. The markdown says which pattern kept how many lanes, and the JSON has `filter`: `subagents` (the pattern) and `lanes`; it is `null` without the option. It works with `--sessions-from` too.
 
 A call's wall runs from when it could start to when its result was written, as in `timeline`, except for a Bash call that ran as a background task: the tool sections count it until its completion notice, because the result only says the task started or was moved. The lane and busy totals of `timeline` count only the time until the result, the move for a moved call: the time the call blocked its lane. Calls of one response, and of different subagents, overlap, so a column's total is a sum of elapsed times, not a share of the session's clock. A call over 1 h is marked `⌛` and counted in the header, because it probably waited on something the transcript doesn't show. A call the user answered a permission prompt or a dialog for waited on the user for an unknown part of its wall, because the transcript doesn't say when the answer came; such calls are left out of the tool sections, and the header gives their count and wall. The sections:
 

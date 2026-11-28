@@ -101,7 +101,7 @@ Operational notes:
 1. **Find the sessions**: `cc-session-tools search --all --since 30d --min-active 2h -n 0` (add `--sort active` for the longest first). The columns cost seconds per large session; narrow with `--since` first.
 2. **`timeline <session>`** for the shape: when it worked, idled, waited and compacted, and which subagents ran in which turn. Long sessions are collapsed to `--max-lines`.
 3. **`tool-stats <session>`** for where the busy time went: per tool, Bash by purpose (test full or targeted, build, wait, git, …), slowest and repeated commands, permission prompts, and subagent cost by role.
-4. **Zoom in** with `timeline <session> --from 18:30 --to 19:00` (every turn and gap of the stretch, nothing merged) or `timeline <session> --subagent <agent-id>` (one subagent's bursts, calls and children).
+4. **Zoom in** with `timeline <session> --from 18:30 --to 19:00` (every turn and gap of the stretch, nothing merged) or `timeline <session> --subagent <agent-id>` (one subagent's bursts, calls and children), or `tool-stats <session> --subagents 'tooling batch'` (the tool time inside one kind of subagent, matched by description, with their nested ones and without the main agent).
 5. **Many sessions**: `tool-stats --sessions-from ids.txt` (or `-` for stdin, e.g. ids from `search --json` through `jq -r '.[].session_id'`) adds the sections up, with a row per session and totals per kind.
 6. **The why** is not in the numbers: `distill` the session and read the turns the timeline pointed at.
 

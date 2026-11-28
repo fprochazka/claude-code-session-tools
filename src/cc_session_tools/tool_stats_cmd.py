@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import re
 import statistics
 import sys
 from collections import Counter, defaultdict
@@ -36,6 +37,7 @@ from .session_time import (
     analyze,
     crons_by_prompt,
     normalize_description,
+    only_subagents,
     union,
 )
 from .timeline_cmd import SUSPECT_WAIT, suspected
@@ -60,6 +62,15 @@ def tool_stats_command(
     top: int = typer.Option(
         10, "--top", min=1, metavar="<int>", help="How many slowest calls and repeated commands to list, at least 1."
     ),
+    subagents: str | None = typer.Option(
+        None,
+        "--subagents",
+        metavar="REGEX",
+        help=(
+            "Count only the top-level subagents whose description matches REGEX, case-insensitive, and their nested"
+            " subagents; the main agent is left out."
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help="Print every section as JSON, durations in seconds."),
 ) -> None:
     """Show where a session's tool time went: per tool, Bash by purpose, the slowest and the repeated commands,
@@ -67,6 +78,11 @@ def tool_stats_command(
     if (target is None) == (sessions_from is None):
         typer.echo("Error: give either a TARGET or --sessions-from FILE", err=True)
         raise typer.Exit(code=1)
+    if subagents is not None:
+        try:
+            re.compile(subagents)
+        except re.error as e:
+            raise typer.BadParameter(f"not a regular expression: {e}", param_hint="--subagents") from e
 
     from .bash_groups import BashGrouper, BashGroupsError, load_user_groups
 
@@ -82,7 +98,7 @@ def tool_stats_command(
         except OSError as e:
             typer.echo(f"Error: --sessions-from: {e}", err=True)
             raise typer.Exit(code=1) from e
-        data = tool_stats_many(targets, top=top)
+        data = tool_stats_many(targets, top=top, subagents=subagents)
         output = json.dumps(data, indent=2, ensure_ascii=False) + "\n" if as_json else render_many(data)
         sys.stdout.write(output)
         return
@@ -98,7 +114,7 @@ def tool_stats_command(
         raise typer.Exit(code=1)
     st = analyze(transcript)
     with redacting_session(transcript.cwd):
-        data = tool_stats(st, grouper, top=top)
+        data = tool_stats(st, grouper, top=top, subagents=subagents)
         output = json.dumps(data, indent=2, ensure_ascii=False) + "\n" if as_json else render(data, transcript.title)
     sys.stdout.write(output)
 
@@ -110,7 +126,7 @@ def _read_targets(source: str) -> list[str]:
     return [line for line in lines if line and not line.startswith("#")]
 
 
-def _session_stats(target: str, top: int) -> ToolStats:
+def _session_stats(target: str, top: int, subagents: str | None = None) -> ToolStats:
     """One session's sections, for :func:`tool_stats_many` to add up; it runs in a child process."""
     from .bash_groups import BashGrouper, load_user_groups
 
@@ -120,20 +136,23 @@ def _session_stats(target: str, top: int) -> ToolStats:
         raise LookupError(str(e)) from None  # a plain exception, so it pickles back from the child process
     if transcript is None:
         raise LookupError("could not resolve the session")
-    st = analyze(transcript)
+    st = _restricted(analyze(transcript), subagents)
     stats = ToolStats(BashGrouper(load_user_groups()))
     with redacting_session(transcript.cwd):
         stats.add(st, title=transcript.title, top=top)
     return stats.detached()
 
 
-def tool_stats_many(targets: Sequence[str], *, top: int = 10, isolate: bool = True) -> dict[str, Any]:
+def tool_stats_many(
+    targets: Sequence[str], *, top: int = 10, isolate: bool = True, subagents: str | None = None
+) -> dict[str, Any]:
     """The sections added up over ``targets``, plus a row per session and totals per kind.
 
     Each session is analysed in a child process of its own, one at a time, which returns only its sums: a large
     session takes gigabytes while it is analysed, and Python's allocator would keep most of that from the next one.
     ``isolate=False`` analyses them in this process instead. A target that can't be resolved or read is reported on
-    stderr, listed in ``skipped`` and left out.
+    stderr, listed in ``skipped`` and left out. ``subagents`` keeps only the subagents it matches, see
+    :func:`only_subagents`.
     """
     total = ToolStats(None)
     skipped: list[dict[str, str]] = []
@@ -142,9 +161,9 @@ def tool_stats_many(targets: Sequence[str], *, top: int = 10, isolate: bool = Tr
         try:
             if isolate:
                 with ProcessPoolExecutor(max_workers=1, mp_context=context) as pool:
-                    one = pool.submit(_session_stats, target, top).result()
+                    one = pool.submit(_session_stats, target, top, subagents).result()
             else:
-                one = _session_stats(target, top)
+                one = _session_stats(target, top, subagents)
         except Exception as e:  # noqa: BLE001 - one broken transcript must not end a run over a hundred sessions
             error = redact(f"{type(e).__name__}: {e}", limit=200)
             skipped.append({"target": redact(target), "error": error})
@@ -156,6 +175,7 @@ def tool_stats_many(targets: Sequence[str], *, top: int = 10, isolate: bool = Tr
         "by_kind": total.by_kind(),
         "skipped": skipped,
         **total.result(top=top),
+        "filter": _filter(subagents, total),
     }
 
 
@@ -731,11 +751,23 @@ class ToolStats:
         return dict(sorted(kinds.items(), key=lambda kv: -kv[1]["active"]))
 
 
-def tool_stats(st: SessionTime, grouper: BashGrouper, *, top: int = 10) -> dict[str, Any]:
-    """Every section of ``tool-stats`` for one session as JSON-ready data: durations in seconds, nothing rounded."""
+def tool_stats(st: SessionTime, grouper: BashGrouper, *, top: int = 10, subagents: str | None = None) -> dict[str, Any]:
+    """Every section of ``tool-stats`` for one session as JSON-ready data: durations in seconds, nothing rounded.
+    ``subagents`` keeps only the subagents it matches, see :func:`only_subagents`."""
     stats = ToolStats(grouper)
-    stats.add(st, top=top)
-    return {"session_id": st.session_id, **stats.result(top=top)}
+    stats.add(_restricted(st, subagents), top=top)
+    return {"session_id": st.session_id, **stats.result(top=top), "filter": _filter(subagents, stats)}
+
+
+def _restricted(st: SessionTime, subagents: str | None) -> SessionTime:
+    return st if subagents is None else only_subagents(st, re.compile(subagents, re.IGNORECASE))
+
+
+def _filter(subagents: str | None, stats: ToolStats) -> dict[str, Any] | None:
+    """The ``filter`` key: the ``--subagents`` pattern and how many lanes it kept, or ``None`` without one."""
+    if subagents is None:
+        return None
+    return {"subagents": subagents, "lanes": int(stats.totals["subagents"])}
 
 
 # Markdown
@@ -767,13 +799,24 @@ def _cut(text: str | None, limit: int = COMMAND_LIMIT) -> str:
 
 def render(data: dict[str, Any], title: str | None) -> str:
     header = f"# Tool stats {data['session_id'][:8]}" + (f" — {redact(title, limit=80)}" if title else "")
-    return "\n".join([header, "", *_sections(data, many=False)]) + "\n"
+    return "\n".join([header, "", *_filter_lines(data), *_sections(data, many=False)]) + "\n"
+
+
+def _filter_lines(data: dict[str, Any]) -> list[str]:
+    f = data.get("filter")
+    if not f:
+        return []
+    return [
+        f"Only the top-level subagents whose description matches `{f['subagents']}` (case-insensitive) and their"
+        f" nested subagents: {count(f['lanes'], 'lane')}. The main agent is left out.",
+        "",
+    ]
 
 
 def render_many(data: dict[str, Any]) -> str:
     """The markdown of ``--sessions-from``: a row per session, the totals per kind, then the sections added up."""
     sessions = data["sessions"]
-    out = [f"# Tool stats over {count(len(sessions), 'session')}", ""]
+    out = [f"# Tool stats over {count(len(sessions), 'session')}", "", *_filter_lines(data)]
     if data["skipped"]:
         out += [f"Skipped {count(len(data['skipped']), 'session')}:"]
         out += [f"- {s['target']}: {s['error']}" for s in data["skipped"]]

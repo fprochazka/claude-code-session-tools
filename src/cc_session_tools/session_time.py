@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, TypeGuard
 
@@ -621,6 +621,28 @@ def analyze(transcript: SessionTranscript) -> SessionTime:
         totals=totals,
         has_permission_decisions=any(c.permission is not None for c in main.calls),
     )
+
+
+def only_subagents(st: SessionTime, description: re.Pattern[str]) -> SessionTime:
+    """``st`` with only the top-level subagents whose description ``description`` matches, and their nested
+    subagents; the main agent's turns, gaps and calls are left out. The totals are computed again over what is left,
+    so the main agent's busy time is 0 and the active time is the kept subagents'. The wall stays the session's."""
+    by_id = {s.agent_id: s for s in st.subagents}
+
+    def top_of(sub: Subagent) -> Subagent:
+        seen = {sub.agent_id}
+        while sub.parent_id is not None and sub.parent_id in by_id and sub.parent_id not in seen:
+            sub = by_id[sub.parent_id]
+            seen.add(sub.agent_id)
+        return sub
+
+    kept = [s for s in st.subagents if description.search(top_of(s).description or "")]
+    lanes = {s.agent_id for s in kept}
+    compactions = [c for c in st.compactions if c.lane in lanes]
+    main = Lane()
+    wall = Interval(st.wall.start, st.wall.end)
+    totals = _totals(wall, main, [], [], kept, compactions, 0)
+    return replace(st, main=main, turns=[], gaps=[], subagents=kept, compactions=compactions, totals=totals)
 
 
 def session_kind(roles: Sequence[str | None], triggers: Mapping[str, int]) -> tuple[str, str]:

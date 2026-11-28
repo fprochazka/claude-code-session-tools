@@ -232,11 +232,31 @@ def test_status_transitions_with_derived_events(machine: Machine) -> None:
     machine.update(pid, status="idle", waitingFor=None)
     assert kinds(t.poll(NOW + 3)) == ["status_changed", "turn_finished"]
 
-    # A shell command is no turn.
+    # A turn that ends while a background shell still runs ends in `shell`, and the next one starts from it.
+    machine.update(pid, status="busy")
+    assert kinds(t.poll(NOW + 4)) == ["status_changed"]
     machine.update(pid, status="shell")
-    machine_events = t.poll(NOW + 4)
+    events = t.poll(NOW + 5)
+    assert kinds(events) == ["status_changed", "turn_finished"]
+    assert events[1].data == {"session": "work/worker", "from": "busy"}  # as for a move to idle
+    machine.update(pid, status="busy")
+    assert kinds(t.poll(NOW + 6)) == ["status_changed"]
+    machine.update(pid, status="shell")
+    assert kinds(t.poll(NOW + 7)) == ["status_changed", "turn_finished"]
+
+    # The background shell ends with nothing to say: the turn already finished, so it is not reported twice.
     machine.update(pid, status="idle")
-    assert kinds(machine_events + t.poll(NOW + 5)) == ["status_changed", "status_changed"]
+    assert kinds(t.poll(NOW + 8)) == ["status_changed"]
+    machine.update(pid, status="shell")
+    assert kinds(t.poll(NOW + 9)) == ["status_changed"]  # idle to shell starts no turn and ends none
+
+    # A prompt answered at the end of a turn, with a background shell still running.
+    machine.update(pid, status="waiting", waitingFor="permission prompt")
+    assert kinds(t.poll(NOW + 10)) == ["status_changed", "waiting"]
+    machine.update(pid, status="shell", waitingFor=None)
+    events = t.poll(NOW + 11)
+    assert kinds(events) == ["status_changed", "turn_finished"]
+    assert events[1].data == {"session": "work/worker", "from": "waiting"}
 
 
 def test_a_permission_prompt_whose_pane_shows_the_plan_dialog_is_a_plan_approval(
@@ -864,6 +884,22 @@ def test_events_outside_the_filter_are_not_numbered(machine: Machine) -> None:
     reported = resolve_filter(["turns"], None)
     sink, _ = run_watch(tracker(), Ends(until="turn_finished"), clock, reported)
     assert [(e.kind, e.seq) for e in sink.events] == [("watch_started", 1), ("turn_finished", 2), ("watch_ended", 3)]
+
+
+def test_a_turn_that_ends_in_shell_is_reported_without_the_status_changes(machine: Machine) -> None:
+    pid = machine.session("work", "worker", status="busy")
+    clock = Clock()
+
+    def on_wait(n: int) -> None:
+        if n == 1:
+            machine.update(pid, status="shell")
+        elif n == 2:
+            machine.update(pid, status="waiting", waitingFor="permission prompt")
+
+    clock.on_wait = on_wait
+    reported = resolve_filter(None, ["status_changed"])
+    sink, _ = run_watch(tracker(), Ends(timeout=5), clock, reported)
+    assert sink.kinds() == ["watch_started", "turn_finished", "waiting", "watch_ended"]
 
 
 def test_timeout(machine: Machine) -> None:

@@ -89,7 +89,12 @@ CONTEXT_INTERVAL = 3.0
 A busy session appends to its transcript all the time; one read costs a millisecond or two."""
 
 TURN_ENDS_FROM = frozenset({"busy", "waiting"})
-"""A move to ``idle`` from one of these statuses is ``turn_finished``."""
+"""A move from one of these statuses to one of :data:`TURN_ENDS_TO` is ``turn_finished``."""
+
+TURN_ENDS_TO = frozenset({"idle", "shell"})
+"""The statuses of a session whose model turn has ended: ``shell`` is the one of a session whose turn ended while a
+background shell it started, such as a ``run_in_background`` command or a watcher, still runs. It leaves ``shell`` for
+``busy`` when the next turn starts, typically when that shell's output or end arrives as a message."""
 
 _RECORD_NAME = re.compile(r"^[1-9][0-9]*\.json$")
 
@@ -602,7 +607,7 @@ class SessionTracker:
             if reason is not None:
                 change["waiting_for"] = reason
             changed(STATUS_CHANGED, **change)
-            if new.status == "idle" and old.status in TURN_ENDS_FROM:
+            if new.status in TURN_ENDS_TO and old.status in TURN_ENDS_FROM:
                 changed(TURN_FINISHED, **{"from": old.status})
             if new.status == "waiting":
                 extra: dict[str, Any] = {}

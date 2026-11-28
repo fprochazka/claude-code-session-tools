@@ -79,7 +79,10 @@ def timeline(
         False, "--json", help="Print everything as JSON, durations in seconds, nothing merged."
     ),
 ) -> None:
-    """Show where a session's time went: its turns, subagents, waits on the user, idle gaps and compactions."""
+    """Show where a session's time went: its turns, subagents, waits on the user, idle gaps and compactions.
+
+    The header also gives busy time by what opened the turns, the crons by prompt, stalls on a full context, and the
+    Bash calls moved to the background."""
     if _is_subagent_file(target):
         typer.echo(
             f"Error: {target} is a subagent's transcript; pass its session and --subagent {Path(target).stem}", err=True

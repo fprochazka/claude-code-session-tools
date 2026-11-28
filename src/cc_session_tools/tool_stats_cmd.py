@@ -74,7 +74,10 @@ def tool_stats_command(
     as_json: bool = typer.Option(False, "--json", help="Print every section as JSON, durations in seconds."),
 ) -> None:
     """Show where a session's tool time went: per tool, Bash by purpose, the slowest and the repeated commands,
-    permission prompts, and what the subagents cost by role. With --sessions-from, add it up over many sessions."""
+    permission prompts, and what the subagents cost by role. With --sessions-from, add it up over many sessions.
+
+    Also Bash by program and script, subagents by description, the Bash calls moved to the background and the stalls
+    on a full context; --subagents limits it all to the subagents whose description matches."""
     if (target is None) == (sessions_from is None):
         typer.echo("Error: give either a TARGET or --sessions-from FILE", err=True)
         raise typer.Exit(code=1)

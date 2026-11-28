@@ -37,6 +37,7 @@ from .session_time import (
     analyze,
     clip,
     crons_by_prompt,
+    normalize_description,
     union,
 )
 from .watch_events import parse_duration
@@ -280,7 +281,7 @@ CRONS_SHOWN = 5
 
 def _cron_line(st: SessionTime) -> list[str]:
     """The header line of the cron turns by prompt, the busiest :data:`CRONS_SHOWN`; none without cron turns."""
-    rows = crons_by_prompt(st.turns)
+    rows = crons_by_prompt(st.turns, redact)
     if not rows:
         return []
     shown = " · ".join(f'"{redact(r.prompt, limit=60)}" ×{r.turns} {span(r.seconds)}' for r in rows[:CRONS_SHOWN])
@@ -591,7 +592,7 @@ def _day_summary(st: SessionTime, day: date) -> list[str]:
     described: defaultdict[str, list[Subagent]] = defaultdict(list)
     for s in subs:
         roles[s.role].append(s)
-        described[re.sub(r"\d+", "N", redact(s.description or "", limit=40))].append(s)
+        described[redact(normalize_description(redact(s.description or "")), limit=40)].append(s)
 
     def by_active(groups: dict[str, list[Subagent]]) -> list[tuple[str, list[Subagent]]]:
         return sorted(groups.items(), key=lambda kv: -sum(s.active for s in kv[1]))
@@ -827,7 +828,7 @@ def session_json(st: SessionTime, grouper: BashGrouper, window: Interval | None 
             "busy_by_trigger": {k: {"turns": v.turns, "seconds": v.seconds} for k, v in t.busy_by_trigger.items()},
             "crons": [
                 {"prompt": redact(r.prompt, limit=200), "turns": r.turns, "seconds": r.seconds}
-                for r in crons_by_prompt(st.turns)
+                for r in crons_by_prompt(st.turns, redact)
             ],
             "idle_background": t.idle_background,
             "batched_calls": t.batched_calls,

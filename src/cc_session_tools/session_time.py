@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, TypeGuard
@@ -476,20 +476,45 @@ class CronPrompt:
 
 _DIGIT_RUN = re.compile(r"\d+")
 _MARKUP = re.compile(r"<[^>]+>")
+_MONTH = (
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?"
+    r"|nov(?:ember)?|dec(?:ember)?)\.?"
+)
+_TRAILING_TIME = re.compile(
+    r"[\s,;@(\[-]*(?<!\w)(?:"
+    r"\d{4}-\d{2}-\d{2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?"  # 2026-10-29, 2026-10-29T13:17
+    r"|\d{1,2}:\d{2}(?::\d{2})?"  # 13:17, 13:17:05
+    rf"|\d{{1,2}}\.?\s*{_MONTH}(?:\s+\d{{4}})?"  # 29 Oct, 29. October 2026
+    rf"|{_MONTH}\s*\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?"  # Oct 29, October 29th, 2026
+    r"|\d{1,2}\.\d{1,2}\.\d{4}"  # 29.10.2026; not 29.10. without a year, which is also a version: Python 3.12.
+    r")[)\]]?\s*$",
+    re.IGNORECASE,
+)
 
 
-def cron_key(prompt: str) -> str:
-    """The row a cron prompt counts in: its first non-empty line, without markup, digit runs as ``N``."""
+def normalize_description(text: str) -> str:
+    """The form that repeats of a description, or of a cron prompt, share: without a trailing clock time or date
+    (``Indexing pass 13:17``, ``Indexing pass 29 Oct 13:17`` and ``Indexing pass`` are one), runs of digits as ``N``,
+    whitespace collapsed. Redact the text first: replacing digits breaks the shapes redaction looks for."""
+    text = " ".join(text.split())
+    for _ in range(2):  # a date and then a time: `29 Oct 13:17`
+        text = _TRAILING_TIME.sub("", text)
+    return _DIGIT_RUN.sub("N", text).strip()
+
+
+def cron_key(prompt: str, clean: Callable[[str], str] | None = None) -> str:
+    """The row a cron prompt counts in: its first non-empty line, without markup, passed through ``clean`` (such as
+    a redaction), then by :func:`normalize_description`."""
     line = next((line.strip() for line in _MARKUP.sub(" ", prompt).splitlines() if line.strip()), "")
-    return _DIGIT_RUN.sub("N", " ".join(line.split()))
+    return normalize_description(clean(line) if clean is not None else line)
 
 
-def crons_by_prompt(turns: Iterable[Turn]) -> list[CronPrompt]:
+def crons_by_prompt(turns: Iterable[Turn], clean: Callable[[str], str] | None = None) -> list[CronPrompt]:
     """The main agent's cron turns grouped by :func:`cron_key`, most busy first."""
     rows: dict[str, list[float]] = {}
     for turn in turns:
         if turn.trigger == "cron":
-            rows.setdefault(cron_key(turn.prompt), []).append(turn.seconds)
+            rows.setdefault(cron_key(turn.prompt, clean), []).append(turn.seconds)
     found = [CronPrompt(key, len(seconds), sum(seconds)) for key, seconds in rows.items()]
     return sorted(found, key=lambda row: (-row.seconds, -row.turns))
 

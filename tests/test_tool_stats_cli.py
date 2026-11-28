@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from transcripts import Transcript, permission
+from transcripts import CWD, SESSION_ID, Transcript, permission
 from typer.testing import CliRunner
 
 from cc_session_tools.cli import app
@@ -64,8 +64,7 @@ def test_the_json_has_every_section(tmp_path: Path, isolated_home: Path) -> None
     data = json.loads(invoke(session(), tmp_path, "--json").stdout)
     assert set(data) == {
         "session_id", "totals", "tools", "bash_groups", "bash_programs", "slowest", "repeated", "permissions",
-        "subagent_roles",
-        "nested_by_parent_role",
+        "subagent_roles", "subagent_descriptions", "nested_by_parent_role",
     }  # fmt: skip
     groups = {r["group"]: r for r in data["bash_groups"]}
     assert (groups["test (full)"]["n"], groups["test (full)"]["total"]) == (2, 420)
@@ -299,6 +298,86 @@ def test_bash_time_adds_up_per_script_and_program(tmp_path: Path, isolated_home:
     assert [r["program"] for r in data["bash_programs"]] == ["digest.py", "sweep.sh", "git"]
     text = invoke(tx, tmp_path / "md").stdout
     assert "| `digest.py` | 2 | 1m30s | 45s | 1m00s | run | 2 | 0 |" in text
+
+
+def described_session(session_id: str, cwd: str) -> Transcript:
+    """Three indexing passes, one of them with a nested runner, and one profile run."""
+    tx = Transcript(session_id=session_id, cwd=cwd)
+    tx.prompt(0)
+    for n, description in enumerate(("Indexing pass", "Indexing pass 13:17", "Indexing pass 14:47", "Profile 7")):
+        t = 10 + n * 1000
+        sub = tx.request(t).agent(t + 1, f"a{n}", description=description, background=True)
+        tx.agent_returned(t + 2, sub)
+        sub.request(t + 3).text(t + 63 + n * 60)
+        if n == 0:
+            child = sub.request(t + 64).agent(t + 65, "r0", description="run: tests")
+            child.request(t + 66).text(t + 500)
+            sub.agent_returned(t + 501, child)
+    tx.turn_end(5000)
+    return tx
+
+
+def test_top_level_subagents_add_up_by_description(tmp_path: Path, isolated_home: Path) -> None:
+    data = json.loads(invoke(described_session(SESSION_ID, CWD), tmp_path, "--json").stdout)
+    rows = {r["description"]: r for r in data["subagent_descriptions"]}
+    assert set(rows) == {"Indexing pass", "Profile N"}
+    passes = rows["Indexing pass"]
+    assert (passes["n"], passes["sessions"]) == (3, 1)
+    assert passes["median"] == pytest.approx(180, abs=5) and passes["max"] > 400  # the first waited on its runner
+    assert passes["elapsed"] == pytest.approx(passes["active"])  # they did not overlap
+    assert rows["Profile N"]["n"] == 1 and data["subagent_descriptions"][0]["description"] == "Indexing pass"
+    assert passes["roles"] == [{"role": "other", "guessed": True, "n": 3}]
+    text = invoke(described_session(SESSION_ID, CWD), tmp_path / "md").stdout
+    assert "| `Indexing pass` | 3 |" in text and " | other? 3 |" in text
+
+
+def test_descriptions_and_cron_prompts_are_redacted_before_their_digits_are_replaced(
+    tmp_path: Path, isolated_home: Path
+) -> None:
+    private = "db12.internal.example.com:5432 for 0123456789abcdef0123456789abcdef"
+    tx = Transcript()
+    tx.prompt(0)
+    for n in range(2):
+        sub = tx.request(10 + n * 100).agent(11 + n * 100, f"a{n}", description=f"Check {private}", background=True)
+        tx.agent_returned(12 + n * 100, sub)
+        sub.request(13 + n * 100).text(20 + n * 100)
+    tx.turn_end(300)
+    tx.scheduled(1000, f"Ping {private}")
+    tx.request(1001).text(1010)
+    tx.turn_end(1011)
+    data = json.loads(invoke(tx, tmp_path, "--json").stdout)
+    (row,) = data["subagent_descriptions"]
+    (cron,) = data["totals"]["crons"]
+    for text in (row["description"], cron["prompt"]):
+        assert "internal" not in text and "abcdef" not in text and "dbN" not in text and "NfN" not in text, text
+    assert row["n"] == 2 and data["totals"]["subagent_descriptions"] == 1
+    timeline = json.loads(runner.invoke(app, ["timeline", str(tx.path(tmp_path / "projects")), "--json"]).stdout)
+    assert timeline["totals"]["crons"][0]["prompt"] == cron["prompt"]
+
+
+def test_the_descriptions_left_out_by_top_are_counted(tmp_path: Path, isolated_home: Path) -> None:
+    tx = Transcript()
+    tx.prompt(0)
+    for n, word in enumerate(("Alpha", "Beta", "Gamma")):
+        sub = tx.request(10 + n * 1000).agent(11 + n * 1000, f"a{n}", description=word, background=True)
+        tx.agent_returned(12 + n * 1000, sub)
+        sub.request(13 + n * 1000).text(13 + n * 1000 + 60 * (3 - n))
+    tx.turn_end(5000)
+    data = json.loads(invoke(tx, tmp_path, "--json", "--top", "1").stdout)
+    assert [r["description"] for r in data["subagent_descriptions"]] == ["Alpha"]
+    assert (data["totals"]["subagent_descriptions"], data["totals"]["subagent_descriptions_active"]) == (3, 366.0)
+    assert "… 2 more descriptions, 3m04s active" in invoke(tx, tmp_path / "md", "--top", "1").stdout
+
+
+def test_subagent_descriptions_add_up_over_sessions(tmp_path: Path, isolated_home: Path) -> None:
+    targets = [
+        str(described_session(f"0000000{n}-0000-4000-8000-000000000000", f"/home/user/projects/d{n}").write(
+            tmp_path / "projects"
+        ))
+        for n in range(2)
+    ]  # fmt: skip
+    rows = {r["description"]: r for r in tool_stats_many(targets, isolate=False)["subagent_descriptions"]}
+    assert (rows["Indexing pass"]["n"], rows["Indexing pass"]["sessions"], rows["Profile N"]["n"]) == (6, 2, 2)
 
 
 def test_an_old_transcript_says_permission_decisions_were_not_recorded(tmp_path: Path, isolated_home: Path) -> None:

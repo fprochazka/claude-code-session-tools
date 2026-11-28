@@ -35,6 +35,7 @@ from .session_time import (
     TimedCall,
     analyze,
     crons_by_prompt,
+    normalize_description,
     union,
 )
 from .timeline_cmd import SUSPECT_WAIT, suspected
@@ -262,6 +263,25 @@ class _Role:
 
 
 @dataclass
+class _Described:
+    """The top-level subagents of one normalized description."""
+
+    active: list[float] = field(default_factory=list)
+    elapsed: float = 0.0
+    tokens_total: int = 0
+    roles: Counter[tuple[str, bool]] = field(default_factory=Counter)
+    """(role, guessed) → count."""
+    sessions: set[str] = field(default_factory=set)
+
+    def merge(self, other: _Described) -> None:
+        self.active += other.active
+        self.elapsed += other.elapsed
+        self.tokens_total += other.tokens_total
+        self.roles.update(other.roles)
+        self.sessions |= other.sessions
+
+
+@dataclass
 class _Nested:
     n: int = 0
     active: float = 0.0
@@ -319,6 +339,7 @@ class ToolStats:
         self._crons: dict[str, list[float]] = {}
         self._roles: defaultdict[tuple[str, str, bool], _Role] = defaultdict(_Role)
         self._nested: defaultdict[str, _Nested] = defaultdict(_Nested)
+        self._described: defaultdict[str, _Described] = defaultdict(_Described)
 
     def add(self, st: SessionTime, *, title: str | None = None, top: int = 10) -> None:
         from .bash_groups import group_label, normalize
@@ -428,7 +449,7 @@ class ToolStats:
         self._moved_reasons.update(c.call.moved_reason for c in moved if c.call.moved_reason)
         for trigger, busy in st.totals.busy_by_trigger.items():
             _add_busy(self._busy_by_trigger, trigger, busy.turns, busy.seconds)
-        for cron in crons_by_prompt(st.turns):
+        for cron in crons_by_prompt(st.turns, redact):
             _add_busy(self._crons, redact(cron.prompt, limit=200), cron.turns, cron.seconds)
 
         for s in st.subagents:
@@ -441,6 +462,17 @@ class ToolStats:
             if s.lane.first_context:
                 role.contexts.append(s.lane.first_context)
             role.models[(s.lane.model or "?").removeprefix("claude-")] += 1
+        described: defaultdict[str, list[Subagent]] = defaultdict(list)
+        for s in st.subagents:
+            if s.parent_id is None:  # a parent's active time covers its wait on its nested subagents
+                described[redact(normalize_description(redact(s.description or "")), limit=120)].append(s)
+        for text, subs in described.items():
+            kind = self._described[text]
+            kind.active += [s.active for s in subs]
+            kind.elapsed += union(b for s in subs for b in s.bursts)
+            kind.tokens_total += sum(s.lane.tokens_total for s in subs)
+            kind.roles.update((s.role, s.role_source != "prefix") for s in subs)
+            kind.sessions.add(st.session_id)
         nested_by_role: defaultdict[str, list[Subagent]] = defaultdict(list)
         for s in st.subagents:
             if s.parent_id is not None:
@@ -605,6 +637,8 @@ class ToolStats:
                 "moved_bash_by_reason": {r: n for r in MOVE_REASONS if (n := self._moved_reasons[r])},
                 "busy_by_trigger": {k: {"turns": n, "seconds": s} for k, n, s in _by_busy(self._busy_by_trigger)},
                 "crons": [{"prompt": k, "turns": n, "seconds": s} for k, n, s in _by_busy(self._crons)],
+                "subagent_descriptions": len(self._described),
+                "subagent_descriptions_active": sum(sum(kind.active) for kind in self._described.values()),
             },
             "tools": sorted(tools, key=lambda r: (-r["total"], -r["n"])),
             "bash_groups": sorted(groups, key=lambda r: (-r["total"], -r["n"])),
@@ -622,6 +656,22 @@ class ToolStats:
                 "denials": dict(self._denials.most_common()),
             },
             "subagent_roles": sorted(roles, key=lambda r: -r["active"]),
+            "subagent_descriptions": [
+                {
+                    "description": text,
+                    "n": len(kind.active),
+                    "active": sum(kind.active),
+                    "elapsed": kind.elapsed,
+                    "median": statistics.median(kind.active),
+                    "max": max(kind.active),
+                    "tokens_total": kind.tokens_total,
+                    "roles": [
+                        {"role": role, "guessed": guessed, "n": n} for (role, guessed), n in kind.roles.most_common()
+                    ],
+                    "sessions": len(kind.sessions),
+                }
+                for text, kind in sorted(self._described.items(), key=lambda kv: -sum(kv[1].active))[:top]
+            ],
             "nested_by_parent_role": sorted(nested_rows, key=lambda r: -r["active"]),
         }
 
@@ -659,6 +709,8 @@ class ToolStats:
             self._roles[role_key].merge(role)
         for nested_key, nested in other._nested.items():
             self._nested[nested_key].merge(nested)
+        for text, kind in other._described.items():
+            self._described[text].merge(kind)
 
     def by_kind(self) -> dict[str, dict[str, Any]]:
         kinds: dict[str, dict[str, Any]] = {}
@@ -701,6 +753,11 @@ def _table(head: Sequence[str], right: Sequence[bool], rows: Iterable[Sequence[s
 
 def _types(counts: dict[str, int], limit: int = 3) -> str:
     return ", ".join(f"{k} {v}" for k, v in list(counts.items())[:limit])
+
+
+def _role_counts(roles: Sequence[dict[str, Any]], limit: int = 3) -> str:
+    """``other? 634, implement 2``: the roles of a row, ``?`` after a guessed one."""
+    return ", ".join(f"{r['role']}{'?' if r['guessed'] else ''} {r['n']}" for r in roles[:limit])
 
 
 def _cut(text: str | None, limit: int = COMMAND_LIMIT) -> str:
@@ -923,6 +980,27 @@ def _sections(data: dict[str, Any], *, many: bool) -> list[str]:
             for r in data["subagent_roles"]
         ),
     )  # fmt: skip
+    if data["subagent_descriptions"]:
+        out += [
+            "",
+            "## Top-level subagents by description (clock times and dates at the end dropped, digit runs as N)",
+            "",
+        ]
+        out += _table(
+            ("description", "n", "active", "elapsed", "median", "max", "tokens", "roles")
+            + (("sessions",) if many else ()),
+            (False, True, True, True, True, True, True, False) + ((True,) if many else ()),
+            (
+                (f"`{_cut(r['description'] or '-', 60)}`", str(r["n"]), span(r["active"]), span(r["elapsed"]),
+                 span(r["median"]), span(r["max"]), tokens(r["tokens_total"]), _role_counts(r["roles"]))
+                + ((str(r["sessions"]),) if many else ())
+                for r in data["subagent_descriptions"]
+            ),
+        )  # fmt: skip
+        left = t["subagent_descriptions"] - len(data["subagent_descriptions"])
+        if left > 0:
+            rest = t["subagent_descriptions_active"] - sum(r["active"] for r in data["subagent_descriptions"])
+            out += ["", f"… {left} more {'description' if left == 1 else 'descriptions'}, {span(rest)} active"]
     if data["nested_by_parent_role"]:
         out += ["", "Nested subagents by the role of the top-level subagent above them (elapsed is their union):", ""]
         out += [

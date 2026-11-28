@@ -15,6 +15,7 @@ from cc_session_tools.session_time import (
     analyze,
     bursts,
     crons_by_prompt,
+    normalize_description,
     role_of,
     session_kind,
     union,
@@ -1064,6 +1065,39 @@ def test_busy_time_is_counted_by_what_opened_the_turn_and_crons_by_prompt(tmp_pa
     assert [(c.prompt, c.turns, c.seconds) for c in crons_by_prompt(st.turns)] == [
         ("Run pass N of the index.", 2, 30), ("Send the daily digest.", 1, 30),
     ]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("text", "normalized"),
+    [
+        ("Indexing pass 13:17", "Indexing pass"),
+        ("Indexing pass 13:17:05", "Indexing pass"),
+        ("Indexing pass (2026-11-27 09:15)", "Indexing pass"),
+        ("Indexing pass @ 2026-11-27T09:15", "Indexing pass"),
+        ("  Indexing   pass ", "Indexing pass"),
+        ("watch: MR 1234", "watch: MR N"),
+        ("validate: C12 of 13:17 plan", "validate: CN of N:N plan"),  # a time inside is only digits
+        ("Profile 2", "Profile N"),
+        ("Indexing pass 29 Oct", "Indexing pass"),
+        ("Indexing pass 29. Oct", "Indexing pass"),
+        ("Indexing pass Oct 29", "Indexing pass"),
+        ("Indexing pass October 29th, 2026", "Indexing pass"),
+        ("Indexing pass 29 October 2026", "Indexing pass"),
+        ("Indexing pass 29.10.2026", "Indexing pass"),
+        ("Indexing pass (29 Oct 13:17)", "Indexing pass"),
+        ("Upgrade to Python 3.12.", "Upgrade to Python N.N."),  # a version, not a date without its year
+        ("Grammar 12", "Grammar N"),  # no month inside a word
+        ("Octane 5", "Octane N"),
+        ("", ""),
+    ],
+)
+def test_the_description_normalizer_folds_times_and_digits(text: str, normalized: str) -> None:
+    assert normalize_description(text) == normalized
+
+
+def test_different_descriptions_stay_apart() -> None:
+    keys = {normalize_description(d) for d in ("Indexing pass 13:17", "Indexing pass", "Tooling batch 3", "Profile 7")}
+    assert keys == {"Indexing pass", "Tooling batch N", "Profile N"}
 
 
 def test_busy_gaps_and_the_edges_add_up_to_the_wall(tmp_path: Path) -> None:

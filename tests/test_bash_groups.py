@@ -196,6 +196,7 @@ RUNS = [
     ("cd /x && python3 -u tools/report.py", "report.py"),
     ("env FOO=1 bash scripts/x.sh --y", "x.sh"),
     ("./bin/sweep.sh > out 2>&1; echo $?", "sweep.sh"),
+    ("taskset -c 0-3 python3 scripts/digest.py", "digest.py"),
     ("python -c 'print(1)'", "python"),
     ("git status", "git"),
 ]
@@ -228,6 +229,12 @@ WRAPPERS = [
     ("setsid ./gradlew build", "build", "gradlew"),
     ("ionice -c 3 pytest", "test", "pytest"),
     ("time ./gradlew test", "test", "gradlew"),
+    ("nice -n 10 taskset -c 0-15 uv run pytest", "test", "pytest"),
+    ("POLARS_MAX_THREADS=4 taskset --cpu-list 0-3 uv run ruff check .", "lint", "ruff"),
+    ("taskset 0x3 make build", "build", "make"),
+    ("taskset -a -c 0-15 ./gradlew test", "test", "gradlew"),
+    ("taskset -p 1234", "run", "taskset"),  # changes a running process, launches nothing
+    ("taskset -a -p -c 0-15 1234", "run", "taskset"),
     ("cd x && time (PYTHONPATH=src ./.venv/bin/pytest -q)", "test", "pytest"),
     ("time -p (make build)", "build", "make"),
     ("systemd-run --user --scope -q ionice -c 3 nice -n 10 ./gradlew check", "test", "gradlew"),

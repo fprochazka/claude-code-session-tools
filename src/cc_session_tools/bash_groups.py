@@ -1,10 +1,11 @@
 """Group Bash commands by what they are for: tests, builds, waiting, git, reading files, and so on.
 
 bash-classify parses a command into its invocations and unwraps launchers such as ``timeout``, ``env``, ``nice``,
-``systemd-run``, ``xargs`` and ``uv run``. This module maps each invocation to a group and gives the whole command the
-group of its highest-priority invocation, so ``cd x && ./gradlew test 2>&1 | tail`` is a test. An invocation that
-waits through a ``--wait`` or ``--watch`` option, a ``wait`` or ``watch`` subcommand, or a program named ``*-watch`` is
-a wait, unless its program makes it a test, build, lint, format, git, search or file command.
+``systemd-run``, ``xargs`` and ``uv run``; this module unwraps ``uvx`` and ``taskset`` itself. It maps each invocation
+to a group and gives the whole command the group of its highest-priority invocation, so
+``cd x && ./gradlew test 2>&1 | tail`` is a test. An invocation that waits through a ``--wait`` or ``--watch``
+option, a ``wait`` or ``watch`` subcommand, or a program named ``*-watch`` is a wait, unless its program makes it a
+test, build, lint, format, git, search or file command.
 
 The built-in rules know widely used public tools only. A user file, ``~/.config/cc-session-tools/bash-groups.toml``,
 maps any other program, and any script path, to a group, and overrides a built-in rule::
@@ -22,6 +23,7 @@ import fnmatch
 import itertools
 import os
 import re
+import shlex
 import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -317,6 +319,10 @@ class BashGrouper:
 
     def _group(self, invocation: _Invocation, program: str) -> tuple[_Group, str]:
         """The group of one invocation, and the program that decided it."""
+        if program == "taskset" and (inner := _taskset_command(invocation.argv)):
+            unwrapped = self._launched(inner)
+            if unwrapped is not None:
+                return unwrapped
         path = list(invocation.command)
         argv = list(invocation.argv)
         positionals = list(invocation.positionals or [])
@@ -336,6 +342,20 @@ class BashGrouper:
         if found.group in _LIFTED_TO_WAIT and _waits(program, path, argv):
             return _Group("wait"), program
         return found, program
+
+    def _launched(self, argv: list[str]) -> tuple[_Group, str] | None:
+        """The group of the command a launcher bash-classify doesn't unwrap runs, such as ``taskset``: its
+        highest-priority invocation, or ``None`` when it runs nothing that decides a group."""
+        try:
+            result = classify_expression(shlex.join(argv), self._database, sensitive_rules=[])
+        except (ValueError, RecursionError):
+            return None
+        decided = [
+            self._group(leaf, program)
+            for leaf in _leaves(result.commands)
+            if (program := _program(leaf.argv)) not in _TRIVIAL
+        ]
+        return min(decided, key=lambda d: _PRIORITY[d[0].group], default=None)
 
     def _user_group(self, program: str, argv: list[str]) -> str | None:
         found = self.user.programs.get(program)
@@ -379,6 +399,24 @@ def _script_of(program: str, argv: Sequence[str]) -> str | None:
         if not arg.startswith("-"):
             return os.path.basename(arg.strip("\"'")) or None
     return None
+
+
+def _taskset_command(argv: Sequence[str]) -> list[str]:
+    """The command ``taskset`` launches, after its options and its CPU list or mask; empty for ``taskset -p``, which
+    changes a running process and launches nothing."""
+    i, listed = 1, False
+    while i < len(argv) and argv[i].startswith("-"):
+        arg = argv[i]
+        if arg in ("-p", "--pid") or (not arg.startswith("--") and "p" in arg[1:]):
+            return []
+        if arg in ("-c", "--cpu-list") or (not arg.startswith("--") and arg.endswith("c")):
+            listed, i = True, i + 2
+            continue
+        listed = listed or arg.startswith("--cpu-list=")
+        i += 1
+    if not listed:
+        i += 1  # the mask, such as 0x3
+    return list(argv[i:])
 
 
 def _uvx_tool(argv: list[str]) -> list[str]:

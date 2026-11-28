@@ -292,8 +292,8 @@ def watch(
     idle_after: list[str] = typer.Option(
         None,
         "--idle-after",
-        help="Report idle_long once per idle stretch of a session that is idle this long after its last model "
-        "response. A stretch ends at the next model response. Repeatable.",
+        help="Report idle_long once per idle stretch of a session that is idle, or in shell, this long after its last "
+        "model response. A stretch ends at the next model response. Repeatable.",
         show_default=False,
     ),
     idle_every: str = typer.Option(

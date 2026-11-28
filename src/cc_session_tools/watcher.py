@@ -92,6 +92,8 @@ TURN_ENDS_FROM = frozenset({"busy", "waiting"})
 """A move from one of these statuses to one of :data:`TURN_ENDS_TO` is ``turn_finished``."""
 
 TURN_ENDS_TO = frozenset({"idle", "shell"})
+IDLE_STATUSES = TURN_ENDS_TO
+"""The statuses ``idle_long`` counts in: no model turn runs, in ``shell`` only a background shell."""
 """The statuses of a session whose model turn has ended: ``shell`` is the one of a session whose turn ended while a
 background shell it started, such as a ``run_in_background`` command or a watcher, still runs. It leaves ``shell`` for
 ``busy`` when the next turn starts, typically when that shell's output or end arrives as a message."""
@@ -742,7 +744,7 @@ class SessionTracker:
     def _thresholds(self, now: float, observed: str) -> list[WatchEvent]:
         events = []
         for tracked in self.ordered():
-            if self.thresholds.idles and tracked.matched and tracked.session.status == "idle":
+            if self.thresholds.idles and tracked.matched and tracked.session.status in IDLE_STATUSES:
                 event = self._idle_long(tracked, now, observed)
                 if event is not None:
                     events.append(event)
@@ -825,7 +827,7 @@ class SessionTracker:
             due = self.thresholds.for_status(tracked.session.status)
             if due is not None and tracked.matched and not tracked.threshold_sent:
                 waits.append(max(0.0, tracked.status_since + due[1] - now))
-            if self.thresholds.idles and tracked.matched and tracked.session.status == "idle":
+            if self.thresholds.idles and tracked.matched and tracked.session.status in IDLE_STATUSES:
                 if not tracked.idle_checked or tracked.idle_since is None:
                     waits.append(0.0)
                     continue

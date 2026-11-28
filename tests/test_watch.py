@@ -613,6 +613,33 @@ def test_idle_long_once_per_threshold_until_the_next_model_response(machine: Mac
     assert idle_long(t.poll(NOW + 9620)) == ["10m"]
 
 
+def test_time_in_shell_counts_as_idle(machine: Machine) -> None:
+    pid = machine.session("work", "worker", status="busy")
+    transcript(machine, "worker", NOW)
+    t = tracker(thresholds=Thresholds(idle_after=(600,)))
+    assert t.poll(NOW + 1) == []
+
+    # busy -> shell -> busy: a shell stretch shorter than the threshold reports nothing.
+    machine.update(pid, status="shell")
+    assert kinds(t.poll(NOW + 2)) == ["status_changed", "turn_finished"]
+    assert t.seconds_until_threshold(NOW + 2) == pytest.approx(598)
+    machine.update(pid, status="busy")
+    assert kinds(t.poll(NOW + 300)) == ["status_changed"]
+    assert idle_long(t.poll(NOW + 700)) == []  # busy: no idle count, though the last response is 700 s old
+
+    # The next turn ends in shell again, and that stretch reaches the threshold on its own.
+    transcript(machine, "worker", NOW, NOW + 800)
+    machine.update(pid, status="shell")
+    t.poll(NOW + 801)
+    assert idle_long(t.poll(NOW + 1399)) == []
+    assert idle_long(t.poll(NOW + 1400)) == ["10m"]
+
+    # The background shell ends without a new turn: the same stretch goes on in idle and is not reported again.
+    machine.update(pid, status="idle")
+    assert kinds(t.poll(NOW + 1500)) == ["status_changed"]
+    assert idle_long(t.poll(NOW + 2000)) == []
+
+
 def test_a_resumed_session_is_idle_since_its_process_started(machine: Machine) -> None:
     # The transcript's newest response is from the run before the resume.
     machine.session("work", "worker", startedAt=int((NOW - 60) * 1000))

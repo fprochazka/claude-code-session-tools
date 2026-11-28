@@ -68,6 +68,8 @@ claude plugin marketplace update fprochazka-claude-code-session-tools
 claude plugin update session-tools@fprochazka-claude-code-session-tools
 ```
 
+The update reaches only the sessions that start after it. A running session keeps the plugin version it loaded at startup, even after a compaction, so restart it to get the new skills and commands.
+
 ## Usage
 
 `search` and `distill` read transcripts. Claude Code stores each session at `<config dir>/projects/<encoded-cwd>/<session-id>.jsonl`, where `<encoded-cwd>` is the absolute launch directory with every non-alphanumeric character replaced by `-`. Both read the projects dir of every Claude Code profile on the machine and never write to it. Profiles that share a projects dir through a symlink are read once. Set `CLAUDE_PROJECTS_DIR` to read only that dir instead. Finding and parsing transcripts comes from the [cc-blackbox](https://github.com/fprochazka/cc-blackbox) library.
